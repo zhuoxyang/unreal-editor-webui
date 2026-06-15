@@ -1,0 +1,35 @@
+using UnrealBuildTool;
+
+public class UnrealEditorWebUI : ModuleRules
+{
+    public UnrealEditorWebUI(ReadOnlyTargetRules Target) : base(Target)
+    {
+        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+
+        PublicDependencyModuleNames.AddRange(
+            new[]
+            {
+                "Core",
+                "CoreUObject",
+                "Engine",
+                "Slate",
+                "SlateCore",
+                "WebBrowser",
+                "WebBrowserWidget"
+            }
+        );
+
+        PrivateDependencyModuleNames.AddRange(
+            new[]
+            {
+                "ApplicationCore",
+                "InputCore",
+                "LevelEditor",
+                "Projects",
+                "PythonScriptPlugin",
+                "ToolMenus",
+                "UnrealEd"
+            }
+        );
+    }
+}
