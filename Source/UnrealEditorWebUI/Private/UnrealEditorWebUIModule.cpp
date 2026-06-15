@@ -1,8 +1,7 @@
 #include "UnrealEditorWebUIBridge.h"
+#include "UnrealEditorWebUISettings.h"
 
 #include "Framework/Docking/TabManager.h"
-#include "Interfaces/IPluginManager.h"
-#include "Misc/Paths.h"
 #include "Modules/ModuleManager.h"
 #include "SWebBrowser.h"
 #include "ToolMenus.h"
@@ -86,21 +85,7 @@ private:
 
     FString GetInitialURL() const
     {
-        const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
-        if (!Plugin.IsValid())
-        {
-            return TEXT("about:blank");
-        }
-
-        const FString IndexPath = FPaths::ConvertRelativePathToFull(
-            FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web"), TEXT("index.html")));
-        const FString NormalizedPath = IndexPath.Replace(TEXT("\\"), TEXT("/"));
-
-#if PLATFORM_WINDOWS
-        return FString::Printf(TEXT("file:///%s"), *NormalizedPath);
-#else
-        return FString::Printf(TEXT("file://%s"), *NormalizedPath);
-#endif
+        return UnrealEditorWebUISettings::ResolveStartupURL();
     }
 
 private:

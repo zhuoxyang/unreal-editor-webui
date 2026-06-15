@@ -99,6 +99,8 @@
           <button id="project-info" class="secondary">Read project info</button>
           <button id="editor-log" class="secondary">Write UE log</button>
           <button id="demo-run" class="secondary">Run demo command</button>
+          <button id="async-demo" class="secondary">Run async demo</button>
+          <button id="settings" class="secondary">Read Web UI settings</button>
         </div>
         <pre id="output">Waiting for Unreal bridge...</pre>
       </section>
@@ -147,6 +149,41 @@
         return response.result;
       }
 
+      async function startCommand(command, payload = {}) {
+        const request = {
+          id: createRequestId(),
+          command,
+          payload,
+        };
+
+        const startJson = await callBridge("startcommand", JSON.stringify(request));
+        const startResponse = JSON.parse(startJson);
+        log(`start ${command} -> ${JSON.stringify(startResponse, null, 2)}`);
+
+        if (!startResponse.ok) {
+          throw new Error(startResponse.error && startResponse.error.message ? startResponse.error.message : "Task failed");
+        }
+
+        return startResponse.result.taskId;
+      }
+
+      async function pollTask(taskId) {
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const taskJson = await callBridge("gettask", taskId);
+          const taskResponse = JSON.parse(taskJson);
+          log(`task ${taskId} -> ${JSON.stringify(taskResponse, null, 2)}`);
+
+          const status = taskResponse.ok && taskResponse.result && taskResponse.result.status;
+          if (status === "completed" || status === "failed") {
+            return taskResponse.result;
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+
+        throw new Error(`Timed out waiting for task: ${taskId}`);
+      }
+
       document.querySelector("#ping").addEventListener("click", () => {
         runCommand("system.ping", { source: "web", at: Date.now() }).catch((error) => log(error.message));
       });
@@ -163,6 +200,26 @@
 
       document.querySelector("#demo-run").addEventListener("click", () => {
         runCommand("demo.run").catch((error) => log(error.message));
+      });
+
+      document.querySelector("#async-demo").addEventListener("click", async () => {
+        try {
+          const taskId = await startCommand("demo.run");
+          const task = await pollTask(taskId);
+          await callBridge("removetask", taskId);
+          log(`async demo final response -> ${task.responseJson || "no response"}`);
+        } catch (error) {
+          log(error.message);
+        }
+      });
+
+      document.querySelector("#settings").addEventListener("click", async () => {
+        try {
+          const settingsJson = await callBridge("getwebuisettings");
+          log(`settings -> ${JSON.stringify(JSON.parse(settingsJson), null, 2)}`);
+        } catch (error) {
+          log(error.message);
+        }
       });
 
       if (getBridge()) {

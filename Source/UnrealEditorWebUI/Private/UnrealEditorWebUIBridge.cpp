@@ -1,12 +1,16 @@
 #include "UnrealEditorWebUIBridge.h"
+#include "UnrealEditorWebUISettings.h"
 
+#include "Async/Async.h"
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "IPythonScriptPlugin.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -40,9 +44,8 @@ namespace
         return RequestId;
     }
 
-    FString MakeErrorResponse(const FString& RequestId, const FString& Code, const FString& Message)
+    void SetNullableId(const TSharedRef<FJsonObject>& Root, const FString& RequestId)
     {
-        const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
         if (RequestId.IsEmpty())
         {
             Root->SetField(TEXT("id"), MakeShared<FJsonValueNull>());
@@ -51,7 +54,12 @@ namespace
         {
             Root->SetStringField(TEXT("id"), RequestId);
         }
+    }
 
+    FString MakeErrorResponse(const FString& RequestId, const FString& Code, const FString& Message)
+    {
+        const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+        SetNullableId(Root, RequestId);
         Root->SetBoolField(TEXT("ok"), false);
 
         const TSharedRef<FJsonObject> Error = MakeShared<FJsonObject>();
@@ -60,6 +68,27 @@ namespace
         Root->SetObjectField(TEXT("error"), Error);
 
         return WriteJsonObject(Root);
+    }
+
+    FString MakeSuccessResponse(const FString& RequestId, const TSharedRef<FJsonObject>& Result)
+    {
+        const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+        SetNullableId(Root, RequestId);
+        Root->SetBoolField(TEXT("ok"), true);
+        Root->SetObjectField(TEXT("result"), Result);
+        return WriteJsonObject(Root);
+    }
+
+    TSharedRef<FJsonObject> ParseJsonObjectOrEmpty(const FString& Json)
+    {
+        TSharedPtr<FJsonObject> Object;
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Json);
+        if (FJsonSerializer::Deserialize(Reader, Object) && Object.IsValid())
+        {
+            return Object.ToSharedRef();
+        }
+
+        return MakeShared<FJsonObject>();
     }
 
     FString EncodeBase64Utf8(const FString& Value)
@@ -155,4 +184,120 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
 
     IFileManager::Get().Delete(*ResultPath);
     return ResponseJson;
+}
+
+FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
+{
+    if (RequestJson.IsEmpty())
+    {
+        return MakeErrorResponse(FString(), TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
+    }
+
+    const FString TaskId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
+    const FDateTime Now = FDateTime::UtcNow();
+
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
+        Task.RequestJson = RequestJson;
+        Task.Status = TEXT("queued");
+        Task.CreatedAt = Now;
+        Task.UpdatedAt = Now;
+    }
+
+    const TWeakObjectPtr<UUnrealEditorWebUIBridge> WeakThis(this);
+    AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson]()
+    {
+        if (WeakThis.IsValid())
+        {
+            WeakThis->RunTask(TaskId, RequestJson);
+        }
+    });
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("taskId"), TaskId);
+    Result->SetStringField(TEXT("status"), TEXT("queued"));
+    return MakeSuccessResponse(ExtractRequestId(RequestJson), Result);
+}
+
+FString UUnrealEditorWebUIBridge::GetTask(const FString& TaskId) const
+{
+    FScopeLock Lock(&TasksCriticalSection);
+    const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+    if (Task == nullptr)
+    {
+        return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
+    }
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("taskId"), TaskId);
+    Result->SetStringField(TEXT("status"), Task->Status);
+    Result->SetStringField(TEXT("createdAt"), Task->CreatedAt.ToIso8601());
+    Result->SetStringField(TEXT("updatedAt"), Task->UpdatedAt.ToIso8601());
+
+    if (!Task->ResponseJson.IsEmpty())
+    {
+        Result->SetStringField(TEXT("responseJson"), Task->ResponseJson);
+    }
+
+    return MakeSuccessResponse(FString(), Result);
+}
+
+FString UUnrealEditorWebUIBridge::RemoveTask(const FString& TaskId)
+{
+    FScopeLock Lock(&TasksCriticalSection);
+    if (Tasks.Remove(TaskId) == 0)
+    {
+        return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
+    }
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("taskId"), TaskId);
+    Result->SetBoolField(TEXT("removed"), true);
+    return MakeSuccessResponse(FString(), Result);
+}
+
+FString UUnrealEditorWebUIBridge::GetWebUISettings() const
+{
+    return MakeSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(UnrealEditorWebUISettings::Load())));
+}
+
+FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
+{
+    FUnrealEditorWebUISettings Settings;
+    FString Error;
+    if (!UnrealEditorWebUISettings::FromJson(SettingsJson, Settings, Error))
+    {
+        return MakeErrorResponse(FString(), TEXT("invalid_settings"), Error);
+    }
+
+    UnrealEditorWebUISettings::Save(Settings);
+    return MakeSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(Settings)));
+}
+
+void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString RequestJson)
+{
+    UpdateTaskStatus(TaskId, TEXT("running"));
+
+    const FString ResponseJson = ExecuteCommand(RequestJson);
+    const TSharedRef<FJsonObject> Response = ParseJsonObjectOrEmpty(ResponseJson);
+
+    bool bOk = false;
+    Response->TryGetBoolField(TEXT("ok"), bOk);
+
+    UpdateTaskStatus(TaskId, bOk ? TEXT("completed") : TEXT("failed"), ResponseJson);
+}
+
+void UUnrealEditorWebUIBridge::UpdateTaskStatus(const FString& TaskId, const FString& Status, const FString& ResponseJson)
+{
+    FScopeLock Lock(&TasksCriticalSection);
+    if (FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
+    {
+        Task->Status = Status;
+        Task->UpdatedAt = FDateTime::UtcNow();
+        if (!ResponseJson.IsEmpty())
+        {
+            Task->ResponseJson = ResponseJson;
+        }
+    }
 }
