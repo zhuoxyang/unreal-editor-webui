@@ -14,11 +14,5 @@ public:
     void PostMessage(const FString& Payload);
 
     UFUNCTION()
-    FString GetProjectName() const;
-
-    UFUNCTION()
-    FString GetProjectDir() const;
-
-    UFUNCTION()
-    bool ExecutePython(const FString& PythonCode);
+    FString ExecuteCommand(const FString& RequestJson);
 };

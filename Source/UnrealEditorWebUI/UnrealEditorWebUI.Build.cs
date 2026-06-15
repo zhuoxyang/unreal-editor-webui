@@ -12,6 +12,7 @@ public class UnrealEditorWebUI : ModuleRules
                 "Core",
                 "CoreUObject",
                 "Engine",
+                "Json",
                 "Slate",
                 "SlateCore",
                 "WebBrowser",

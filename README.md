@@ -8,7 +8,7 @@ Build Unreal Engine 5.5+ editor Web UI tools with WebBrowser/SWebBrowser, Python
 
 - `SWebBrowser` for embedded editor Web UI panels.
 - A C++ `UObject` bridge exposed to JavaScript as `window.ue.editorwebui`.
-- Python Editor Script Plugin integration for editor automation commands.
+- A typed JSON command bridge backed by a Python command registry.
 - A minimal local HTML page for smoke testing the bridge.
 
 This project targets editor tooling, not packaged runtime/game UI.
@@ -18,12 +18,13 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Adds a `Window > Unreal Editor WebUI` menu entry.
 - Opens a dockable editor tab backed by `SWebBrowser`.
 - Loads `Web/index.html` from the plugin folder.
-- Exposes C++ bridge methods to JavaScript:
-  - `postmessage(payload)`
-  - `getprojectname()`
-  - `getprojectdir()`
-  - `executepython(pythonCode)`
-- Includes a small Python demo script in `Python/unreal_editor_webui_demo.py`.
+- Exposes `executecommand(requestJson)` to JavaScript.
+- Routes commands through `Python/unreal_editor_webui_registry.py`.
+- Includes safe starter commands:
+  - `system.ping`
+  - `editor.projectInfo`
+  - `editor.log`
+  - `demo.run`
 
 ## Install In A UE Project
 
@@ -35,25 +36,49 @@ This project targets editor tooling, not packaged runtime/game UI.
 4. Build the editor target.
 5. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
 
-## JavaScript Bridge Example
+## JavaScript Command Example
 
 Inside the embedded browser, Unreal exposes bound `UObject` functions in lowercase:
 
 ```js
-await window.ue.editorwebui.postmessage(JSON.stringify({ type: "hello" }));
+const request = {
+  id: crypto.randomUUID(),
+  command: "editor.projectInfo",
+  payload: {},
+};
 
-const projectName = await window.ue.editorwebui.getprojectname();
-
-await window.ue.editorwebui.executepython(
-  "import unreal\nunreal.log('Hello from WebUI')"
+const responseJson = await window.ue.editorwebui.executecommand(
+  JSON.stringify(request)
 );
+const response = JSON.parse(responseJson);
 ```
 
-Only run trusted local Web UI through `executepython`, because it executes editor Python code.
+Response shape:
+
+```json
+{
+  "id": "request-id",
+  "ok": true,
+  "result": {}
+}
+```
+
+Errors use the same envelope with `ok: false` and an `error` object.
+
+## Python Command Registry
+
+Register commands in `Python/unreal_editor_webui_registry.py`:
+
+```python
+@command("asset.scan")
+def scan_assets(payload):
+    return {"count": 0}
+```
+
+Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
 ## Roadmap
 
-- Add typed JSON request/response routing.
-- Add a Python command registry instead of raw Python string execution.
+- Add async command execution and progress events.
 - Add optional React/Vite frontend template.
 - Add tests or a sample host UE project.

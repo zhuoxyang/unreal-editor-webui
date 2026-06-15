@@ -89,15 +89,16 @@
       </p>
 
       <section class="panel">
-        <strong>Bridge smoke test</strong>
+        <strong>Command bridge smoke test</strong>
         <p>
-          In Unreal, bound C++ function names are exposed to JavaScript in lowercase under
-          <code>window.ue.editorwebui</code>.
+          The Web UI sends typed JSON requests to <code>window.ue.editorwebui.executecommand</code>.
+          C++ forwards them to the Python command registry and returns a JSON response.
         </p>
         <div class="actions">
-          <button id="send-message">Send JS message</button>
+          <button id="ping">Ping registry</button>
           <button id="project-info" class="secondary">Read project info</button>
-          <button id="run-python" class="secondary">Run Python log</button>
+          <button id="editor-log" class="secondary">Write UE log</button>
+          <button id="demo-run" class="secondary">Run demo command</button>
         </div>
         <pre id="output">Waiting for Unreal bridge...</pre>
       </section>
@@ -124,23 +125,44 @@
         return await bridge[methodName](...args);
       }
 
-      document.querySelector("#send-message").addEventListener("click", async () => {
-        const payload = JSON.stringify({ type: "hello", source: "web", at: Date.now() });
-        await callBridge("postmessage", payload);
-        log(`Sent payload: ${payload}`);
+      function createRequestId() {
+        return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      async function runCommand(command, payload = {}) {
+        const request = {
+          id: createRequestId(),
+          command,
+          payload,
+        };
+
+        const responseJson = await callBridge("executecommand", JSON.stringify(request));
+        const response = JSON.parse(responseJson);
+        log(`${command} -> ${JSON.stringify(response, null, 2)}`);
+
+        if (!response.ok) {
+          throw new Error(response.error && response.error.message ? response.error.message : "Command failed");
+        }
+
+        return response.result;
+      }
+
+      document.querySelector("#ping").addEventListener("click", () => {
+        runCommand("system.ping", { source: "web", at: Date.now() }).catch((error) => log(error.message));
       });
 
-      document.querySelector("#project-info").addEventListener("click", async () => {
-        const name = await callBridge("getprojectname");
-        const dir = await callBridge("getprojectdir");
-        log(`Project: ${name}`);
-        log(`Dir: ${dir}`);
+      document.querySelector("#project-info").addEventListener("click", () => {
+        runCommand("editor.projectInfo").catch((error) => log(error.message));
       });
 
-      document.querySelector("#run-python").addEventListener("click", async () => {
-        const code = "import unreal\\nunreal.log('Hello from Unreal Editor WebUI Python bridge')";
-        const ok = await callBridge("executepython", code);
-        log(`Python execution result: ${ok}`);
+      document.querySelector("#editor-log").addEventListener("click", () => {
+        runCommand("editor.log", { message: "Hello from the Unreal Editor WebUI command bridge" }).catch((error) =>
+          log(error.message)
+        );
+      });
+
+      document.querySelector("#demo-run").addEventListener("click", () => {
+        runCommand("demo.run").catch((error) => log(error.message));
       });
 
       if (getBridge()) {
