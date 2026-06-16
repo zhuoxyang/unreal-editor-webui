@@ -1,9 +1,20 @@
 import { useMemo, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import './App.css'
+
+type DraftValue = string | boolean
+
+type SchemaProperty = {
+  type?: 'string' | 'number' | 'integer' | 'boolean'
+  description?: string
+  enum?: Array<string | number | boolean>
+  default?: string | number | boolean
+  maxLength?: number
+}
 
 type CommandSchema = {
   type?: string
-  properties?: Record<string, unknown>
+  properties?: Record<string, SchemaProperty>
   required?: string[]
   additionalProperties?: boolean
 }
@@ -71,6 +82,7 @@ function createRequestId() {
 function App() {
   const [commands, setCommands] = useState<CommandMetadata[]>([])
   const [settings, setSettings] = useState<WebUISettings | null>(null)
+  const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, DraftValue>>>({})
   const [logLines, setLogLines] = useState<string[]>([
     'Open this app inside the Unreal Editor WebUI tab to enable the bridge.',
   ])
@@ -172,6 +184,155 @@ function App() {
     }
   }
 
+  function getDefaultValue(property: SchemaProperty): DraftValue {
+    if (property.default !== undefined) {
+      return typeof property.default === 'boolean' ? property.default : String(property.default)
+    }
+
+    return property.type === 'boolean' ? false : ''
+  }
+
+  function getFieldValue(command: CommandMetadata, fieldName: string, property: SchemaProperty) {
+    return payloadDrafts[command.name]?.[fieldName] ?? getDefaultValue(property)
+  }
+
+  function updateField(commandName: string, fieldName: string, value: DraftValue) {
+    setPayloadDrafts((drafts) => ({
+      ...drafts,
+      [commandName]: {
+        ...(drafts[commandName] || {}),
+        [fieldName]: value,
+      },
+    }))
+  }
+
+  function buildPayload(command: CommandMetadata) {
+    const payload: Record<string, unknown> = {}
+    const properties = Object.entries(command.schema.properties || {})
+    const required = new Set(command.schema.required || [])
+
+    for (const [fieldName, property] of properties) {
+      const rawValue = getFieldValue(command, fieldName, property)
+
+      if (property.type === 'boolean') {
+        payload[fieldName] = Boolean(rawValue)
+        continue
+      }
+
+      if (property.type === 'number' || property.type === 'integer') {
+        if (rawValue === '' && !required.has(fieldName)) {
+          continue
+        }
+
+        const numericValue = Number(rawValue)
+        if (Number.isNaN(numericValue)) {
+          throw new Error(`${command.name}.${fieldName} must be a number`)
+        }
+
+        payload[fieldName] = property.type === 'integer' ? Math.trunc(numericValue) : numericValue
+        continue
+      }
+
+      const stringValue = String(rawValue)
+      if (stringValue === '' && !required.has(fieldName)) {
+        continue
+      }
+
+      payload[fieldName] = stringValue
+    }
+
+    return payload
+  }
+
+  async function runCommandFromMetadata(command: CommandMetadata) {
+    try {
+      await runCommand(command.name, buildPayload(command))
+    } catch (error) {
+      log(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  async function startTaskFromMetadata(command: CommandMetadata) {
+    try {
+      const taskId = await startCommand(command.name, buildPayload(command))
+      const task = await pollTask(taskId)
+      await callBridge<{ removed: boolean }>('removetask', taskId)
+      log(`${command.name} task final response -> ${task.responseJson || 'no response'}`)
+    } catch (error) {
+      log(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function renderField(command: CommandMetadata, fieldName: string, property: SchemaProperty) {
+    const value = getFieldValue(command, fieldName, property)
+    const required = command.schema.required?.includes(fieldName)
+    const inputId = `${command.name}-${fieldName}`
+
+    if (property.enum && property.enum.length > 0) {
+      return (
+        <label className="schema-field" key={fieldName} htmlFor={inputId}>
+          <span>
+            {fieldName}
+            {required ? <em>*</em> : null}
+          </span>
+          <select
+            id={inputId}
+            value={String(value)}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+              updateField(command.name, fieldName, event.target.value)
+            }
+          >
+            {property.enum.map((option) => (
+              <option key={String(option)} value={String(option)}>
+                {String(option)}
+              </option>
+            ))}
+          </select>
+          {property.description ? <small>{property.description}</small> : null}
+        </label>
+      )
+    }
+
+    if (property.type === 'boolean') {
+      return (
+        <label className="schema-field checkbox" key={fieldName} htmlFor={inputId}>
+          <input
+            id={inputId}
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              updateField(command.name, fieldName, event.target.checked)
+            }
+          />
+          <span>
+            {fieldName}
+            {required ? <em>*</em> : null}
+          </span>
+          {property.description ? <small>{property.description}</small> : null}
+        </label>
+      )
+    }
+
+    return (
+      <label className="schema-field" key={fieldName} htmlFor={inputId}>
+        <span>
+          {fieldName}
+          {required ? <em>*</em> : null}
+        </span>
+        <input
+          id={inputId}
+          type={property.type === 'number' || property.type === 'integer' ? 'number' : 'text'}
+          value={String(value)}
+          maxLength={property.maxLength}
+          onChange={(event: ChangeEvent<HTMLInputElement>) =>
+            updateField(command.name, fieldName, event.target.value)
+          }
+        />
+        {property.description ? <small>{property.description}</small> : null}
+      </label>
+    )
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -226,6 +387,23 @@ function App() {
                       <span className={`badge ${command.permission}`}>{command.permission}</span>
                     </div>
                     <p>{command.description || 'No description provided.'}</p>
+                    <div className="schema-form">
+                      {Object.entries(command.schema.properties || {}).length > 0 ? (
+                        Object.entries(command.schema.properties || {}).map(([fieldName, property]) =>
+                          renderField(command, fieldName, property),
+                        )
+                      ) : (
+                        <p className="muted">No payload fields.</p>
+                      )}
+                    </div>
+                    <div className="command-actions">
+                      <button type="button" onClick={() => runCommandFromMetadata(command)} disabled={!bridgeReady}>
+                        Run
+                      </button>
+                      <button type="button" onClick={() => startTaskFromMetadata(command)} disabled={!bridgeReady}>
+                        Start task
+                      </button>
+                    </div>
                     <details>
                       <summary>Schema</summary>
                       <pre>{JSON.stringify(command.schema, null, 2)}</pre>

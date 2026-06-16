@@ -124,6 +124,70 @@ button:disabled {
   margin: 8px 0 12px;
 }
 
+.schema-form {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.schema-field {
+  display: grid;
+  gap: 6px;
+}
+
+.schema-field span {
+  color: var(--text-h);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.schema-field em {
+  margin-left: 4px;
+  color: #fda4af;
+  font-style: normal;
+}
+
+.schema-field small {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.schema-field input,
+.schema-field select {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--text-h);
+  font: inherit;
+}
+
+.schema-field.checkbox {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.schema-field.checkbox input {
+  width: auto;
+}
+
+.schema-field.checkbox small {
+  grid-column: 1 / -1;
+}
+
+.command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.command-actions button {
+  padding: 8px 12px;
+}
+
 .badge {
   border-radius: 999px;
   padding: 4px 8px;

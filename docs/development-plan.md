@@ -12,8 +12,9 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Task-style command API via `startcommand`, `gettask`, and `removetask`.
 - Configurable startup URL support for local packaged UI or a dev server.
 - Python command registry with command metadata, permission labels, and payload schema validation.
-- React/Vite frontend that discovers commands and builds into `Web/dist`.
+- React/Vite frontend that discovers commands, generates simple schema forms, and builds into `Web/dist`.
 - Clean package script that stages the plugin without local frontend dependencies.
+- Starter asset commands for selected Content Browser assets and Asset Registry path listing.
 - Static `Web/index.html` smoke-test UI.
 - Small Python demo script under `Python/`.
 
@@ -21,9 +22,9 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 
 1. Compile and smoke test inside a real UE 5.5+ project.
 2. Add progress events for long-running tasks.
-3. Generate command forms from command metadata and schemas.
+3. Add command-specific result renderers for asset lists and validation reports.
 4. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
-5. Build a practical asset-tool demo command.
+5. Expand the asset-tool demo with validation and batch operations.
 
 ## Design Direction
 
@@ -49,4 +50,6 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - React frontend can build successfully into `Web/dist`.
 - Package script can build the plugin without copying local `node_modules`.
 - Invalid payloads are rejected before command handlers run.
+- Frontend can generate runnable forms from command metadata.
+- Asset demo commands return useful editor data.
 - Errors are visible in the Unreal log.

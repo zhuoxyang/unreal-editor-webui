@@ -116,6 +116,25 @@ def _validate_payload(payload: dict[str, Any], schema: dict[str, Any]) -> list[s
     return errors
 
 
+def _asset_to_dict(asset: Any) -> dict[str, str]:
+    asset_class = asset.get_class() if hasattr(asset, "get_class") else None
+    return {
+        "name": asset.get_name() if hasattr(asset, "get_name") else str(asset),
+        "path": asset.get_path_name() if hasattr(asset, "get_path_name") else "",
+        "className": asset_class.get_name() if asset_class and hasattr(asset_class, "get_name") else "",
+    }
+
+
+def _asset_data_to_dict(asset_data: Any) -> dict[str, str]:
+    return {
+        "assetName": str(getattr(asset_data, "asset_name", "")),
+        "packageName": str(getattr(asset_data, "package_name", "")),
+        "packagePath": str(getattr(asset_data, "package_path", "")),
+        "objectPath": str(getattr(asset_data, "object_path", "")),
+        "assetClass": str(getattr(asset_data, "asset_class_path", getattr(asset_data, "asset_class", ""))),
+    }
+
+
 def execute_command(request_json: str) -> str:
     request_id = None
 
@@ -224,6 +243,67 @@ def editor_log(payload: dict[str, Any]) -> dict[str, str]:
     unreal.log(message)
     return {
         "logged": message,
+    }
+
+
+@command(
+    "editor.selectedAssets",
+    description="Return assets currently selected in the Content Browser.",
+    permission="read",
+)
+def selected_assets(payload: dict[str, Any]) -> dict[str, Any]:
+    selected = unreal.EditorUtilityLibrary.get_selected_assets()
+    assets = [_asset_to_dict(asset) for asset in selected]
+    return {
+        "count": len(assets),
+        "assets": assets,
+    }
+
+
+@command(
+    "asset.listByPath",
+    description="List assets under a content path using the Asset Registry.",
+    permission="read",
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Content path, for example /Game",
+                "maxLength": 512,
+                "default": "/Game",
+            },
+            "recursive": {
+                "type": "boolean",
+                "description": "Include child folders.",
+                "default": True,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of assets to return.",
+                "default": 50,
+            },
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+)
+def list_assets_by_path(payload: dict[str, Any]) -> dict[str, Any]:
+    path = str(payload.get("path", "/Game"))
+    recursive = bool(payload.get("recursive", True))
+    limit = int(payload.get("limit", 50))
+    limit = max(1, min(limit, 500))
+
+    asset_registry = unreal.AssetRegistryHelpers.get_asset_registry()
+    asset_data_items = asset_registry.get_assets_by_path(path, recursive)
+    assets = [_asset_data_to_dict(asset_data) for asset_data in asset_data_items[:limit]]
+
+    return {
+        "path": path,
+        "recursive": recursive,
+        "count": len(assets),
+        "truncated": len(asset_data_items) > limit,
+        "assets": assets,
     }
 
 

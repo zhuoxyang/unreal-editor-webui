@@ -22,11 +22,14 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Exposes synchronous and task-style bridge methods to JavaScript.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
+- Generates frontend command forms from command metadata and schemas.
 - Includes safe starter commands:
   - `system.commands`
   - `system.ping`
   - `editor.projectInfo`
   - `editor.log`
+  - `editor.selectedAssets`
+  - `asset.listByPath`
   - `demo.run`
 
 ## Install In A UE Project
@@ -171,8 +174,21 @@ def scan_assets(payload):
 
 The registry validates a small JSON-schema-like subset before dispatching. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
+The React frontend reads this metadata from `system.commands` and generates basic forms for supported field types:
+
+- `string`
+- `number`
+- `integer`
+- `boolean`
+- `enum`
+
+Starter asset commands include:
+
+- `editor.selectedAssets`: returns assets selected in the Content Browser.
+- `asset.listByPath`: lists Asset Registry entries under a content path such as `/Game`.
+
 ## Roadmap
 
 - Add progress events for long-running tasks.
-- Add richer schema support and generated command forms.
+- Add richer schema support and generated command result views.
 - Add tests or a sample host UE project.
