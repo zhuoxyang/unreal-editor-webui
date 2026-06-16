@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "HAL/CriticalSection.h"
+#include "Templates/Function.h"
 #include "UObject/Object.h"
 #include "UnrealEditorWebUIBridge.generated.h"
 
@@ -20,6 +21,8 @@ class UNREALEDITORWEBUI_API UUnrealEditorWebUIBridge : public UObject
     GENERATED_BODY()
 
 public:
+    void SetEventDispatcher(TFunction<void(const FString&)> InEventDispatcher);
+
     UFUNCTION()
     void PostMessage(const FString& Payload);
 
@@ -44,8 +47,10 @@ public:
 private:
     void RunTask(const FString TaskId, const FString RequestJson);
     void UpdateTaskStatus(const FString& TaskId, const FString& Status, const FString& ResponseJson = FString());
+    void BroadcastTaskEvent(const FString& TaskId, const FString& Status, const FString& ResponseJson = FString());
 
 private:
     mutable FCriticalSection TasksCriticalSection;
     TMap<FString, FUnrealEditorWebUITask> Tasks;
+    TFunction<void(const FString&)> EventDispatcher;
 };

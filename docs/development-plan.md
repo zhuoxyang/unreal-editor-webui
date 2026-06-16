@@ -10,6 +10,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - `UObject` bridge exposed to JavaScript as `window.ue.editorwebui`.
 - Typed JSON command bridge via `executecommand(requestJson)`.
 - Task-style command API via `startcommand`, `gettask`, and `removetask`.
+- Task status events pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
 - Configurable startup URL support for local packaged UI or a dev server.
 - Python command registry with command metadata, permission labels, and payload schema validation.
 - React/Vite frontend that discovers commands, generates simple schema forms, and builds into `Web/dist`.
@@ -23,7 +24,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 ## Near-Term Goals
 
 1. Compile and smoke test inside a real UE 5.5+ project.
-2. Add progress events for long-running tasks.
+2. Add progress percentages and log streaming for long-running tasks.
 3. Add more command-specific result renderers for validation reports.
 4. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
 5. Expand the asset-tool demo with validation and batch operations.
@@ -47,6 +48,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - `Web/index.html` loads in the dockable tab.
 - JavaScript can call `executecommand` with a JSON request.
 - JavaScript can start a task and poll it until completion.
+- JavaScript can receive pushed task status events.
 - Startup URL can switch between packaged local HTML and a dev server.
 - C++ can dispatch to the trusted Python command registry.
 - React frontend can build successfully into `Web/dist`.

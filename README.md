@@ -20,6 +20,7 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Loads `Web/dist/index.html` when a frontend build exists, otherwise falls back to `Web/index.html`.
 - Supports local static Web UI and configurable dev server startup URLs.
 - Exposes synchronous and task-style bridge methods to JavaScript.
+- Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
 - Generates frontend command forms from command metadata and schemas.
@@ -84,6 +85,8 @@ bash scripts/package-plugin.sh \
 
 You can still run `RunUAT BuildPlugin` directly from a clean checkout, but the script is safer after `npm install`.
 
+See `docs/validation.md` for the latest local validation status.
+
 ## JavaScript Command Example
 
 Inside the embedded browser, Unreal exposes bound `UObject` functions in lowercase:
@@ -128,6 +131,16 @@ await window.ue.editorwebui.removetask(taskId);
 ```
 
 The current task runner queues work back onto the editor game thread before calling Python. It is useful for request lifecycle and polling, but long Python handlers can still block the editor while they execute. Heavy work should eventually move to dedicated background workers or external processes.
+
+Task status changes are also pushed into the browser as DOM events:
+
+```js
+window.addEventListener("unreal-editor-webui", (event) => {
+  console.log(event.detail.type, event.detail.taskId, event.detail.status);
+});
+```
+
+The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, and `failed`.
 
 ## Web UI Startup Settings
 
@@ -193,6 +206,7 @@ The frontend renders those asset results as tables instead of raw JSON, while ot
 
 ## Roadmap
 
-- Add progress events for long-running tasks.
+- Verify `BuildPlugin` with a local UE 5.5 install.
+- Add progress percentages/log streaming for long-running tasks.
 - Add richer schema support and more command result views.
 - Add tests or a sample host UE project.

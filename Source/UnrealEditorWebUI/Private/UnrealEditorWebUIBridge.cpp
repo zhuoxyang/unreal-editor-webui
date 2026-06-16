@@ -103,6 +103,11 @@ void UUnrealEditorWebUIBridge::PostMessage(const FString& Payload)
     UE_LOG(LogUnrealEditorWebUIBridge, Log, TEXT("WebUI message: %s"), *Payload);
 }
 
+void UUnrealEditorWebUIBridge::SetEventDispatcher(TFunction<void(const FString&)> InEventDispatcher)
+{
+    EventDispatcher = MoveTemp(InEventDispatcher);
+}
+
 FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
 {
     const FString RequestId = ExtractRequestId(RequestJson);
@@ -204,6 +209,7 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         Task.CreatedAt = Now;
         Task.UpdatedAt = Now;
     }
+    BroadcastTaskEvent(TaskId, TEXT("queued"));
 
     const TWeakObjectPtr<UUnrealEditorWebUIBridge> WeakThis(this);
     AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson]()
@@ -290,14 +296,38 @@ void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString Reque
 
 void UUnrealEditorWebUIBridge::UpdateTaskStatus(const FString& TaskId, const FString& Status, const FString& ResponseJson)
 {
-    FScopeLock Lock(&TasksCriticalSection);
-    if (FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
     {
-        Task->Status = Status;
-        Task->UpdatedAt = FDateTime::UtcNow();
-        if (!ResponseJson.IsEmpty())
+        FScopeLock Lock(&TasksCriticalSection);
+        if (FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
         {
-            Task->ResponseJson = ResponseJson;
+            Task->Status = Status;
+            Task->UpdatedAt = FDateTime::UtcNow();
+            if (!ResponseJson.IsEmpty())
+            {
+                Task->ResponseJson = ResponseJson;
+            }
         }
     }
+
+    BroadcastTaskEvent(TaskId, Status, ResponseJson);
+}
+
+void UUnrealEditorWebUIBridge::BroadcastTaskEvent(const FString& TaskId, const FString& Status, const FString& ResponseJson)
+{
+    if (!EventDispatcher)
+    {
+        return;
+    }
+
+    const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+    Root->SetStringField(TEXT("type"), TEXT("task.status"));
+    Root->SetStringField(TEXT("taskId"), TaskId);
+    Root->SetStringField(TEXT("status"), Status);
+    Root->SetStringField(TEXT("updatedAt"), FDateTime::UtcNow().ToIso8601());
+    if (!ResponseJson.IsEmpty())
+    {
+        Root->SetStringField(TEXT("responseJson"), ResponseJson);
+    }
+
+    EventDispatcher(WriteJsonObject(Root));
 }

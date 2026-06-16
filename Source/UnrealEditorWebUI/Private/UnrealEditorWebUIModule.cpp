@@ -13,6 +13,16 @@
 namespace UnrealEditorWebUI
 {
     static const FName TabName(TEXT("UnrealEditorWebUI"));
+
+    FString EscapeJavaScriptString(const FString& Value)
+    {
+        FString Escaped = Value;
+        Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+        Escaped.ReplaceInline(TEXT("'"), TEXT("\\'"));
+        Escaped.ReplaceInline(TEXT("\r"), TEXT("\\r"));
+        Escaped.ReplaceInline(TEXT("\n"), TEXT("\\n"));
+        return Escaped;
+    }
 }
 
 class FUnrealEditorWebUIModule final : public IModuleInterface
@@ -64,6 +74,27 @@ private:
         FGlobalTabmanager::Get()->TryInvokeTab(UnrealEditorWebUI::TabName);
     }
 
+    void DispatchWebUIEvent(const FString& EventJson)
+    {
+        if (!BrowserWidget.IsValid())
+        {
+            return;
+        }
+
+        const FString EscapedEventJson = UnrealEditorWebUI::EscapeJavaScriptString(EventJson);
+        const FString Script = FString::Printf(TEXT(
+            "(function(){"
+            "var detail=JSON.parse('%s');"
+            "window.dispatchEvent(new CustomEvent('unreal-editor-webui',{detail:detail}));"
+            "if(window.UnrealEditorWebUI&&typeof window.UnrealEditorWebUI.onEvent==='function'){"
+            "window.UnrealEditorWebUI.onEvent(detail);"
+            "}"
+            "})();"),
+            *EscapedEventJson);
+
+        BrowserWidget->ExecuteJavascript(Script);
+    }
+
     TSharedRef<SDockTab> SpawnWebUITab(const FSpawnTabArgs& SpawnTabArgs)
     {
         Bridge = TStrongObjectPtr<UUnrealEditorWebUIBridge>(NewObject<UUnrealEditorWebUIBridge>());
@@ -75,6 +106,10 @@ private:
             .SupportsTransparency(true);
 
         BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), true);
+        Bridge->SetEventDispatcher([this](const FString& EventJson)
+        {
+            DispatchWebUIEvent(EventJson);
+        });
 
         return SNew(SDockTab)
             .TabRole(ETabRole::NomadTab)

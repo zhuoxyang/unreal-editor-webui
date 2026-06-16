@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import './App.css'
 
@@ -56,6 +56,14 @@ type WebUISettings = {
   resolvedUrl: string
 }
 
+type WebUIEvent = {
+  type: string
+  taskId?: string
+  status?: string
+  updatedAt?: string
+  responseJson?: string
+}
+
 type AssetSelectionResult = {
   count: number
   assets: Array<{
@@ -107,6 +115,7 @@ function App() {
   const [settings, setSettings] = useState<WebUISettings | null>(null)
   const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, DraftValue>>>({})
   const [commandResults, setCommandResults] = useState<Record<string, unknown>>({})
+  const [eventLines, setEventLines] = useState<string[]>([])
   const [logLines, setLogLines] = useState<string[]>([
     'Open this app inside the Unreal Editor WebUI tab to enable the bridge.',
   ])
@@ -122,6 +131,27 @@ function App() {
       return groups
     }, {})
   }, [commands])
+
+  useEffect(() => {
+    function handleWebUIEvent(event: Event) {
+      const customEvent = event as CustomEvent<WebUIEvent>
+      const detail = customEvent.detail
+      if (!detail) {
+        return
+      }
+
+      const time = new Date().toLocaleTimeString()
+      const taskSummary = detail.taskId ? ` ${detail.taskId}` : ''
+      const statusSummary = detail.status ? ` ${detail.status}` : ''
+      setEventLines((lines) => [
+        `[${time}] ${detail.type}${taskSummary}${statusSummary}`,
+        ...lines,
+      ].slice(0, 80))
+    }
+
+    window.addEventListener('unreal-editor-webui', handleWebUIEvent)
+    return () => window.removeEventListener('unreal-editor-webui', handleWebUIEvent)
+  }, [])
 
   function log(message: string) {
     const time = new Date().toLocaleTimeString()
@@ -588,6 +618,15 @@ function App() {
             </dl>
           ) : (
             <p className="muted">Read settings from the bridge.</p>
+          )}
+        </div>
+
+        <div className="panel log-panel">
+          <h2>Task Events</h2>
+          {eventLines.length > 0 ? (
+            <pre>{eventLines.join('\n')}</pre>
+          ) : (
+            <p className="muted">Task status events will appear here.</p>
           )}
         </div>
 
