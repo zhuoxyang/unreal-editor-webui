@@ -56,6 +56,29 @@ type WebUISettings = {
   resolvedUrl: string
 }
 
+type AssetSelectionResult = {
+  count: number
+  assets: Array<{
+    name: string
+    path: string
+    className: string
+  }>
+}
+
+type AssetListResult = {
+  path: string
+  recursive: boolean
+  count: number
+  truncated: boolean
+  assets: Array<{
+    assetName: string
+    packageName: string
+    packagePath: string
+    objectPath: string
+    assetClass: string
+  }>
+}
+
 declare global {
   interface Window {
     ue?: {
@@ -83,6 +106,7 @@ function App() {
   const [commands, setCommands] = useState<CommandMetadata[]>([])
   const [settings, setSettings] = useState<WebUISettings | null>(null)
   const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, DraftValue>>>({})
+  const [commandResults, setCommandResults] = useState<Record<string, unknown>>({})
   const [logLines, setLogLines] = useState<string[]>([
     'Open this app inside the Unreal Editor WebUI tab to enable the bridge.',
   ])
@@ -184,6 +208,15 @@ function App() {
     }
   }
 
+  function confirmCommand(command: CommandMetadata) {
+    if (command.permission !== 'write' && command.permission !== 'destructive') {
+      return true
+    }
+
+    const label = command.permission === 'destructive' ? 'destructive' : 'write'
+    return window.confirm(`Run ${label} command "${command.name}"?`)
+  }
+
   function getDefaultValue(property: SchemaProperty): DraftValue {
     if (property.default !== undefined) {
       return typeof property.default === 'boolean' ? property.default : String(property.default)
@@ -246,7 +279,16 @@ function App() {
 
   async function runCommandFromMetadata(command: CommandMetadata) {
     try {
-      await runCommand(command.name, buildPayload(command))
+      if (!confirmCommand(command)) {
+        log(`Cancelled ${command.name}`)
+        return
+      }
+
+      const result = await runCommand<unknown>(command.name, buildPayload(command))
+      setCommandResults((results) => ({
+        ...results,
+        [command.name]: result,
+      }))
     } catch (error) {
       log(error instanceof Error ? error.message : String(error))
     }
@@ -254,10 +296,25 @@ function App() {
 
   async function startTaskFromMetadata(command: CommandMetadata) {
     try {
+      if (!confirmCommand(command)) {
+        log(`Cancelled ${command.name}`)
+        return
+      }
+
       const taskId = await startCommand(command.name, buildPayload(command))
       const task = await pollTask(taskId)
       await callBridge<{ removed: boolean }>('removetask', taskId)
       log(`${command.name} task final response -> ${task.responseJson || 'no response'}`)
+
+      if (task.responseJson) {
+        const response = JSON.parse(task.responseJson) as BridgeResponse<unknown>
+        if (response.ok) {
+          setCommandResults((results) => ({
+            ...results,
+            [command.name]: response.result,
+          }))
+        }
+      }
     } catch (error) {
       log(error instanceof Error ? error.message : String(error))
     }
@@ -333,6 +390,98 @@ function App() {
     )
   }
 
+  function renderAssetSelection(result: AssetSelectionResult) {
+    return (
+      <div className="result-view">
+        <div className="result-summary">Selected assets: {result.count}</div>
+        {result.assets.length > 0 ? (
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Class</th>
+                <th>Path</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.assets.map((asset) => (
+                <tr key={asset.path || asset.name}>
+                  <td>{asset.name}</td>
+                  <td>{asset.className || '-'}</td>
+                  <td>
+                    <code>{asset.path || '-'}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="muted">No selected assets.</p>
+        )}
+      </div>
+    )
+  }
+
+  function renderAssetList(result: AssetListResult) {
+    return (
+      <div className="result-view">
+        <div className="result-summary">
+          {result.count} assets under <code>{result.path}</code>
+          {result.truncated ? ' (truncated)' : ''}
+        </div>
+        {result.assets.length > 0 ? (
+          <table>
+            <thead>
+              <tr>
+                <th>Asset</th>
+                <th>Class</th>
+                <th>Package Path</th>
+                <th>Object Path</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.assets.map((asset) => (
+                <tr key={asset.objectPath || asset.packageName || asset.assetName}>
+                  <td>{asset.assetName}</td>
+                  <td>{asset.assetClass || '-'}</td>
+                  <td>
+                    <code>{asset.packagePath || '-'}</code>
+                  </td>
+                  <td>
+                    <code>{asset.objectPath || '-'}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="muted">No assets found.</p>
+        )}
+      </div>
+    )
+  }
+
+  function renderCommandResult(commandName: string) {
+    const result = commandResults[commandName]
+    if (!result) {
+      return null
+    }
+
+    if (commandName === 'editor.selectedAssets') {
+      return renderAssetSelection(result as AssetSelectionResult)
+    }
+
+    if (commandName === 'asset.listByPath') {
+      return renderAssetList(result as AssetListResult)
+    }
+
+    return (
+      <div className="result-view">
+        <pre>{JSON.stringify(result, null, 2)}</pre>
+      </div>
+    )
+  }
+
   return (
     <main className="app-shell">
       <section className="hero">
@@ -404,6 +553,7 @@ function App() {
                         Start task
                       </button>
                     </div>
+                    {renderCommandResult(command.name)}
                     <details>
                       <summary>Schema</summary>
                       <pre>{JSON.stringify(command.schema, null, 2)}</pre>

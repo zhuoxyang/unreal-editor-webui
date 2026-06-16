@@ -23,6 +23,8 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
 - Generates frontend command forms from command metadata and schemas.
+- Requires confirmation before running `write` or `destructive` commands from generated forms.
+- Shows command-specific result views for starter asset commands.
 - Includes safe starter commands:
   - `system.commands`
   - `system.ping`
@@ -187,8 +189,10 @@ Starter asset commands include:
 - `editor.selectedAssets`: returns assets selected in the Content Browser.
 - `asset.listByPath`: lists Asset Registry entries under a content path such as `/Game`.
 
+The frontend renders those asset results as tables instead of raw JSON, while other command results still fall back to a JSON view.
+
 ## Roadmap
 
 - Add progress events for long-running tasks.
-- Add richer schema support and generated command result views.
+- Add richer schema support and more command result views.
 - Add tests or a sample host UE project.

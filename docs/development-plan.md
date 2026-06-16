@@ -13,6 +13,8 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Configurable startup URL support for local packaged UI or a dev server.
 - Python command registry with command metadata, permission labels, and payload schema validation.
 - React/Vite frontend that discovers commands, generates simple schema forms, and builds into `Web/dist`.
+- Confirmation guard for `write` and `destructive` commands launched from generated forms.
+- Command-specific table result views for starter asset commands.
 - Clean package script that stages the plugin without local frontend dependencies.
 - Starter asset commands for selected Content Browser assets and Asset Registry path listing.
 - Static `Web/index.html` smoke-test UI.
@@ -22,7 +24,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 
 1. Compile and smoke test inside a real UE 5.5+ project.
 2. Add progress events for long-running tasks.
-3. Add command-specific result renderers for asset lists and validation reports.
+3. Add more command-specific result renderers for validation reports.
 4. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
 5. Expand the asset-tool demo with validation and batch operations.
 
@@ -52,4 +54,6 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - Invalid payloads are rejected before command handlers run.
 - Frontend can generate runnable forms from command metadata.
 - Asset demo commands return useful editor data.
+- `write` and `destructive` command launches require confirmation.
+- Starter asset results render as tables.
 - Errors are visible in the Unreal log.
