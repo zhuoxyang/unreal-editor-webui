@@ -8,6 +8,25 @@
 - Python syntax: passed with `python3 -m py_compile Python/*.py`.
 - Whitespace diff check: passed with `git diff --check`.
 - UE 5.7 BuildPlugin: passed on macOS arm64+x64 with `scripts/package-plugin.sh`.
+- UE 5.7 real project smoke test: passed with `/Users/zhuolyang/Documents/Unreal Projects/nuts/nuts.uproject`.
+
+## Real Project Smoke Test
+
+Project:
+
+```text
+/Users/zhuolyang/Documents/Unreal Projects/nuts/nuts.uproject
+```
+
+Validated:
+
+- Plugin copied into `Plugins/UnrealEditorWebUI`.
+- `PythonScriptPlugin` enabled in the project.
+- `UnrealEditorWebUI` enabled in the project for the editor target.
+- Frontend built into `Web/dist`.
+- Project compiled with the plugin.
+- UE Editor opened the project successfully.
+- `Window > Unreal Editor WebUI` loaded the demo Web UI successfully.
 
 ## UE 5.5 Status
 
