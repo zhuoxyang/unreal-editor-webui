@@ -1,0 +1,208 @@
+.app-shell {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.hero,
+.toolbar,
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 28px;
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.lede {
+  max-width: 760px;
+  color: var(--text);
+}
+
+.status {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(244, 63, 94, 0.12);
+  color: #fda4af;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.status.ready {
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 16px;
+}
+
+button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: #4f7cff;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.panel {
+  padding: 22px;
+}
+
+.log-panel {
+  grid-column: 1 / -1;
+}
+
+.command-group + .command-group {
+  margin-top: 20px;
+}
+
+.command-group h3 {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.command-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.command-card + .command-card {
+  margin-top: 10px;
+}
+
+.command-card div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.command-card p {
+  margin: 8px 0 12px;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.badge.read {
+  background: rgba(34, 197, 94, 0.12);
+  color: #86efac;
+}
+
+.badge.write {
+  background: rgba(250, 204, 21, 0.14);
+  color: #fde68a;
+}
+
+.badge.destructive {
+  background: rgba(244, 63, 94, 0.14);
+  color: #fda4af;
+}
+
+.settings {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.settings div {
+  display: grid;
+  gap: 4px;
+}
+
+.settings dt {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text-h);
+}
+
+.muted {
+  color: var(--text);
+}
+
+pre {
+  overflow: auto;
+  margin: 0;
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.3);
+  color: #bfdbfe;
+  font-size: 13px;
+  text-align: left;
+}
+
+details summary {
+  cursor: pointer;
+  color: var(--text-h);
+}
+
+details pre {
+  margin-top: 10px;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    padding: 18px;
+  }
+
+  .hero {
+    flex-direction: column;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

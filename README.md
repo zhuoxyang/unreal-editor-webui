@@ -9,7 +9,7 @@ Build Unreal Engine 5.5+ editor Web UI tools with WebBrowser/SWebBrowser, Python
 - `SWebBrowser` for embedded editor Web UI panels.
 - A C++ `UObject` bridge exposed to JavaScript as `window.ue.editorwebui`.
 - A typed JSON command bridge backed by a Python command registry.
-- A minimal local HTML page for smoke testing the bridge.
+- A React/Vite frontend plus a minimal static HTML fallback.
 
 This project targets editor tooling, not packaged runtime/game UI.
 
@@ -17,11 +17,13 @@ This project targets editor tooling, not packaged runtime/game UI.
 
 - Adds a `Window > Unreal Editor WebUI` menu entry.
 - Opens a dockable editor tab backed by `SWebBrowser`.
-- Loads `Web/index.html` from the plugin folder.
+- Loads `Web/dist/index.html` when a frontend build exists, otherwise falls back to `Web/index.html`.
 - Supports local static Web UI and configurable dev server startup URLs.
 - Exposes synchronous and task-style bridge methods to JavaScript.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
+- Exposes command metadata through `system.commands`.
 - Includes safe starter commands:
+  - `system.commands`
   - `system.ping`
   - `editor.projectInfo`
   - `editor.log`
@@ -36,6 +38,46 @@ This project targets editor tooling, not packaged runtime/game UI.
 3. Regenerate project files.
 4. Build the editor target.
 5. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
+
+## Frontend Development
+
+The React app lives in `frontend/`.
+
+```sh
+cd frontend
+npm install
+npm run dev
+```
+
+Use the bridge settings to point the editor panel at the Vite dev server:
+
+```ini
+[UnrealEditorWebUI]
+bUseDevServer=true
+DevServerURL=http://localhost:5173
+StartupURL=
+```
+
+Build the frontend for packaged plugin loading:
+
+```sh
+cd frontend
+npm run build
+```
+
+The build output is written to `Web/dist`. If that folder is missing, the plugin falls back to `Web/index.html`.
+
+## Package The Plugin
+
+Use the repository script when packaging after frontend development. It stages a clean copy of the plugin and excludes local dependency folders such as `frontend/node_modules`.
+
+```sh
+bash scripts/package-plugin.sh \
+  "/Users/Shared/Epic Games/UE_5.7/Engine/Build/BatchFiles/RunUAT.sh" \
+  /tmp/UnrealEditorWebUI-Package
+```
+
+You can still run `RunUAT BuildPlugin` directly from a clean checkout, but the script is safer after `npm install`.
 
 ## JavaScript Command Example
 
@@ -110,15 +152,27 @@ await window.ue.editorwebui.setwebuisettings(
 Register commands in `Python/unreal_editor_webui_registry.py`:
 
 ```python
-@command("asset.scan")
+@command(
+    "asset.scan",
+    description="Scan project assets.",
+    permission="read",
+    schema={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+)
 def scan_assets(payload):
     return {"count": 0}
 ```
 
-Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
+The registry validates a small JSON-schema-like subset before dispatching. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
 ## Roadmap
 
-- Add optional React/Vite frontend template.
 - Add progress events for long-running tasks.
+- Add richer schema support and generated command forms.
 - Add tests or a sample host UE project.

@@ -11,15 +11,17 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Typed JSON command bridge via `executecommand(requestJson)`.
 - Task-style command API via `startcommand`, `gettask`, and `removetask`.
 - Configurable startup URL support for local packaged UI or a dev server.
-- Python command registry with starter commands for ping, project info, logging, and demo execution.
+- Python command registry with command metadata, permission labels, and payload schema validation.
+- React/Vite frontend that discovers commands and builds into `Web/dist`.
+- Clean package script that stages the plugin without local frontend dependencies.
 - Static `Web/index.html` smoke-test UI.
 - Small Python demo script under `Python/`.
 
 ## Near-Term Goals
 
 1. Compile and smoke test inside a real UE 5.5+ project.
-2. Add a simple frontend build option, likely React + Vite.
-3. Add progress events for long-running tasks.
+2. Add progress events for long-running tasks.
+3. Generate command forms from command metadata and schemas.
 4. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
 5. Build a practical asset-tool demo command.
 
@@ -44,4 +46,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - JavaScript can start a task and poll it until completion.
 - Startup URL can switch between packaged local HTML and a dev server.
 - C++ can dispatch to the trusted Python command registry.
+- React frontend can build successfully into `Web/dist`.
+- Package script can build the plugin without copying local `node_modules`.
+- Invalid payloads are rejected before command handlers run.
 - Errors are visible in the Unreal log.

@@ -21,8 +21,15 @@ namespace
             return TEXT("about:blank");
         }
 
-        const FString IndexPath = FPaths::ConvertRelativePathToFull(
-            FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web"), TEXT("index.html")));
+        FString IndexPath = FPaths::ConvertRelativePathToFull(
+            FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web"), TEXT("dist"), TEXT("index.html")));
+
+        if (!FPaths::FileExists(IndexPath))
+        {
+            IndexPath = FPaths::ConvertRelativePathToFull(
+                FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web"), TEXT("index.html")));
+        }
+
         const FString NormalizedPath = IndexPath.Replace(TEXT("\\"), TEXT("/"));
 
 #if PLATFORM_WINDOWS
