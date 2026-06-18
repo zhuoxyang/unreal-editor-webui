@@ -102,7 +102,7 @@ namespace
         return FilePath == AllowedWebDir || FilePath.StartsWith(AllowedWebDir + TEXT("/"));
     }
 
-    bool IsAllowedStartupURL(const FString& Url)
+    bool IsAllowedBridgeURL(const FString& Url)
     {
         FString Trimmed = Url;
         Trimmed.TrimStartAndEndInline();
@@ -140,7 +140,7 @@ namespace
     bool ValidateStartupURL(const FString& FieldName, FString& InOutUrl, FString& OutError)
     {
         InOutUrl.TrimStartAndEndInline();
-        if (IsAllowedStartupURL(InOutUrl))
+        if (IsAllowedBridgeURL(InOutUrl))
         {
             return true;
         }
@@ -220,12 +220,12 @@ namespace UnrealEditorWebUISettings
     {
         const FUnrealEditorWebUISettings Settings = Load();
 
-        if (Settings.bUseDevServer && !Settings.DevServerURL.IsEmpty() && IsAllowedStartupURL(Settings.DevServerURL))
+        if (Settings.bUseDevServer && !Settings.DevServerURL.IsEmpty() && IsAllowedBridgeURL(Settings.DevServerURL))
         {
             return Settings.DevServerURL;
         }
 
-        if (!Settings.StartupURL.IsEmpty() && IsAllowedStartupURL(Settings.StartupURL))
+        if (!Settings.StartupURL.IsEmpty() && IsAllowedBridgeURL(Settings.StartupURL))
         {
             return Settings.StartupURL;
         }
@@ -285,5 +285,11 @@ namespace UnrealEditorWebUISettings
         }
 
         return true;
+    }
+
+    bool IsBridgeURLAllowed(const FString& URL, FString& OutError)
+    {
+        FString URLCopy = URL;
+        return ValidateStartupURL(TEXT("URL"), URLCopy, OutError);
     }
 }

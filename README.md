@@ -19,7 +19,7 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Opens a dockable editor tab backed by `SWebBrowser`.
 - Loads `Web/dist/index.html` when a frontend build exists, otherwise falls back to `Web/index.html`.
 - Supports local static Web UI and configurable dev server startup URLs.
-- Restricts bridge-capable startup URLs to packaged `Web/` files, `about:blank`, or loopback `http(s)` hosts.
+- Restricts bridge-capable startup and navigation URLs to packaged `Web/` files, `about:blank`, or loopback `http(s)` hosts.
 - Exposes synchronous and task-style bridge methods to JavaScript.
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
@@ -164,7 +164,7 @@ StartupURL=
 
 If `bUseDevServer` is false and `StartupURL` is empty, the panel loads the packaged `Web/index.html`.
 
-For safety, `DevServerURL` and `StartupURL` only accept empty values, `about:blank`, packaged `file://` URLs under the plugin `Web/` directory, or loopback `http(s)` URLs such as `http://localhost:5173`, `http://127.0.0.1:5173`, or `http://[::1]:5173`. Remote URLs are rejected by `setwebuisettings` and ignored when resolving the startup URL.
+For safety, `DevServerURL` and `StartupURL` only accept empty values, `about:blank`, packaged `file://` URLs under the plugin `Web/` directory, or loopback `http(s)` URLs such as `http://localhost:5173`, `http://127.0.0.1:5173`, or `http://[::1]:5173`. Remote URLs are rejected by `setwebuisettings`, ignored when resolving the startup URL, and blocked or redirected if the embedded browser navigates to them.
 
 Settings can also be inspected or updated from JavaScript:
 
@@ -198,7 +198,7 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
-The registry validates a small JSON-schema-like subset before dispatching. `write` and `destructive` commands require bridge-supplied permission policy after native confirmation, so command permissions are not only frontend labels. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
+The registry validates a small JSON-schema-like subset before dispatching. `write` and `destructive` commands require bridge-supplied permission policy after native confirmation, so command permissions are not only frontend labels. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
 The React frontend reads this metadata from `system.commands` and generates basic forms for supported field types:
 

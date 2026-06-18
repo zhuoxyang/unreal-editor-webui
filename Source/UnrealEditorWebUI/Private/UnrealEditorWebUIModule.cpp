@@ -11,6 +11,8 @@
 
 #define LOCTEXT_NAMESPACE "FUnrealEditorWebUIModule"
 
+DEFINE_LOG_CATEGORY_STATIC(LogUnrealEditorWebUI, Log, All);
+
 namespace UnrealEditorWebUI
 {
     static const FName TabName(TEXT("UnrealEditorWebUI"));
@@ -97,15 +99,51 @@ private:
         BrowserWidget->ExecuteJavascript(Script);
     }
 
+    void HandleBrowserUrlChanged(const FText& NewUrlText)
+    {
+        const FString NewUrl = NewUrlText.ToString();
+        FString Error;
+        if (UnrealEditorWebUISettings::IsBridgeURLAllowed(NewUrl, Error))
+        {
+            LastAllowedURL = NewUrl;
+            return;
+        }
+
+        UE_LOG(LogUnrealEditorWebUI, Warning, TEXT("Blocked unsafe WebUI navigation to '%s': %s"), *NewUrl, *Error);
+
+        if (BrowserWidget.IsValid())
+        {
+            const FString FallbackURL = LastAllowedURL.IsEmpty()
+                ? UnrealEditorWebUISettings::ResolveStartupURL()
+                : LastAllowedURL;
+            BrowserWidget->LoadURL(FallbackURL);
+        }
+    }
+
+    bool HandleBeforeNavigation(const FString& URL, const FWebNavigationRequest&)
+    {
+        FString Error;
+        if (UnrealEditorWebUISettings::IsBridgeURLAllowed(URL, Error))
+        {
+            return false;
+        }
+
+        UE_LOG(LogUnrealEditorWebUI, Warning, TEXT("Blocked unsafe WebUI navigation request to '%s': %s"), *URL, *Error);
+        return true;
+    }
+
     TSharedRef<SDockTab> SpawnWebUITab(const FSpawnTabArgs& SpawnTabArgs)
     {
         Bridge = TStrongObjectPtr<UUnrealEditorWebUIBridge>(NewObject<UUnrealEditorWebUIBridge>());
+        LastAllowedURL = GetInitialURL();
 
         BrowserWidget =
             SNew(SWebBrowser)
-            .InitialURL(GetInitialURL())
+            .InitialURL(LastAllowedURL)
             .ShowControls(false)
-            .SupportsTransparency(true);
+            .SupportsTransparency(true)
+            .OnBeforeNavigation(FOnBeforeBrowse::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBeforeNavigation))
+            .OnUrlChanged(FOnTextChanged::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserUrlChanged));
 
         BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), true);
         Bridge->SetEventDispatcher([this](const FString& EventJson)
@@ -128,6 +166,7 @@ private:
 private:
     TSharedPtr<SWebBrowser> BrowserWidget;
     TStrongObjectPtr<UUnrealEditorWebUIBridge> Bridge;
+    FString LastAllowedURL;
 };
 
 IMPLEMENT_MODULE(FUnrealEditorWebUIModule, UnrealEditorWebUI)

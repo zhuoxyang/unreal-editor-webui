@@ -16,4 +16,5 @@ namespace UnrealEditorWebUISettings
     FString ResolveStartupURL();
     FString ToJson(const FUnrealEditorWebUISettings& Settings);
     bool FromJson(const FString& SettingsJson, FUnrealEditorWebUISettings& OutSettings, FString& OutError);
+    bool IsBridgeURLAllowed(const FString& URL, FString& OutError);
 }

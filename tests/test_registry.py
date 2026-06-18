@@ -12,9 +12,11 @@ REGISTRY_PATH = REPO_ROOT / "Python" / "unreal_editor_webui_registry.py"
 
 def make_unreal_stub():
     logs = []
+    error_logs = []
 
     unreal = types.SimpleNamespace(
         log=logs.append,
+        log_error=error_logs.append,
         SystemLibrary=types.SimpleNamespace(get_project_name=lambda: "TestProject"),
         Paths=types.SimpleNamespace(project_dir=lambda: "/TestProject/"),
         EditorUtilityLibrary=types.SimpleNamespace(get_selected_assets=lambda: []),
@@ -23,6 +25,7 @@ def make_unreal_stub():
         ),
     )
     unreal.logs = logs
+    unreal.error_logs = error_logs
     return unreal
 
 
@@ -146,6 +149,20 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_payload")
         self.assertIn("Field 'recursive' must be boolean.", response["error"]["details"])
+
+    def test_handler_exception_hides_traceback_from_response(self):
+        @self.registry.command("test.raise")
+        def raise_error(payload):
+            raise RuntimeError("boom")
+
+        response = parse_response(self.registry.execute_command(request("test.raise")))
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "handler_exception")
+        self.assertEqual(response["error"]["message"], "boom")
+        self.assertNotIn("traceback", response["error"])
+        self.assertEqual(len(self.unreal.error_logs), 1)
+        self.assertIn("RuntimeError: boom", self.unreal.error_logs[0])
 
 
 if __name__ == "__main__":

@@ -63,6 +63,16 @@ def _error(request_id: str | None, code: str, message: str, **extra: Any) -> str
     )
 
 
+def _log_exception(prefix: str) -> None:
+    traceback_text = traceback.format_exc()
+    message = f"{prefix}\n{traceback_text}"
+    log_error = getattr(unreal, "log_error", None)
+    if callable(log_error):
+        log_error(message)
+    else:
+        unreal.log(message)
+
+
 def _validate_type(value: Any, expected_type: str) -> bool:
     if expected_type == "object":
         return isinstance(value, dict)
@@ -189,11 +199,11 @@ def inspect_command(request_json: str) -> str:
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
     except Exception as exc:
+        _log_exception("Unreal Editor WebUI command inspection failed.")
         return _error(
             request_id,
             "handler_exception",
             str(exc),
-            traceback=traceback.format_exc(),
         )
 
 
@@ -243,11 +253,11 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
     except Exception as exc:
+        _log_exception("Unreal Editor WebUI command handler failed.")
         return _error(
             request_id,
             "handler_exception",
             str(exc),
-            traceback=traceback.format_exc(),
         )
 
 
