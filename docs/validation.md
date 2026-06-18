@@ -8,8 +8,13 @@ Windows local validation on 2026-06-18:
 - Frontend lint: passed with `npm run lint`.
 - Plugin descriptor JSON: passed with `python3 -m json.tool UnrealEditorWebUI.uplugin`.
 - Python syntax: passed with `python3 -m py_compile Python/*.py`.
-- Python registry permission policy smoke test: passed with a stub `unreal` module.
+- Python registry tests: passed with `python -m unittest discover -s tests`.
 - Whitespace diff check: passed with `git diff --check` (Windows line-ending warnings only).
+
+CI coverage added in `.github/workflows/ci.yml`:
+
+- Node 22 frontend install/build/lint.
+- Python 3.11 descriptor, syntax, registry unit tests, and whitespace validation.
 
 Historical validation:
 
