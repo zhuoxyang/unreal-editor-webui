@@ -58,6 +58,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - Startup URL can switch between packaged local HTML and a loopback dev server.
 - Startup settings are discoverable under `Project Settings > Plugins > Unreal Editor WebUI`.
 - Existing `[UnrealEditorWebUI]` ini keys continue to be read and written by bridge APIs.
+- Invalid Project Settings URL edits are reverted before being persisted.
 - Unsafe remote, `javascript:`, or `data:` startup URLs are rejected.
 - Unsafe browser navigation is redirected away after URL changes.
 - C++ can dispatch to the trusted Python command registry.

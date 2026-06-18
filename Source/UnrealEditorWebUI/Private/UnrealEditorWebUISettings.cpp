@@ -3,6 +3,7 @@
 #include "Dom/JsonObject.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/ConfigCacheIni.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
@@ -275,16 +276,45 @@ void UUnrealEditorWebUIEditorSettings::PostEditChangeProperty(FPropertyChangedEv
     Super::PostEditChangeProperty(PropertyChangedEvent);
 
     FUnrealEditorWebUISettings RuntimeSettings = ToRuntimeSettings();
+    FUnrealEditorWebUISettings PreviousSettings;
+    ApplyLegacyConfig(PreviousSettings);
+
+    TArray<FString> ValidationErrors;
+
     FString DevServerURLCopy = RuntimeSettings.DevServerURL;
     FString StartupURLCopy = RuntimeSettings.StartupURL;
     FString Error;
     if (!ValidateStartupURL(TEXT("DevServerURL"), DevServerURLCopy, Error))
     {
         UE_LOG(LogUnrealEditorWebUISettings, Warning, TEXT("%s"), *Error);
+        ValidationErrors.Add(Error);
+        RuntimeSettings.DevServerURL = PreviousSettings.DevServerURL;
     }
+    else
+    {
+        RuntimeSettings.DevServerURL = DevServerURLCopy;
+    }
+
     if (!ValidateStartupURL(TEXT("StartupURL"), StartupURLCopy, Error))
     {
         UE_LOG(LogUnrealEditorWebUISettings, Warning, TEXT("%s"), *Error);
+        ValidationErrors.Add(Error);
+        RuntimeSettings.StartupURL = PreviousSettings.StartupURL;
+    }
+    else
+    {
+        RuntimeSettings.StartupURL = StartupURLCopy;
+    }
+
+    if (!ValidationErrors.IsEmpty())
+    {
+        ApplyRuntimeSettings(RuntimeSettings);
+
+        const FText Title = NSLOCTEXT("UnrealEditorWebUISettings", "InvalidSettingsTitle", "Invalid WebUI Settings");
+        const FText Message = FText::FromString(FString::Printf(
+            TEXT("%s\n\nThe invalid value was reverted to the last saved setting."),
+            *FString::Join(ValidationErrors, TEXT("\n"))));
+        FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
     }
 
     SaveConfig();

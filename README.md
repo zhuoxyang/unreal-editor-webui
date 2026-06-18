@@ -171,7 +171,7 @@ StartupURL=
 
 If `bUseDevServer` is false and `StartupURL` is empty, the panel loads the packaged `Web/index.html`.
 
-For safety, `DevServerURL` and `StartupURL` only accept empty values, `about:blank`, packaged `file://` URLs under the plugin `Web/` directory, or loopback `http(s)` URLs such as `http://localhost:5173`, `http://127.0.0.1:5173`, or `http://[::1]:5173`. Remote URLs are rejected by `setwebuisettings`, ignored when resolving the startup URL, and blocked or redirected if the embedded browser navigates to them.
+For safety, `DevServerURL` and `StartupURL` only accept empty values, `about:blank`, packaged `file://` URLs under the plugin `Web/` directory, or loopback `http(s)` URLs such as `http://localhost:5173`, `http://127.0.0.1:5173`, or `http://[::1]:5173`. Invalid Project Settings edits show a native warning and are reverted to the last saved value before persistence. Remote URLs are rejected by `setwebuisettings`, ignored when resolving the startup URL, and blocked or redirected if the embedded browser navigates to them.
 
 Settings can also be inspected or updated from JavaScript:
 
