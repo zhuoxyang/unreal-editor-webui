@@ -8,8 +8,8 @@ CommandHandler = Callable[[dict[str, Any]], Any]
 COMMANDS: dict[str, CommandHandler] = {}
 COMMAND_METADATA: dict[str, dict[str, Any]] = {}
 DEFAULT_PERMISSION_POLICY = {
-    "allowWriteCommands": False,
-    "allowDestructiveCommands": False,
+    "allowedCommand": "",
+    "allowedPermission": "",
 }
 
 
@@ -149,25 +149,19 @@ def _asset_data_to_dict(asset_data: Any) -> dict[str, str]:
     }
 
 
-def _permission_policy(policy: dict[str, Any] | None) -> dict[str, bool]:
+def _permission_policy(policy: dict[str, Any] | None) -> dict[str, str]:
     merged = dict(DEFAULT_PERMISSION_POLICY)
     if isinstance(policy, dict):
-        merged["allowWriteCommands"] = bool(policy.get("allowWriteCommands", merged["allowWriteCommands"]))
-        merged["allowDestructiveCommands"] = bool(
-            policy.get("allowDestructiveCommands", merged["allowDestructiveCommands"])
-        )
+        merged["allowedCommand"] = str(policy.get("allowedCommand", merged["allowedCommand"]))
+        merged["allowedPermission"] = str(policy.get("allowedPermission", merged["allowedPermission"])).lower()
     return merged
 
 
-def _permission_allowed(permission: str, policy: dict[str, bool]) -> bool:
+def _permission_allowed(command_name: str, permission: str, policy: dict[str, str]) -> bool:
     normalized = permission.lower()
     if normalized == "read":
         return True
-    if normalized == "write":
-        return policy["allowWriteCommands"]
-    if normalized == "destructive":
-        return policy["allowDestructiveCommands"]
-    return False
+    return policy["allowedCommand"] == command_name and policy["allowedPermission"] == normalized
 
 
 def inspect_command(request_json: str) -> str:
@@ -232,7 +226,7 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
         metadata = COMMAND_METADATA.get(command_name, {})
         permission = str(metadata.get("permission", "read"))
         policy = _permission_policy(permission_policy)
-        if not _permission_allowed(permission, policy):
+        if not _permission_allowed(command_name, permission, policy):
             return _error(
                 request_id,
                 "permission_denied",

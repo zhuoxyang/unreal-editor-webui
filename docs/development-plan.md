@@ -16,6 +16,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Python command registry with command metadata, permission labels, and payload schema validation.
 - React/Vite frontend that discovers commands, generates simple schema forms, and builds into `Web/dist`.
 - Frontend and native editor confirmation guards for `write` and `destructive` commands.
+- Exact command capability policy for privileged command execution.
 - Bounded task storage with cleanup for completed task records.
 - Command-specific table result views for starter asset commands.
 - Clean package script that stages the plugin without local frontend dependencies.
@@ -58,6 +59,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - React frontend can build successfully into `Web/dist`.
 - Package script can build the plugin without copying local `node_modules`.
 - Invalid payloads are rejected before command handlers run.
+- Privileged commands are rejected unless the bridge grants exact command capability.
 - Frontend can generate runnable forms from command metadata.
 - Asset demo commands return useful editor data.
 - `write` and `destructive` command launches require confirmation.

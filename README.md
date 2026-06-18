@@ -198,7 +198,7 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
-The registry validates a small JSON-schema-like subset before dispatching. `write` and `destructive` commands require bridge-supplied permission policy after native confirmation, so command permissions are not only frontend labels. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
+The registry validates a small JSON-schema-like subset before dispatching. `write` and `destructive` commands require bridge-supplied exact command capability after native confirmation, so command permissions are not only frontend labels. Confirmed `write` commands are remembered for the current WebUI tab session; `destructive` commands still require confirmation every time. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
 The React frontend reads this metadata from `system.commands` and generates basic forms for supported field types:
 

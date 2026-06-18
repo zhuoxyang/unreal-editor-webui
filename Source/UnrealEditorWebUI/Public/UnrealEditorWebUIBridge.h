@@ -53,10 +53,14 @@ private:
         const FString& FunctionName,
         const FString& PermissionPolicyJson = FString()) const;
     bool ConfirmPrivilegedCommand(const FString& CommandName, const FString& Permission) const;
+    bool HasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const;
+    void GrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission);
     void PruneTasksLocked(const FDateTime& Now);
 
 private:
     mutable FCriticalSection TasksCriticalSection;
     TMap<FString, FUnrealEditorWebUITask> Tasks;
+    mutable FCriticalSection PrivilegedCommandApprovalsCriticalSection;
+    TSet<FString> PrivilegedCommandApprovals;
     TFunction<void(const FString&)> EventDispatcher;
 };

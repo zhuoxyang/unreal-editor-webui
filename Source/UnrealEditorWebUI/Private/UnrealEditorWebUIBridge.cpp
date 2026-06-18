@@ -111,12 +111,21 @@ namespace
         return Normalized == TEXT("write") || Normalized == TEXT("destructive");
     }
 
-    FString MakePermissionPolicyJson(const FString& Permission)
+    FString MakePrivilegedCommandKey(const FString& CommandName, const FString& Permission)
     {
-        const FString Normalized = Permission.ToLower();
+        return FString::Printf(TEXT("%s:%s"), *Permission.ToLower(), *CommandName);
+    }
+
+    bool CanReusePrivilegedApproval(const FString& Permission)
+    {
+        return Permission.ToLower() == TEXT("write");
+    }
+
+    FString MakePermissionPolicyJson(const FString& CommandName, const FString& Permission)
+    {
         const TSharedRef<FJsonObject> Policy = MakeShared<FJsonObject>();
-        Policy->SetBoolField(TEXT("allowWriteCommands"), Normalized == TEXT("write") || Normalized == TEXT("destructive"));
-        Policy->SetBoolField(TEXT("allowDestructiveCommands"), Normalized == TEXT("destructive"));
+        Policy->SetStringField(TEXT("allowedCommand"), CommandName);
+        Policy->SetStringField(TEXT("allowedPermission"), Permission.ToLower());
         return WriteJsonObject(Policy);
     }
 }
@@ -161,15 +170,24 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
     ResultObject->TryGetStringField(TEXT("command"), CommandName);
     ResultObject->TryGetStringField(TEXT("permission"), Permission);
 
-    if (IsPrivilegedPermission(Permission) && !ConfirmPrivilegedCommand(CommandName, Permission))
+    if (IsPrivilegedPermission(Permission)
+        && (!CanReusePrivilegedApproval(Permission) || !HasPrivilegedCommandApproval(CommandName, Permission)))
     {
-        return MakeErrorResponse(
-            RequestId,
-            TEXT("permission_denied"),
-            FString::Printf(TEXT("User declined %s command: %s"), *Permission, *CommandName));
+        if (!ConfirmPrivilegedCommand(CommandName, Permission))
+        {
+            return MakeErrorResponse(
+                RequestId,
+                TEXT("permission_denied"),
+                FString::Printf(TEXT("User declined %s command: %s"), *Permission, *CommandName));
+        }
+
+        if (CanReusePrivilegedApproval(Permission))
+        {
+            GrantPrivilegedCommandApproval(CommandName, Permission);
+        }
     }
 
-    return ExecuteRegistryFunction(RequestJson, TEXT("execute_command"), MakePermissionPolicyJson(Permission));
+    return ExecuteRegistryFunction(RequestJson, TEXT("execute_command"), MakePermissionPolicyJson(CommandName, Permission));
 }
 
 FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
@@ -373,15 +391,37 @@ FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
 bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(const FString& CommandName, const FString& Permission) const
 {
     const FText Title = NSLOCTEXT("UnrealEditorWebUIBridge", "ConfirmPrivilegedCommandTitle", "Confirm WebUI Command");
+    const FText ApprovalScope = CanReusePrivilegedApproval(Permission)
+        ? NSLOCTEXT(
+            "UnrealEditorWebUIBridge",
+            "ConfirmPrivilegedCommandSessionScope",
+            "Confirming will allow this specific command for the current WebUI tab session.")
+        : NSLOCTEXT(
+            "UnrealEditorWebUIBridge",
+            "ConfirmPrivilegedCommandSingleUseScope",
+            "Destructive commands require confirmation every time.");
     const FText Message = FText::Format(
         NSLOCTEXT(
             "UnrealEditorWebUIBridge",
             "ConfirmPrivilegedCommandMessage",
-            "Run {0} command \"{1}\" from the WebUI?\n\nOnly continue if you trust the currently loaded page."),
+            "Run {0} command \"{1}\" from the WebUI?\n\n{2}\n\nOnly continue if you trust the currently loaded page."),
         FText::FromString(Permission),
-        FText::FromString(CommandName));
+        FText::FromString(CommandName),
+        ApprovalScope);
 
     return FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) == EAppReturnType::Yes;
+}
+
+bool UUnrealEditorWebUIBridge::HasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const
+{
+    FScopeLock Lock(&PrivilegedCommandApprovalsCriticalSection);
+    return PrivilegedCommandApprovals.Contains(MakePrivilegedCommandKey(CommandName, Permission));
+}
+
+void UUnrealEditorWebUIBridge::GrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission)
+{
+    FScopeLock Lock(&PrivilegedCommandApprovalsCriticalSection);
+    PrivilegedCommandApprovals.Add(MakePrivilegedCommandKey(CommandName, Permission));
 }
 
 void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)

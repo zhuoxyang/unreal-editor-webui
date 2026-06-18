@@ -80,13 +80,25 @@ class RegistryTests(unittest.TestCase):
         response = parse_response(
             self.registry.execute_command(
                 request("editor.log", {"message": "hello"}),
-                {"allowWriteCommands": True},
+                {"allowedCommand": "editor.log", "allowedPermission": "write"},
             )
         )
 
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["logged"], "hello")
         self.assertEqual(self.unreal.logs, ["hello"])
+
+    def test_broad_write_policy_does_not_allow_write_command(self):
+        response = parse_response(
+            self.registry.execute_command(
+                request("editor.log", {"message": "hello"}),
+                {"allowWriteCommands": True},
+            )
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "permission_denied")
+        self.assertEqual(self.unreal.logs, [])
 
     def test_destructive_command_requires_destructive_policy(self):
         @self.registry.command("test.destroy", permission="destructive")
@@ -96,13 +108,13 @@ class RegistryTests(unittest.TestCase):
         write_only = parse_response(
             self.registry.execute_command(
                 request("test.destroy"),
-                {"allowWriteCommands": True},
+                {"allowedCommand": "test.destroy", "allowedPermission": "write"},
             )
         )
         destructive_allowed = parse_response(
             self.registry.execute_command(
                 request("test.destroy"),
-                {"allowDestructiveCommands": True},
+                {"allowedCommand": "test.destroy", "allowedPermission": "destructive"},
             )
         )
 
@@ -131,7 +143,7 @@ class RegistryTests(unittest.TestCase):
         response = parse_response(
             self.registry.execute_command(
                 request("editor.log"),
-                {"allowWriteCommands": True},
+                {"allowedCommand": "editor.log", "allowedPermission": "write"},
             )
         )
 
