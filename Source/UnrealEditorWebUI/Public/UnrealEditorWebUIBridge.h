@@ -48,6 +48,12 @@ private:
     void RunTask(const FString TaskId, const FString RequestJson);
     void UpdateTaskStatus(const FString& TaskId, const FString& Status, const FString& ResponseJson = FString());
     void BroadcastTaskEvent(const FString& TaskId, const FString& Status, const FString& ResponseJson = FString());
+    FString ExecuteRegistryFunction(
+        const FString& RequestJson,
+        const FString& FunctionName,
+        const FString& PermissionPolicyJson = FString()) const;
+    bool ConfirmPrivilegedCommand(const FString& CommandName, const FString& Permission) const;
+    void PruneTasksLocked(const FDateTime& Now);
 
 private:
     mutable FCriticalSection TasksCriticalSection;

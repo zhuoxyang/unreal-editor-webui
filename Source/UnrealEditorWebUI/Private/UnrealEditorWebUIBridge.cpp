@@ -9,6 +9,7 @@
 #include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
+#include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
@@ -20,6 +21,8 @@ DEFINE_LOG_CATEGORY_STATIC(LogUnrealEditorWebUIBridge, Log, All);
 
 namespace
 {
+    constexpr int32 MaxStoredTasks = 64;
+
     FString WriteJsonObject(const TSharedRef<FJsonObject>& JsonObject)
     {
         FString Output;
@@ -96,6 +99,26 @@ namespace
         FTCHARToUTF8 Converter(*Value);
         return FBase64::Encode(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
     }
+
+    bool IsFinishedTaskStatus(const FString& Status)
+    {
+        return Status == TEXT("completed") || Status == TEXT("failed");
+    }
+
+    bool IsPrivilegedPermission(const FString& Permission)
+    {
+        const FString Normalized = Permission.ToLower();
+        return Normalized == TEXT("write") || Normalized == TEXT("destructive");
+    }
+
+    FString MakePermissionPolicyJson(const FString& Permission)
+    {
+        const FString Normalized = Permission.ToLower();
+        const TSharedRef<FJsonObject> Policy = MakeShared<FJsonObject>();
+        Policy->SetBoolField(TEXT("allowWriteCommands"), Normalized == TEXT("write") || Normalized == TEXT("destructive"));
+        Policy->SetBoolField(TEXT("allowDestructiveCommands"), Normalized == TEXT("destructive"));
+        return WriteJsonObject(Policy);
+    }
 }
 
 void UUnrealEditorWebUIBridge::PostMessage(const FString& Payload)
@@ -116,6 +139,45 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
     {
         return MakeErrorResponse(RequestId, TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
     }
+
+    const FString PreflightJson = ExecuteRegistryFunction(RequestJson, TEXT("inspect_command"));
+    const TSharedRef<FJsonObject> Preflight = ParseJsonObjectOrEmpty(PreflightJson);
+
+    bool bPreflightOk = false;
+    if (!Preflight->TryGetBoolField(TEXT("ok"), bPreflightOk) || !bPreflightOk)
+    {
+        return PreflightJson;
+    }
+
+    const TSharedPtr<FJsonValue> ResultValue = Preflight->TryGetField(TEXT("result"));
+    const TSharedPtr<FJsonObject> ResultObject = ResultValue.IsValid() ? ResultValue->AsObject() : nullptr;
+    if (!ResultObject.IsValid())
+    {
+        return MakeErrorResponse(RequestId, TEXT("invalid_preflight"), TEXT("Command preflight did not return a result object."));
+    }
+
+    FString CommandName;
+    FString Permission;
+    ResultObject->TryGetStringField(TEXT("command"), CommandName);
+    ResultObject->TryGetStringField(TEXT("permission"), Permission);
+
+    if (IsPrivilegedPermission(Permission) && !ConfirmPrivilegedCommand(CommandName, Permission))
+    {
+        return MakeErrorResponse(
+            RequestId,
+            TEXT("permission_denied"),
+            FString::Printf(TEXT("User declined %s command: %s"), *Permission, *CommandName));
+    }
+
+    return ExecuteRegistryFunction(RequestJson, TEXT("execute_command"), MakePermissionPolicyJson(Permission));
+}
+
+FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
+    const FString& RequestJson,
+    const FString& FunctionName,
+    const FString& PermissionPolicyJson) const
+{
+    const FString RequestId = ExtractRequestId(RequestJson);
 
     const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
     if (!Plugin.IsValid())
@@ -141,6 +203,8 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
     const FString EncodedPythonDir = EncodeBase64Utf8(PythonDir);
     const FString EncodedRequestJson = EncodeBase64Utf8(RequestJson);
     const FString EncodedResultPath = EncodeBase64Utf8(ResultPath);
+    const FString EncodedFunctionName = EncodeBase64Utf8(FunctionName);
+    const FString EncodedPermissionPolicyJson = EncodeBase64Utf8(PermissionPolicyJson);
 
     const FString PythonCode = FString::Printf(TEXT(
         "import base64, json, pathlib, sys, traceback\n"
@@ -149,6 +213,8 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
         "try:\n"
         "    plugin_python_dir = base64.b64decode('%s').decode('utf-8')\n"
         "    request_json = base64.b64decode('%s').decode('utf-8')\n"
+        "    function_name = base64.b64decode('%s').decode('utf-8')\n"
+        "    permission_policy_json = base64.b64decode('%s').decode('utf-8')\n"
         "    try:\n"
         "        parsed_request = json.loads(request_json)\n"
         "        request_id = parsed_request.get('id')\n"
@@ -156,8 +222,14 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
         "        pass\n"
         "    if plugin_python_dir not in sys.path:\n"
         "        sys.path.insert(0, plugin_python_dir)\n"
-        "    from unreal_editor_webui_registry import execute_command\n"
-        "    response_json = execute_command(request_json)\n"
+        "    from unreal_editor_webui_registry import execute_command, inspect_command\n"
+        "    if function_name == 'inspect_command':\n"
+        "        response_json = inspect_command(request_json)\n"
+        "    elif function_name == 'execute_command':\n"
+        "        permission_policy = json.loads(permission_policy_json) if permission_policy_json else {}\n"
+        "        response_json = execute_command(request_json, permission_policy)\n"
+        "    else:\n"
+        "        raise ValueError(f'Unsupported registry function: {function_name}')\n"
         "    result_path.write_text(response_json, encoding='utf-8')\n"
         "except Exception as exc:\n"
         "    response = {\n"
@@ -172,7 +244,9 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
         "    result_path.write_text(json.dumps(response, ensure_ascii=False), encoding='utf-8')\n"),
         *EncodedResultPath,
         *EncodedPythonDir,
-        *EncodedRequestJson);
+        *EncodedRequestJson,
+        *EncodedFunctionName,
+        *EncodedPermissionPolicyJson);
 
     const bool bExecuted = PythonPlugin->ExecPythonCommand(*PythonCode);
     if (!bExecuted)
@@ -203,6 +277,16 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
 
     {
         FScopeLock Lock(&TasksCriticalSection);
+        PruneTasksLocked(Now);
+
+        if (Tasks.Num() >= MaxStoredTasks)
+        {
+            return MakeErrorResponse(
+                ExtractRequestId(RequestJson),
+                TEXT("too_many_tasks"),
+                FString::Printf(TEXT("Too many stored WebUI tasks. Remove completed tasks or wait for cleanup. Limit: %d."), MaxStoredTasks));
+        }
+
         FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
         Task.RequestJson = RequestJson;
         Task.Status = TEXT("queued");
@@ -279,6 +363,56 @@ FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
 
     UnrealEditorWebUISettings::Save(Settings);
     return MakeSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(Settings)));
+}
+
+bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(const FString& CommandName, const FString& Permission) const
+{
+    const FText Title = NSLOCTEXT("UnrealEditorWebUIBridge", "ConfirmPrivilegedCommandTitle", "Confirm WebUI Command");
+    const FText Message = FText::Format(
+        NSLOCTEXT(
+            "UnrealEditorWebUIBridge",
+            "ConfirmPrivilegedCommandMessage",
+            "Run {0} command \"{1}\" from the WebUI?\n\nOnly continue if you trust the currently loaded page."),
+        FText::FromString(Permission),
+        FText::FromString(CommandName));
+
+    return FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) == EAppReturnType::Yes;
+}
+
+void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)
+{
+    const FTimespan FinishedTaskRetention = FTimespan::FromMinutes(10);
+
+    for (auto It = Tasks.CreateIterator(); It; ++It)
+    {
+        const FUnrealEditorWebUITask& Task = It.Value();
+        if (IsFinishedTaskStatus(Task.Status) && Now - Task.UpdatedAt > FinishedTaskRetention)
+        {
+            It.RemoveCurrent();
+        }
+    }
+
+    while (Tasks.Num() > MaxStoredTasks)
+    {
+        FString OldestFinishedTaskId;
+        FDateTime OldestFinishedTaskTime = FDateTime::MaxValue();
+
+        for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+        {
+            if (IsFinishedTaskStatus(Pair.Value.Status) && Pair.Value.UpdatedAt < OldestFinishedTaskTime)
+            {
+                OldestFinishedTaskId = Pair.Key;
+                OldestFinishedTaskTime = Pair.Value.UpdatedAt;
+            }
+        }
+
+        if (OldestFinishedTaskId.IsEmpty())
+        {
+            break;
+        }
+
+        Tasks.Remove(OldestFinishedTaskId);
+    }
 }
 
 void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString RequestJson)

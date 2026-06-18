@@ -11,10 +11,11 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Typed JSON command bridge via `executecommand(requestJson)`.
 - Task-style command API via `startcommand`, `gettask`, and `removetask`.
 - Task status events pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
-- Configurable startup URL support for local packaged UI or a dev server.
+- Configurable startup URL support for local packaged UI or loopback dev servers.
 - Python command registry with command metadata, permission labels, and payload schema validation.
 - React/Vite frontend that discovers commands, generates simple schema forms, and builds into `Web/dist`.
-- Confirmation guard for `write` and `destructive` commands launched from generated forms.
+- Frontend and native editor confirmation guards for `write` and `destructive` commands.
+- Bounded task storage with cleanup for completed task records.
 - Command-specific table result views for starter asset commands.
 - Clean package script that stages the plugin without local frontend dependencies.
 - Starter asset commands for selected Content Browser assets and Asset Registry path listing.
@@ -49,7 +50,8 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - JavaScript can call `executecommand` with a JSON request.
 - JavaScript can start a task and poll it until completion.
 - JavaScript can receive pushed task status events.
-- Startup URL can switch between packaged local HTML and a dev server.
+- Startup URL can switch between packaged local HTML and a loopback dev server.
+- Unsafe remote, `javascript:`, or `data:` startup URLs are rejected.
 - C++ can dispatch to the trusted Python command registry.
 - React frontend can build successfully into `Web/dist`.
 - Package script can build the plugin without copying local `node_modules`.

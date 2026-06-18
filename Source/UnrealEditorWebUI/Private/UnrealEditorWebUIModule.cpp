@@ -3,6 +3,7 @@
 
 #include "Framework/Docking/TabManager.h"
 #include "Modules/ModuleManager.h"
+#include "Misc/Base64.h"
 #include "SWebBrowser.h"
 #include "ToolMenus.h"
 #include "UObject/StrongObjectPtr.h"
@@ -14,14 +15,10 @@ namespace UnrealEditorWebUI
 {
     static const FName TabName(TEXT("UnrealEditorWebUI"));
 
-    FString EscapeJavaScriptString(const FString& Value)
+    FString EncodeBase64Utf8(const FString& Value)
     {
-        FString Escaped = Value;
-        Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
-        Escaped.ReplaceInline(TEXT("'"), TEXT("\\'"));
-        Escaped.ReplaceInline(TEXT("\r"), TEXT("\\r"));
-        Escaped.ReplaceInline(TEXT("\n"), TEXT("\\n"));
-        return Escaped;
+        FTCHARToUTF8 Converter(*Value);
+        return FBase64::Encode(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
     }
 }
 
@@ -81,16 +78,21 @@ private:
             return;
         }
 
-        const FString EscapedEventJson = UnrealEditorWebUI::EscapeJavaScriptString(EventJson);
+        const FString EncodedEventJson = UnrealEditorWebUI::EncodeBase64Utf8(EventJson);
         const FString Script = FString::Printf(TEXT(
             "(function(){"
-            "var detail=JSON.parse('%s');"
+            "var encoded='%s';"
+            "var binary=atob(encoded);"
+            "var json=(typeof TextDecoder==='function')"
+            "?new TextDecoder('utf-8').decode(Uint8Array.from(binary,function(c){return c.charCodeAt(0);}))"
+            ":decodeURIComponent(escape(binary));"
+            "var detail=JSON.parse(json);"
             "window.dispatchEvent(new CustomEvent('unreal-editor-webui',{detail:detail}));"
             "if(window.UnrealEditorWebUI&&typeof window.UnrealEditorWebUI.onEvent==='function'){"
             "window.UnrealEditorWebUI.onEvent(detail);"
             "}"
             "})();"),
-            *EscapedEventJson);
+            *EncodedEventJson);
 
         BrowserWidget->ExecuteJavascript(Script);
     }

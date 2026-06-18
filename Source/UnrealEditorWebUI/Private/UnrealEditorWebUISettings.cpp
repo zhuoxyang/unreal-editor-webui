@@ -13,6 +13,144 @@ namespace
 {
     constexpr const TCHAR* SettingsSection = TEXT("UnrealEditorWebUI");
 
+    bool ExtractUrlSchemeAndAuthority(const FString& Url, FString& OutScheme, FString& OutAuthority)
+    {
+        FString Trimmed = Url;
+        Trimmed.TrimStartAndEndInline();
+
+        int32 SchemeSeparator = INDEX_NONE;
+        if (!Trimmed.FindChar(TEXT(':'), SchemeSeparator) || SchemeSeparator <= 0)
+        {
+            return false;
+        }
+
+        OutScheme = Trimmed.Left(SchemeSeparator).ToLower();
+        if (!Trimmed.Mid(SchemeSeparator).StartsWith(TEXT("://")))
+        {
+            return false;
+        }
+
+        FString Remainder = Trimmed.Mid(SchemeSeparator + 3);
+        int32 AuthorityEnd = Remainder.Len();
+        for (const TCHAR Delimiter : {TEXT('/'), TEXT('?'), TEXT('#')})
+        {
+            int32 DelimiterIndex = INDEX_NONE;
+            if (Remainder.FindChar(Delimiter, DelimiterIndex))
+            {
+                AuthorityEnd = FMath::Min(AuthorityEnd, DelimiterIndex);
+            }
+        }
+
+        OutAuthority = Remainder.Left(AuthorityEnd);
+        return !OutAuthority.IsEmpty();
+    }
+
+    bool IsLoopbackAuthority(FString Authority)
+    {
+        int32 UserInfoSeparator = INDEX_NONE;
+        if (Authority.FindLastChar(TEXT('@'), UserInfoSeparator))
+        {
+            Authority = Authority.Mid(UserInfoSeparator + 1);
+        }
+
+        FString Host;
+        if (Authority.StartsWith(TEXT("[")))
+        {
+            int32 ClosingBracket = INDEX_NONE;
+            if (!Authority.FindChar(TEXT(']'), ClosingBracket) || ClosingBracket <= 1)
+            {
+                return false;
+            }
+
+            Host = Authority.Mid(1, ClosingBracket - 1);
+        }
+        else
+        {
+            int32 PortSeparator = INDEX_NONE;
+            Host = Authority.FindChar(TEXT(':'), PortSeparator)
+                ? Authority.Left(PortSeparator)
+                : Authority;
+        }
+
+        Host.TrimStartAndEndInline();
+        Host = Host.ToLower();
+        return Host == TEXT("localhost") || Host == TEXT("127.0.0.1") || Host == TEXT("::1");
+    }
+
+    bool IsPackagedWebFileURL(const FString& Url)
+    {
+        const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
+        if (!Plugin.IsValid())
+        {
+            return false;
+        }
+
+        FString FilePath = Url.Mid(7);
+#if PLATFORM_WINDOWS
+        if (FilePath.Len() > 2 && FilePath[0] == TEXT('/') && FilePath[2] == TEXT(':'))
+        {
+            FilePath = FilePath.Mid(1);
+        }
+#endif
+
+        FPaths::NormalizeFilename(FilePath);
+
+        FString AllowedWebDir = FPaths::ConvertRelativePathToFull(
+            FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web")));
+        FPaths::NormalizeDirectoryName(AllowedWebDir);
+
+        return FilePath == AllowedWebDir || FilePath.StartsWith(AllowedWebDir + TEXT("/"));
+    }
+
+    bool IsAllowedStartupURL(const FString& Url)
+    {
+        FString Trimmed = Url;
+        Trimmed.TrimStartAndEndInline();
+        if (Trimmed.IsEmpty())
+        {
+            return true;
+        }
+
+        const FString LowerUrl = Trimmed.ToLower();
+        if (LowerUrl == TEXT("about:blank"))
+        {
+            return true;
+        }
+
+        if (LowerUrl.StartsWith(TEXT("file://")))
+        {
+            return IsPackagedWebFileURL(Trimmed);
+        }
+
+        FString Scheme;
+        FString Authority;
+        if (!ExtractUrlSchemeAndAuthority(Trimmed, Scheme, Authority))
+        {
+            return false;
+        }
+
+        if (Scheme == TEXT("http") || Scheme == TEXT("https"))
+        {
+            return IsLoopbackAuthority(Authority);
+        }
+
+        return false;
+    }
+
+    bool ValidateStartupURL(const FString& FieldName, FString& InOutUrl, FString& OutError)
+    {
+        InOutUrl.TrimStartAndEndInline();
+        if (IsAllowedStartupURL(InOutUrl))
+        {
+            return true;
+        }
+
+        OutError = FString::Printf(
+            TEXT("%s must be empty, about:blank, a packaged Web/ file URL, or an http(s) loopback URL such as http://localhost:5173."),
+            *FieldName);
+        return false;
+    }
+
     FString BuildLocalFileURL()
     {
         const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
@@ -82,12 +220,12 @@ namespace UnrealEditorWebUISettings
     {
         const FUnrealEditorWebUISettings Settings = Load();
 
-        if (Settings.bUseDevServer && !Settings.DevServerURL.IsEmpty())
+        if (Settings.bUseDevServer && !Settings.DevServerURL.IsEmpty() && IsAllowedStartupURL(Settings.DevServerURL))
         {
             return Settings.DevServerURL;
         }
 
-        if (!Settings.StartupURL.IsEmpty())
+        if (!Settings.StartupURL.IsEmpty() && IsAllowedStartupURL(Settings.StartupURL))
         {
             return Settings.StartupURL;
         }
@@ -127,12 +265,22 @@ namespace UnrealEditorWebUISettings
         FString DevServerURL;
         if (Root->TryGetStringField(TEXT("devServerUrl"), DevServerURL))
         {
+            if (!ValidateStartupURL(TEXT("devServerUrl"), DevServerURL, OutError))
+            {
+                return false;
+            }
+
             OutSettings.DevServerURL = DevServerURL;
         }
 
         FString StartupURL;
         if (Root->TryGetStringField(TEXT("startupUrl"), StartupURL))
         {
+            if (!ValidateStartupURL(TEXT("startupUrl"), StartupURL, OutError))
+            {
+                return false;
+            }
+
             OutSettings.StartupURL = StartupURL;
         }
 

@@ -7,6 +7,10 @@ import unreal
 CommandHandler = Callable[[dict[str, Any]], Any]
 COMMANDS: dict[str, CommandHandler] = {}
 COMMAND_METADATA: dict[str, dict[str, Any]] = {}
+DEFAULT_PERMISSION_POLICY = {
+    "allowWriteCommands": False,
+    "allowDestructiveCommands": False,
+}
 
 
 def command(
@@ -135,7 +139,65 @@ def _asset_data_to_dict(asset_data: Any) -> dict[str, str]:
     }
 
 
-def execute_command(request_json: str) -> str:
+def _permission_policy(policy: dict[str, Any] | None) -> dict[str, bool]:
+    merged = dict(DEFAULT_PERMISSION_POLICY)
+    if isinstance(policy, dict):
+        merged["allowWriteCommands"] = bool(policy.get("allowWriteCommands", merged["allowWriteCommands"]))
+        merged["allowDestructiveCommands"] = bool(
+            policy.get("allowDestructiveCommands", merged["allowDestructiveCommands"])
+        )
+    return merged
+
+
+def _permission_allowed(permission: str, policy: dict[str, bool]) -> bool:
+    normalized = permission.lower()
+    if normalized == "read":
+        return True
+    if normalized == "write":
+        return policy["allowWriteCommands"]
+    if normalized == "destructive":
+        return policy["allowDestructiveCommands"]
+    return False
+
+
+def inspect_command(request_json: str) -> str:
+    request_id = None
+
+    try:
+        request = json.loads(request_json)
+        if not isinstance(request, dict):
+            return _error(None, "invalid_request", "Request must be a JSON object.")
+
+        request_id = request.get("id")
+        command_name = request.get("command")
+
+        if not isinstance(command_name, str) or not command_name:
+            return _error(request_id, "invalid_command", "Command must be a non-empty string.")
+
+        metadata = COMMAND_METADATA.get(command_name)
+        if metadata is None:
+            return _error(request_id, "unknown_command", f"Unknown command: {command_name}")
+
+        return _success(
+            request_id,
+            {
+                "command": command_name,
+                "permission": str(metadata.get("permission", "read")),
+            },
+        )
+
+    except json.JSONDecodeError as exc:
+        return _error(request_id, "invalid_json", str(exc))
+    except Exception as exc:
+        return _error(
+            request_id,
+            "handler_exception",
+            str(exc),
+            traceback=traceback.format_exc(),
+        )
+
+
+def execute_command(request_json: str, permission_policy: dict[str, Any] | None = None) -> str:
     request_id = None
 
     try:
@@ -158,6 +220,15 @@ def execute_command(request_json: str) -> str:
             return _error(request_id, "unknown_command", f"Unknown command: {command_name}")
 
         metadata = COMMAND_METADATA.get(command_name, {})
+        permission = str(metadata.get("permission", "read"))
+        policy = _permission_policy(permission_policy)
+        if not _permission_allowed(permission, policy):
+            return _error(
+                request_id,
+                "permission_denied",
+                f'Command "{command_name}" requires {permission} permission.',
+            )
+
         validation_errors = _validate_payload(payload, metadata.get("schema", {}))
         if validation_errors:
             return _error(
