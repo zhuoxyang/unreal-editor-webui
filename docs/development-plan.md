@@ -19,6 +19,8 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Frontend and native editor confirmation guards for `write` and `destructive` commands.
 - Exact command capability policy for privileged command execution.
 - Bounded task storage with cleanup for completed task records.
+- Persistent React task panel with progress, logs, cancellation, and task cleanup actions.
+- Editable React startup settings form backed by `getwebuisettings` and `setwebuisettings`.
 - Command-specific table result views for starter asset commands.
 - Recent payload reuse and schema-default presets in the command console.
 - Clean package script that stages the plugin without local frontend dependencies.
@@ -68,6 +70,8 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - Privileged commands are rejected unless the bridge grants exact command capability.
 - Frontend can generate runnable forms from command metadata.
 - Frontend can search commands, filter by permission, load schema defaults, and reuse recent payloads.
+- Frontend can track active/completed tasks without relying on a fixed short polling timeout.
+- Frontend can edit startup settings and display bridge validation errors.
 - Python registry validates nested objects, arrays, numeric bounds, string bounds, defaults, and dry-run schema markers.
 - Asset demo commands return useful editor data.
 - `write` and `destructive` command launches require confirmation.

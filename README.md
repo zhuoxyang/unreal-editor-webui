@@ -24,10 +24,11 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Exposes synchronous and task-style bridge methods to JavaScript.
 - Tracks task progress, logs, cancellation state, and bounded cleanup for task-style commands.
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
+- Shows active/completed task records in a persistent React task panel with progress, logs, cancellation, and cleanup controls.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
 - Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
-- Supports command search, permission filtering, schema defaults, and recent payload reuse in the React console.
+- Supports command search, permission filtering, schema defaults, recent payload reuse, and editable startup settings in the React console.
 - Requires confirmation before running `write` or `destructive` commands, including a native editor confirmation in the bridge path.
 - Shows command-specific result views for starter asset commands.
 - Includes safe starter commands:
@@ -142,7 +143,7 @@ const task = JSON.parse(await window.ue.editorwebui.gettask(taskId));
 await window.ue.editorwebui.removetask(taskId);
 ```
 
-Use `canceltask(taskId)` only for queued work that should not run.
+Use `canceltask(taskId)` only for queued work that should not run. The React console keeps started tasks in a task panel and polls them until they reach `completed`, `failed`, or `cancelled`, so long-running task UI is no longer tied to a short fixed timeout.
 
 The current task runner queues work back onto the editor game thread before calling Python. It is useful for request lifecycle and polling, but long Python handlers can still block the editor while they execute. Heavy work should eventually move to dedicated background workers or external processes.
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import './App.css'
 
@@ -6,6 +6,7 @@ type DraftValue = string | boolean
 type PermissionFilter = 'all' | 'read' | 'write' | 'destructive'
 type ExecutionMode = 'run' | 'task'
 type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
+type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 type SchemaProperty = {
   type?: SchemaPropertyType | SchemaPropertyType[]
@@ -61,9 +62,11 @@ type BridgeResponse<T> =
 
 type TaskResult = {
   taskId: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: TaskStatus
   progress?: number
   logs?: string[]
+  createdAt?: string
+  updatedAt?: string
   responseJson?: string
 }
 
@@ -115,6 +118,13 @@ type RecentExecution = {
   ranAt: string
 }
 
+type TaskRecord = TaskResult & {
+  command: string
+  payload: Record<string, unknown>
+  startedAt: string
+  lastError?: string
+}
+
 const RECENT_EXECUTIONS_STORAGE_KEY = 'unreal-editor-webui.recentExecutions'
 const MAX_RECENT_EXECUTIONS = 12
 
@@ -133,6 +143,9 @@ declare global {
     }
   }
 }
+
+type EditorWebUIBridge = NonNullable<NonNullable<Window['ue']>['editorwebui']>
+type BridgeMethodName = keyof EditorWebUIBridge
 
 function createRequestId() {
   if (globalThis.crypto?.randomUUID) {
@@ -200,11 +213,26 @@ function formatRecentTime(value: string) {
   return timestamp.toLocaleTimeString()
 }
 
+function isTerminalTaskStatus(status: TaskStatus) {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
+}
+
+function parseTaskStatus(status: string | undefined): TaskStatus | null {
+  if (status === 'queued' || status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled') {
+    return status
+  }
+
+  return null
+}
+
 function App() {
   const [commands, setCommands] = useState<CommandMetadata[]>([])
   const [settings, setSettings] = useState<WebUISettings | null>(null)
+  const [settingsDraft, setSettingsDraft] = useState<WebUISettings | null>(null)
+  const [settingsMessage, setSettingsMessage] = useState('')
   const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, DraftValue>>>({})
   const [commandResults, setCommandResults] = useState<Record<string, unknown>>({})
+  const [taskRecords, setTaskRecords] = useState<Record<string, TaskRecord>>({})
   const [commandSearch, setCommandSearch] = useState('')
   const [permissionFilter, setPermissionFilter] = useState<PermissionFilter>('all')
   const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(loadStoredRecentExecutions)
@@ -215,6 +243,16 @@ function App() {
 
   const bridge = window.ue?.editorwebui
   const bridgeReady = Boolean(bridge)
+
+  const taskList = useMemo(() => {
+    return Object.values(taskRecords).sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+  }, [taskRecords])
+
+  const activeTaskIds = useMemo(() => {
+    return taskList.filter((task) => !isTerminalTaskStatus(task.status)).map((task) => task.taskId)
+  }, [taskList])
+
+  const activeTaskKey = activeTaskIds.join('|')
 
   const filteredCommands = useMemo(() => {
     const search = commandSearch.trim().toLowerCase()
@@ -236,6 +274,78 @@ function App() {
   }, [filteredCommands])
 
   useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem(RECENT_EXECUTIONS_STORAGE_KEY, JSON.stringify(recentExecutions))
+    } catch {
+      // Local storage is optional in embedded browser contexts.
+    }
+  }, [recentExecutions])
+
+  const log = useCallback((message: string) => {
+    const time = new Date().toLocaleTimeString()
+    setLogLines((lines) => [`[${time}] ${message}`, ...lines].slice(0, 80))
+  }, [])
+
+  const mergeTaskResult = useCallback((task: TaskResult, fallback?: Partial<TaskRecord>) => {
+    setTaskRecords((records) => {
+      const existing = records[task.taskId]
+      const startedAt = existing?.startedAt || fallback?.startedAt || task.createdAt || new Date().toISOString()
+      const command = existing?.command || fallback?.command || 'unknown'
+      const payload = existing?.payload || fallback?.payload || {}
+
+      return {
+        ...records,
+        [task.taskId]: {
+          ...existing,
+          ...fallback,
+          ...task,
+          command,
+          payload,
+          startedAt,
+          progress: task.progress ?? existing?.progress ?? 0,
+          logs: task.logs ?? existing?.logs ?? [],
+          updatedAt: task.updatedAt || existing?.updatedAt || new Date().toISOString(),
+          lastError: fallback?.lastError ?? existing?.lastError,
+        },
+      }
+    })
+  }, [])
+
+  const mergeTaskEvent = useCallback((detail: WebUIEvent) => {
+    if (!detail.taskId) {
+      return
+    }
+
+    const taskId = detail.taskId
+    const status = parseTaskStatus(detail.status)
+    if (!status) {
+      return
+    }
+
+    setTaskRecords((records) => {
+      const existing = records[taskId]
+      const logs = detail.log ? [...(existing?.logs || []), detail.log].slice(-80) : existing?.logs || []
+
+      return {
+        ...records,
+        [taskId]: {
+          taskId,
+          command: existing?.command || 'unknown',
+          payload: existing?.payload || {},
+          startedAt: existing?.startedAt || detail.updatedAt || new Date().toISOString(),
+          status,
+          progress: detail.progress ?? existing?.progress ?? 0,
+          logs,
+          createdAt: existing?.createdAt,
+          updatedAt: detail.updatedAt || new Date().toISOString(),
+          responseJson: detail.responseJson ?? existing?.responseJson,
+          lastError: existing?.lastError,
+        },
+      }
+    })
+  }, [])
+
+  useEffect(() => {
     function handleWebUIEvent(event: Event) {
       const customEvent = event as CustomEvent<WebUIEvent>
       const detail = customEvent.detail
@@ -252,26 +362,14 @@ function App() {
         `[${time}] ${detail.type}${taskSummary}${statusSummary}${progressSummary}${logSummary}`,
         ...lines,
       ].slice(0, 80))
+      mergeTaskEvent(detail)
     }
 
     window.addEventListener('unreal-editor-webui', handleWebUIEvent)
     return () => window.removeEventListener('unreal-editor-webui', handleWebUIEvent)
-  }, [])
+  }, [mergeTaskEvent])
 
-  useEffect(() => {
-    try {
-      globalThis.localStorage?.setItem(RECENT_EXECUTIONS_STORAGE_KEY, JSON.stringify(recentExecutions))
-    } catch {
-      // Local storage is optional in embedded browser contexts.
-    }
-  }, [recentExecutions])
-
-  function log(message: string) {
-    const time = new Date().toLocaleTimeString()
-    setLogLines((lines) => [`[${time}] ${message}`, ...lines].slice(0, 80))
-  }
-
-  async function callBridge<T>(methodName: keyof NonNullable<typeof bridge>, ...args: string[]) {
+  const callBridge = useCallback(async <T,>(methodName: BridgeMethodName, ...args: string[]) => {
     if (!bridge || typeof bridge[methodName] !== 'function') {
       throw new Error(`Bridge method unavailable: ${methodName}`)
     }
@@ -286,7 +384,66 @@ function App() {
     }
 
     return response.result
-  }
+  }, [bridge, log])
+
+  const callBridgeQuiet = useCallback(async <T,>(methodName: BridgeMethodName, ...args: string[]) => {
+    if (!bridge || typeof bridge[methodName] !== 'function') {
+      throw new Error(`Bridge method unavailable: ${methodName}`)
+    }
+
+    const method = bridge[methodName] as (...methodArgs: string[]) => Promise<string>
+    const responseJson = await method(...args)
+    const response = JSON.parse(responseJson) as BridgeResponse<T>
+
+    if (!response.ok) {
+      throw new Error(response.error.message)
+    }
+
+    return response.result
+  }, [bridge])
+
+  useEffect(() => {
+    if (!bridgeReady || !activeTaskKey) {
+      return
+    }
+
+    let stopped = false
+    const taskIds = activeTaskKey.split('|')
+
+    async function refreshTasks() {
+      await Promise.all(taskIds.map(async (taskId) => {
+        try {
+          const task = await callBridgeQuiet<TaskResult>('gettask', taskId)
+          if (!stopped) {
+            mergeTaskResult(task)
+          }
+        } catch (error) {
+          if (!stopped) {
+            mergeTaskResult(
+              {
+                taskId,
+                status: 'failed',
+                progress: 100,
+              },
+              {
+                lastError: error instanceof Error ? error.message : String(error),
+              },
+            )
+          }
+        }
+      }))
+    }
+
+    void refreshTasks()
+    const intervalId = window.setInterval(() => {
+      void refreshTasks()
+    }, 1000)
+
+    return () => {
+      stopped = true
+      window.clearInterval(intervalId)
+    }
+  }, [activeTaskKey, bridgeReady, callBridgeQuiet, mergeTaskResult])
 
   async function runCommand<T>(command: string, payload: Record<string, unknown> = {}) {
     const request = {
@@ -305,21 +462,7 @@ function App() {
       payload,
     }
 
-    const task = await callBridge<TaskResult>('startcommand', JSON.stringify(request))
-    return task.taskId
-  }
-
-  async function pollTask(taskId: string) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const task = await callBridge<TaskResult>('gettask', taskId)
-      if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
-        return task
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
-
-    throw new Error(`Timed out waiting for task: ${taskId}`)
+    return callBridge<TaskResult>('startcommand', JSON.stringify(request))
   }
 
   async function loadCommands() {
@@ -335,6 +478,8 @@ function App() {
     try {
       const result = await callBridge<WebUISettings>('getwebuisettings')
       setSettings(result)
+      setSettingsDraft(result)
+      setSettingsMessage('')
     } catch (error) {
       log(error instanceof Error ? error.message : String(error))
     }
@@ -342,13 +487,51 @@ function App() {
 
   async function runAsyncDemo() {
     try {
-      const taskId = await startCommand('demo.run')
-      const task = await pollTask(taskId)
-      await callBridge<{ removed: boolean }>('removetask', taskId)
-      log(`async demo final response -> ${task.responseJson || 'no response'}`)
+      const task = await startCommand('demo.run')
+      mergeTaskResult(task, {
+        command: 'demo.run',
+        payload: {},
+        startedAt: new Date().toISOString(),
+      })
+      log(`async demo started -> ${task.taskId}`)
     } catch (error) {
       log(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  async function saveSettings() {
+    if (!settingsDraft) {
+      return
+    }
+
+    try {
+      const result = await callBridge<WebUISettings>('setwebuisettings', JSON.stringify({
+        useDevServer: settingsDraft.useDevServer,
+        devServerUrl: settingsDraft.devServerUrl,
+        startupUrl: settingsDraft.startupUrl,
+      }))
+      setSettings(result)
+      setSettingsDraft(result)
+      setSettingsMessage('Settings saved.')
+    } catch (error) {
+      setSettingsMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function updateSettingsDraft<K extends keyof WebUISettings>(key: K, value: WebUISettings[K]) {
+    setSettingsDraft((draft) => {
+      const current = draft || settings || {
+        useDevServer: false,
+        devServerUrl: 'http://localhost:5173',
+        startupUrl: '',
+        resolvedUrl: '',
+      }
+
+      return {
+        ...current,
+        [key]: value,
+      }
+    })
   }
 
   function confirmCommand(command: CommandMetadata) {
@@ -546,24 +729,48 @@ function App() {
       }
 
       const payload = buildPayload(command)
-      const taskId = await startCommand(command.name, payload)
-      const task = await pollTask(taskId)
-      await callBridge<{ removed: boolean }>('removetask', taskId)
-      log(`${command.name} task final response -> ${task.responseJson || 'no response'}`)
+      const task = await startCommand(command.name, payload)
+      mergeTaskResult(task, {
+        command: command.name,
+        payload,
+        startedAt: new Date().toISOString(),
+      })
+      log(`${command.name} task started -> ${task.taskId}`)
       recordRecentExecution(command, payload, 'task')
-
-      if (task.responseJson) {
-        const response = JSON.parse(task.responseJson) as BridgeResponse<unknown>
-        if (response.ok) {
-          setCommandResults((results) => ({
-            ...results,
-            [command.name]: response.result,
-          }))
-        }
-      }
     } catch (error) {
       log(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  async function cancelTask(taskId: string) {
+    try {
+      const task = await callBridge<TaskResult>('canceltask', taskId)
+      mergeTaskResult(task)
+    } catch (error) {
+      mergeTaskResult(
+        {
+          taskId,
+          status: taskRecords[taskId]?.status || 'failed',
+        },
+        {
+          lastError: error instanceof Error ? error.message : String(error),
+        },
+      )
+    }
+  }
+
+  async function removeTask(taskId: string) {
+    try {
+      await callBridge<{ removed: boolean }>('removetask', taskId)
+    } catch (error) {
+      log(error instanceof Error ? error.message : String(error))
+    }
+
+    setTaskRecords((records) => {
+      const next = { ...records }
+      delete next[taskId]
+      return next
+    })
   }
 
   function describeFieldConstraints(property: SchemaProperty) {
@@ -751,6 +958,108 @@ function App() {
             {item.mode === 'task' ? 'Task' : 'Run'} {formatRecentTime(item.ranAt)}
           </button>
         ))}
+      </div>
+    )
+  }
+
+  function renderTaskRecord(task: TaskRecord) {
+    const canCancel = task.status === 'queued'
+    const canRemove = isTerminalTaskStatus(task.status)
+
+    return (
+      <article className="task-card" key={task.taskId}>
+        <div className="task-card-header">
+          <div>
+            <strong>{task.command}</strong>
+            <small>{task.taskId}</small>
+          </div>
+          <span className={`badge ${task.status}`}>{task.status}</span>
+        </div>
+        <div className="task-progress">
+          <span style={{ width: `${task.progress ?? 0}%` }} />
+        </div>
+        <div className="task-meta">
+          <span>{task.progress ?? 0}%</span>
+          <span>{task.updatedAt ? formatRecentTime(task.updatedAt) : formatRecentTime(task.startedAt)}</span>
+        </div>
+        {task.lastError ? <p className="task-error">{task.lastError}</p> : null}
+        {task.status === 'running' ? <p className="muted">Running tasks cannot be interrupted by the current runner.</p> : null}
+        {task.logs && task.logs.length > 0 ? (
+          <pre>{task.logs.slice(-8).join('\n')}</pre>
+        ) : (
+          <p className="muted">No task logs yet.</p>
+        )}
+        {task.responseJson ? (
+          <details>
+            <summary>Response</summary>
+            <pre>{task.responseJson}</pre>
+          </details>
+        ) : null}
+        <div className="task-actions">
+          <button type="button" onClick={() => cancelTask(task.taskId)} disabled={!bridgeReady || !canCancel}>
+            Cancel
+          </button>
+          <button type="button" onClick={() => removeTask(task.taskId)} disabled={!bridgeReady || !canRemove}>
+            Remove
+          </button>
+        </div>
+      </article>
+    )
+  }
+
+  function renderSettingsEditor() {
+    const draft = settingsDraft || settings
+
+    if (!draft) {
+      return <p className="muted">Read settings from the bridge.</p>
+    }
+
+    return (
+      <div className="settings-editor">
+        <label className="schema-field checkbox" htmlFor="use-dev-server">
+          <input
+            id="use-dev-server"
+            type="checkbox"
+            checked={draft.useDevServer}
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              updateSettingsDraft('useDevServer', event.target.checked)
+            }
+          />
+          <span>Use dev server</span>
+        </label>
+        <label className="schema-field" htmlFor="dev-server-url">
+          <span>Dev server URL</span>
+          <input
+            id="dev-server-url"
+            value={draft.devServerUrl}
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              updateSettingsDraft('devServerUrl', event.target.value)
+            }
+          />
+        </label>
+        <label className="schema-field" htmlFor="startup-url">
+          <span>Startup URL</span>
+          <input
+            id="startup-url"
+            value={draft.startupUrl}
+            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+              updateSettingsDraft('startupUrl', event.target.value)
+            }
+          />
+        </label>
+        <div className="settings-resolved">
+          <span>Resolved URL</span>
+          <code>{settings?.resolvedUrl || '-'}</code>
+        </div>
+        {settingsMessage ? <p className="settings-message">{settingsMessage}</p> : null}
+        <div className="command-actions">
+          <button type="button" onClick={saveSettings} disabled={!bridgeReady}>
+            Save settings
+          </button>
+          <button type="button" onClick={loadSettings} disabled={!bridgeReady}>
+            Reload
+          </button>
+        </div>
       </div>
     )
   }
@@ -966,27 +1275,17 @@ function App() {
 
         <div className="panel">
           <h2>Startup Settings</h2>
-          {settings ? (
-            <dl className="settings">
-              <div>
-                <dt>Use dev server</dt>
-                <dd>{String(settings.useDevServer)}</dd>
-              </div>
-              <div>
-                <dt>Dev server URL</dt>
-                <dd>{settings.devServerUrl || '-'}</dd>
-              </div>
-              <div>
-                <dt>Startup URL</dt>
-                <dd>{settings.startupUrl || '-'}</dd>
-              </div>
-              <div>
-                <dt>Resolved URL</dt>
-                <dd>{settings.resolvedUrl || '-'}</dd>
-              </div>
-            </dl>
+          {renderSettingsEditor()}
+        </div>
+
+        <div className="panel task-panel">
+          <h2>Tasks</h2>
+          {taskList.length > 0 ? (
+            <div className="task-list">
+              {taskList.map((task) => renderTaskRecord(task))}
+            </div>
           ) : (
-            <p className="muted">Read settings from the bridge.</p>
+            <p className="muted">Started tasks will appear here.</p>
           )}
         </div>
 
