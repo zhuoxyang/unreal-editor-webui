@@ -6,7 +6,7 @@ type DraftValue = string | boolean
 type PermissionFilter = 'all' | 'read' | 'write' | 'destructive'
 type ExecutionMode = 'run' | 'task'
 type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
-type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out'
 
 type SchemaProperty = {
   type?: SchemaPropertyType | SchemaPropertyType[]
@@ -41,6 +41,11 @@ type CommandMetadata = {
   permission: 'read' | 'write' | 'destructive' | string
   schema: CommandSchema
   supportsDryRun?: boolean
+  execution?: {
+    thread?: string
+    cancellationMode?: string
+    timeoutPolicy?: string
+  }
 }
 
 type BridgeResponse<T> =
@@ -64,6 +69,11 @@ type TaskResult = {
   taskId: string
   status: TaskStatus
   progress?: number
+  cancellable?: boolean
+  cancellationMode?: string
+  executionThread?: string
+  timeoutPolicy?: string
+  message?: string
   logs?: string[]
   createdAt?: string
   updatedAt?: string
@@ -82,6 +92,11 @@ type WebUIEvent = {
   taskId?: string
   status?: string
   progress?: number
+  cancellable?: boolean
+  cancellationMode?: string
+  executionThread?: string
+  timeoutPolicy?: string
+  message?: string
   log?: string
   updatedAt?: string
   responseJson?: string
@@ -214,11 +229,18 @@ function formatRecentTime(value: string) {
 }
 
 function isTerminalTaskStatus(status: TaskStatus) {
-  return status === 'completed' || status === 'failed' || status === 'cancelled'
+  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'timed_out'
 }
 
 function parseTaskStatus(status: string | undefined): TaskStatus | null {
-  if (status === 'queued' || status === 'running' || status === 'completed' || status === 'failed' || status === 'cancelled') {
+  if (
+    status === 'queued' ||
+    status === 'running' ||
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'timed_out'
+  ) {
     return status
   }
 
@@ -303,6 +325,11 @@ function App() {
           payload,
           startedAt,
           progress: task.progress ?? existing?.progress ?? 0,
+          cancellable: task.cancellable ?? existing?.cancellable ?? false,
+          cancellationMode: task.cancellationMode ?? existing?.cancellationMode,
+          executionThread: task.executionThread ?? existing?.executionThread,
+          timeoutPolicy: task.timeoutPolicy ?? existing?.timeoutPolicy,
+          message: task.message ?? existing?.message,
           logs: task.logs ?? existing?.logs ?? [],
           updatedAt: task.updatedAt || existing?.updatedAt || new Date().toISOString(),
           lastError: fallback?.lastError ?? existing?.lastError,
@@ -335,6 +362,11 @@ function App() {
           startedAt: existing?.startedAt || detail.updatedAt || new Date().toISOString(),
           status,
           progress: detail.progress ?? existing?.progress ?? 0,
+          cancellable: detail.cancellable ?? existing?.cancellable ?? false,
+          cancellationMode: detail.cancellationMode ?? existing?.cancellationMode,
+          executionThread: detail.executionThread ?? existing?.executionThread,
+          timeoutPolicy: detail.timeoutPolicy ?? existing?.timeoutPolicy,
+          message: detail.message ?? existing?.message,
           logs,
           createdAt: existing?.createdAt,
           updatedAt: detail.updatedAt || new Date().toISOString(),
@@ -747,6 +779,16 @@ function App() {
       const task = await callBridge<TaskResult>('canceltask', taskId)
       mergeTaskResult(task)
     } catch (error) {
+      try {
+        const latest = await callBridgeQuiet<TaskResult>('gettask', taskId)
+        mergeTaskResult(latest, {
+          lastError: error instanceof Error ? error.message : String(error),
+        })
+        return
+      } catch {
+        // Keep the original cancel error if the follow-up refresh also fails.
+      }
+
       mergeTaskResult(
         {
           taskId,
@@ -963,7 +1005,7 @@ function App() {
   }
 
   function renderTaskRecord(task: TaskRecord) {
-    const canCancel = task.status === 'queued'
+    const canCancel = task.cancellable === true
     const canRemove = isTerminalTaskStatus(task.status)
 
     return (
@@ -982,8 +1024,13 @@ function App() {
           <span>{task.progress ?? 0}%</span>
           <span>{task.updatedAt ? formatRecentTime(task.updatedAt) : formatRecentTime(task.startedAt)}</span>
         </div>
+        <div className="task-lifecycle">
+          <span>{task.executionThread || 'unknown thread'}</span>
+          <span>cancel: {task.cancellationMode || (task.cancellable ? 'available' : 'not available')}</span>
+          <span>timeout: {task.timeoutPolicy || 'unknown'}</span>
+        </div>
         {task.lastError ? <p className="task-error">{task.lastError}</p> : null}
-        {task.status === 'running' ? <p className="muted">Running tasks cannot be interrupted by the current runner.</p> : null}
+        {task.message ? <p className="muted">{task.message}</p> : null}
         {task.logs && task.logs.length > 0 ? (
           <pre>{task.logs.slice(-8).join('\n')}</pre>
         ) : (
@@ -1238,6 +1285,11 @@ function App() {
                         {commandHasDryRun(command) ? (
                           <span className="badge dry-run" title="Dry-run capable">
                             dry-run
+                          </span>
+                        ) : null}
+                        {command.execution?.thread ? (
+                          <span className="badge execution" title="Task execution thread">
+                            {command.execution.thread}
                           </span>
                         ) : null}
                       </span>

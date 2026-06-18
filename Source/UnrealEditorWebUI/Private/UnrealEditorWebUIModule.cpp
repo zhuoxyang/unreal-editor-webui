@@ -142,7 +142,7 @@ private:
             .InitialURL(LastAllowedURL)
             .ShowControls(false)
             .SupportsTransparency(true)
-            .OnBeforeNavigation(FOnBeforeBrowse::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBeforeNavigation))
+            .OnBeforeNavigation(SWebBrowser::FOnBeforeBrowse::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBeforeNavigation))
             .OnUrlChanged(FOnTextChanged::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserUrlChanged));
 
         BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), true);

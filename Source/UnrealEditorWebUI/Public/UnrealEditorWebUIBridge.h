@@ -11,7 +11,12 @@ struct FUnrealEditorWebUITask
     FString RequestJson;
     FString ResponseJson;
     FString Status;
+    FString ExecutionThread;
+    FString CancellationMode;
+    FString TimeoutPolicy;
+    FString StatusMessage;
     int32 Progress = 0;
+    bool bCancellable = false;
     TArray<FString> Logs;
     FDateTime CreatedAt;
     FDateTime UpdatedAt;

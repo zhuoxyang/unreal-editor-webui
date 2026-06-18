@@ -11,7 +11,9 @@ Windows local validation on 2026-06-18:
 - Python registry tests: passed with `python -m unittest discover -s tests` (15 tests).
 - Windows packaging script missing-RunUAT failure path: passed with `powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 Z:\missing\RunUAT.bat $env:TEMP\UnrealEditorWebUI-MissingRunUAT`.
 - Whitespace diff check: passed with `git diff --check` (Windows line-ending warnings only).
-- UE native settings integration was source-reviewed against `UDeveloperSettings` APIs, but not BuildPlugin-compiled on this Windows machine because no local Unreal Engine `RunUAT` path is discoverable.
+- UE 5.5 BuildPlugin: passed on Windows 11 with `C:\Program Files\Epic Games\UE_5.5\Engine\Build\BatchFiles\RunUAT.bat`.
+- UE 5.5 BuildPlugin output: `C:\Users\zhuolyang\AppData\Local\Temp\UnrealEditorWebUI-Package-UE55-20260618213925`.
+- UE 5.5 settings smoke: `scripts/validate-settings-smoke.py` loaded `UUnrealEditorWebUIEditorSettings` in a temporary host project and confirmed the expected Project Settings path `Project > Plugins > Unreal Editor WebUI`. The smoke script passed; the commandlet process reported a non-zero exit because a user-global `C:/Users/zhuolyang/Documents/UnrealEngine/Python/init_unreal.py` startup script logged an unrelated LightAI error before the smoke script ran.
 
 CI coverage added in `.github/workflows/ci.yml`:
 
@@ -61,4 +63,4 @@ powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
   "$env:TEMP\UnrealEditorWebUI-Package"
 ```
 
-Use the same pattern for UE 5.5 or UE 5.6 by replacing the engine directory. The current Windows machine used for local validation does not have a discoverable Unreal Engine `RunUAT` path, so BuildPlugin was not rerun here.
+Use the same pattern for UE 5.6 or newer by replacing the engine directory.

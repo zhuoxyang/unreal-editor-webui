@@ -10,16 +10,16 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - `UObject` bridge exposed to JavaScript as `window.ue.editorwebui`.
 - Typed JSON command bridge via `executecommand(requestJson)`.
 - Task-style command API via `startcommand`, `gettask`, `canceltask`, and `removetask`.
-- Task status, progress, log, cancellation, and cleanup APIs pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
+- Task status, progress, log, cancellation, execution policy, timeout policy, and cleanup APIs pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
 - Configurable startup URL support for local packaged UI or loopback dev servers.
 - Native settings surface under `Project Settings > Plugins > Unreal Editor WebUI`, mirrored to the legacy ini keys.
 - Unsafe browser navigation is redirected back to the last allowed bridge URL.
-- Python command registry with command metadata, permission labels, recursive payload schema validation, defaults, and dry-run markers.
+- Python command registry with command metadata, permission labels, execution metadata, recursive payload schema validation, defaults, and dry-run markers.
 - React/Vite frontend that discovers commands, generates schema-aware forms, filters command lists, and builds into `Web/dist`.
 - Frontend and native editor confirmation guards for `write` and `destructive` commands.
 - Exact command capability policy for privileged command execution.
 - Bounded task storage with cleanup for completed task records.
-- Persistent React task panel with progress, logs, cancellation, and task cleanup actions.
+- Persistent React task panel with progress, logs, explicit cancellability, execution policy, timeout policy, and task cleanup actions.
 - Editable React startup settings form backed by `getwebuisettings` and `setwebuisettings`.
 - Command-specific table result views for starter asset commands.
 - Recent payload reuse and schema-default presets in the command console.
@@ -43,7 +43,7 @@ Keep the first version focused on editor tooling:
 - Web UI handles layout and user interaction.
 - C++ owns the Unreal-facing bridge and editor tab lifecycle.
 - Python handles editor automation, asset workflows, and pipeline tasks through explicit command handlers.
-- Long-running work should expose task state and progress; truly heavy work should move out of blocking editor Python handlers.
+- Long-running work should expose task state and progress; editor-thread-bound Python handlers must be explicit, and truly heavy work should move out to external processes, editor-safe async jobs, or cooperative workers that marshal Unreal API access back to the game thread.
 
 Runtime/game UI support is intentionally out of scope for the initial version.
 
@@ -55,7 +55,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - `Web/index.html` loads in the dockable tab.
 - JavaScript can call `executecommand` with a JSON request.
 - JavaScript can start a task and poll it until completion.
-- JavaScript can cancel queued tasks and inspect task progress/log lines.
+- JavaScript can cancel queued tasks and inspect task progress/log lines plus explicit cancellability and timeout policy.
 - JavaScript can receive pushed task status events.
 - Startup URL can switch between packaged local HTML and a loopback dev server.
 - Startup settings are discoverable under `Project Settings > Plugins > Unreal Editor WebUI`.
@@ -71,6 +71,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - Frontend can generate runnable forms from command metadata.
 - Frontend can search commands, filter by permission, load schema defaults, and reuse recent payloads.
 - Frontend can track active/completed tasks without relying on a fixed short polling timeout.
+- Running editor-thread tasks are shown as non-cancellable instead of exposing a misleading cancel action.
 - Frontend can edit startup settings and display bridge validation errors.
 - Python registry validates nested objects, arrays, numeric bounds, string bounds, defaults, and dry-run schema markers.
 - Asset demo commands return useful editor data.

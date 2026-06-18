@@ -334,7 +334,8 @@ button:disabled {
 }
 
 .badge.failed,
-.badge.cancelled {
+.badge.cancelled,
+.badge.timed_out {
   background: rgba(244, 63, 94, 0.14);
   color: #fda4af;
 }
@@ -342,6 +343,11 @@ button:disabled {
 .badge.dry-run {
   background: rgba(147, 197, 253, 0.14);
   color: #bfdbfe;
+}
+
+.badge.execution {
+  background: rgba(168, 85, 247, 0.14);
+  color: #ddd6fe;
 }
 
 .settings-editor {
@@ -426,6 +432,21 @@ button:disabled {
   justify-content: space-between;
   color: var(--text);
   font-size: 12px;
+}
+
+.task-lifecycle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.task-lifecycle span {
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(148, 163, 184, 0.12);
 }
 
 .task-card pre {

@@ -22,7 +22,7 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Exposes Web UI startup configuration in `Project Settings > Plugins > Unreal Editor WebUI`.
 - Restricts bridge-capable startup and navigation URLs to packaged `Web/` files, `about:blank`, or loopback `http(s)` hosts.
 - Exposes synchronous and task-style bridge methods to JavaScript.
-- Tracks task progress, logs, cancellation state, and bounded cleanup for task-style commands.
+- Tracks task progress, logs, cancellation state, execution thread, timeout policy, and bounded cleanup for task-style commands.
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Shows active/completed task records in a persistent React task panel with progress, logs, cancellation, and cleanup controls.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
@@ -143,9 +143,11 @@ const task = JSON.parse(await window.ue.editorwebui.gettask(taskId));
 await window.ue.editorwebui.removetask(taskId);
 ```
 
-Use `canceltask(taskId)` only for queued work that should not run. The React console keeps started tasks in a task panel and polls them until they reach `completed`, `failed`, or `cancelled`, so long-running task UI is no longer tied to a short fixed timeout.
+Use `canceltask(taskId)` for queued work that should not run. Task records expose `cancellable`, `cancellationMode`, `executionThread`, `timeoutPolicy`, and `message` so clients can show whether cancellation is currently available instead of guessing from status alone. The React console keeps started tasks in a task panel and polls them until they reach `completed`, `failed`, `cancelled`, or `timed_out`, so long-running task UI is no longer tied to a short fixed timeout.
 
-The current task runner queues work back onto the editor game thread before calling Python. It is useful for request lifecycle and polling, but long Python handlers can still block the editor while they execute. Heavy work should eventually move to dedicated background workers or external processes.
+The current built-in Python command registry is marked as `execution.thread = "editor_game_thread"` with `cancellationMode = "queued_only"` and `timeoutPolicy = "none"`. This is intentional because the starter commands call Unreal Editor APIs that are not safe to invoke from arbitrary background threads. Queued tasks can be cancelled before execution. Once a task enters the running state, the bridge marks it non-cancellable and reports why.
+
+For future long-running workflows, keep the WebUI bridge as the lifecycle/control plane and move only the safe work unit off the editor thread: use an external process, an editor-safe UE async task that marshals Unreal API access back to the game thread, or a cooperative job that periodically persists progress and checks cancellation. Commands that remain editor-thread-bound should stay explicit in metadata and keep handlers short.
 
 Task status changes are also pushed into the browser as DOM events:
 
@@ -155,7 +157,7 @@ window.addEventListener("unreal-editor-webui", (event) => {
 });
 ```
 
-The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, `failed`, and `cancelled`. Task payloads can include `progress` from 0 to 100, a short `log` line, and the final `responseJson`. Cancellation is best-effort and only stops queued tasks; running Python commands cannot be interrupted by the current game-thread task runner.
+The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, `failed`, `cancelled`, and `timed_out`. Task payloads can include `progress` from 0 to 100, a short `log` line, lifecycle fields, and the final `responseJson`. Cancellation is best-effort and only stops queued tasks; running Python commands cannot be interrupted by the current game-thread task runner.
 
 ## Web UI Startup Settings
 
@@ -229,6 +231,5 @@ The frontend renders those asset results as tables instead of raw JSON, while ot
 
 ## Roadmap
 
-- Verify `BuildPlugin` with a local UE 5.5 install.
 - Add more command-specific result views and production editor workflows.
 - Add tests or a sample host UE project.

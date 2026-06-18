@@ -39,6 +39,8 @@ rsync -a --delete \
   --exclude "frontend/node_modules/" \
   --exclude "frontend/dist/" \
   --exclude "node_modules/" \
+  --exclude "Python/__pycache__/" \
+  --exclude "tests/__pycache__/" \
   "$ROOT_DIR/" "$PLUGIN_STAGE/"
 
 "$RUN_UAT" BuildPlugin \

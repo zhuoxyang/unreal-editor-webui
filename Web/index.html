@@ -168,20 +168,18 @@
       }
 
       async function pollTask(taskId) {
-        for (let attempt = 0; attempt < 20; attempt += 1) {
+        while (true) {
           const taskJson = await callBridge("gettask", taskId);
           const taskResponse = JSON.parse(taskJson);
           log(`task ${taskId} -> ${JSON.stringify(taskResponse, null, 2)}`);
 
           const status = taskResponse.ok && taskResponse.result && taskResponse.result.status;
-          if (status === "completed" || status === "failed" || status === "cancelled") {
+          if (status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out") {
             return taskResponse.result;
           }
 
-          await new Promise((resolve) => setTimeout(resolve, 250));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
         }
-
-        throw new Error(`Timed out waiting for task: ${taskId}`);
       }
 
       document.querySelector("#ping").addEventListener("click", () => {

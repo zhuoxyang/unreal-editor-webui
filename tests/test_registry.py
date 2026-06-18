@@ -143,6 +143,9 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["command"], "editor.log")
         self.assertEqual(response["result"]["permission"], "write")
+        self.assertEqual(response["result"]["execution"]["thread"], "editor_game_thread")
+        self.assertEqual(response["result"]["execution"]["cancellationMode"], "queued_only")
+        self.assertEqual(response["result"]["execution"]["timeoutPolicy"], "none")
 
     def test_unknown_command_is_rejected(self):
         response = parse_response(self.registry.execute_command(request("missing.command")))
@@ -283,6 +286,7 @@ class RegistryTests(unittest.TestCase):
         editor_log = commands["editor.log"]
         self.assertTrue(editor_log["supportsDryRun"])
         self.assertTrue(editor_log["schema"]["properties"]["dryRun"]["xDryRun"])
+        self.assertEqual(editor_log["execution"]["thread"], "editor_game_thread")
 
     def test_handler_exception_hides_traceback_from_response(self):
         @self.registry.command("test.raise")

@@ -21,6 +21,9 @@ def command(
     permission: str = "read",
     schema: dict[str, Any] | None = None,
     supports_dry_run: bool = False,
+    execution_thread: str = "editor_game_thread",
+    cancellation_mode: str = "queued_only",
+    timeout_policy: str = "none",
 ) -> Callable[[CommandHandler], CommandHandler]:
     """Register a Python command that can be called from the editor Web UI."""
 
@@ -32,6 +35,11 @@ def command(
             "permission": permission,
             "schema": schema or {"type": "object", "properties": {}},
             "supportsDryRun": supports_dry_run,
+            "execution": {
+                "thread": execution_thread,
+                "cancellationMode": cancellation_mode,
+                "timeoutPolicy": timeout_policy,
+            },
         }
         return handler
 
@@ -309,6 +317,7 @@ def inspect_command(request_json: str) -> str:
             {
                 "command": command_name,
                 "permission": str(metadata.get("permission", "read")),
+                "execution": metadata.get("execution", {}),
             },
         )
 

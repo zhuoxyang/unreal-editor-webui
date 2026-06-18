@@ -30,7 +30,9 @@ try {
         (Join-Path $RootDir "Saved"),
         (Join-Path $RootDir "frontend/node_modules"),
         (Join-Path $RootDir "frontend/dist"),
-        (Join-Path $RootDir "node_modules")
+        (Join-Path $RootDir "node_modules"),
+        (Join-Path $RootDir "Python/__pycache__"),
+        (Join-Path $RootDir "tests/__pycache__")
     )
 
     & robocopy $RootDir $PluginStage /MIR /XD $excludeDirs /XF ".DS_Store" | Out-Host
