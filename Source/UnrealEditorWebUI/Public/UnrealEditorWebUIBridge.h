@@ -11,6 +11,8 @@ struct FUnrealEditorWebUITask
     FString RequestJson;
     FString ResponseJson;
     FString Status;
+    int32 Progress = 0;
+    TArray<FString> Logs;
     FDateTime CreatedAt;
     FDateTime UpdatedAt;
 };
@@ -39,6 +41,9 @@ public:
     FString RemoveTask(const FString& TaskId);
 
     UFUNCTION()
+    FString CancelTask(const FString& TaskId);
+
+    UFUNCTION()
     FString GetWebUISettings() const;
 
     UFUNCTION()
@@ -46,8 +51,18 @@ public:
 
 private:
     void RunTask(const FString TaskId, const FString RequestJson);
-    void UpdateTaskStatus(const FString& TaskId, const FString& Status, const FString& ResponseJson = FString());
-    void BroadcastTaskEvent(const FString& TaskId, const FString& Status, const FString& ResponseJson = FString());
+    void UpdateTaskStatus(
+        const FString& TaskId,
+        const FString& Status,
+        const FString& ResponseJson = FString(),
+        int32 Progress = INDEX_NONE,
+        const FString& LogLine = FString());
+    void BroadcastTaskEvent(
+        const FString& TaskId,
+        const FString& Status,
+        const FString& ResponseJson = FString(),
+        int32 Progress = INDEX_NONE,
+        const FString& LogLine = FString());
     FString ExecuteRegistryFunction(
         const FString& RequestJson,
         const FString& FunctionName,

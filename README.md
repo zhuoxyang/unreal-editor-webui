@@ -21,6 +21,7 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Supports local static Web UI and configurable dev server startup URLs.
 - Restricts bridge-capable startup and navigation URLs to packaged `Web/` files, `about:blank`, or loopback `http(s)` hosts.
 - Exposes synchronous and task-style bridge methods to JavaScript.
+- Tracks task progress, logs, cancellation state, and bounded cleanup for task-style commands.
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
@@ -139,6 +140,8 @@ const task = JSON.parse(await window.ue.editorwebui.gettask(taskId));
 await window.ue.editorwebui.removetask(taskId);
 ```
 
+Use `canceltask(taskId)` only for queued work that should not run.
+
 The current task runner queues work back onto the editor game thread before calling Python. It is useful for request lifecycle and polling, but long Python handlers can still block the editor while they execute. Heavy work should eventually move to dedicated background workers or external processes.
 
 Task status changes are also pushed into the browser as DOM events:
@@ -149,7 +152,7 @@ window.addEventListener("unreal-editor-webui", (event) => {
 });
 ```
 
-The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, and `failed`.
+The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, `failed`, and `cancelled`. Task payloads can include `progress` from 0 to 100, a short `log` line, and the final `responseJson`. Cancellation is best-effort and only stops queued tasks; running Python commands cannot be interrupted by the current game-thread task runner.
 
 ## Web UI Startup Settings
 

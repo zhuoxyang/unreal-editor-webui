@@ -22,6 +22,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogUnrealEditorWebUIBridge, Log, All);
 namespace
 {
     constexpr int32 MaxStoredTasks = 64;
+    constexpr int32 MaxTaskLogLines = 80;
 
     FString WriteJsonObject(const TSharedRef<FJsonObject>& JsonObject)
     {
@@ -102,7 +103,21 @@ namespace
 
     bool IsFinishedTaskStatus(const FString& Status)
     {
-        return Status == TEXT("completed") || Status == TEXT("failed");
+        return Status == TEXT("completed") || Status == TEXT("failed") || Status == TEXT("cancelled");
+    }
+
+    void AppendTaskLogLocked(FUnrealEditorWebUITask& Task, const FString& LogLine)
+    {
+        if (LogLine.IsEmpty())
+        {
+            return;
+        }
+
+        Task.Logs.Add(LogLine);
+        while (Task.Logs.Num() > MaxTaskLogLines)
+        {
+            Task.Logs.RemoveAt(0);
+        }
     }
 
     bool IsPrivilegedPermission(const FString& Permission)
@@ -313,10 +328,12 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
         Task.RequestJson = RequestJson;
         Task.Status = TEXT("queued");
+        Task.Progress = 0;
         Task.CreatedAt = Now;
         Task.UpdatedAt = Now;
+        AppendTaskLogLocked(Task, TEXT("Task queued."));
     }
-    BroadcastTaskEvent(TaskId, TEXT("queued"));
+    BroadcastTaskEvent(TaskId, TEXT("queued"), FString(), 0, TEXT("Task queued."));
 
     const TWeakObjectPtr<UUnrealEditorWebUIBridge> WeakThis(this);
     AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson]()
@@ -330,6 +347,7 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetStringField(TEXT("taskId"), TaskId);
     Result->SetStringField(TEXT("status"), TEXT("queued"));
+    Result->SetNumberField(TEXT("progress"), 0);
     return MakeSuccessResponse(ExtractRequestId(RequestJson), Result);
 }
 
@@ -345,8 +363,16 @@ FString UUnrealEditorWebUIBridge::GetTask(const FString& TaskId) const
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetStringField(TEXT("taskId"), TaskId);
     Result->SetStringField(TEXT("status"), Task->Status);
+    Result->SetNumberField(TEXT("progress"), Task->Progress);
     Result->SetStringField(TEXT("createdAt"), Task->CreatedAt.ToIso8601());
     Result->SetStringField(TEXT("updatedAt"), Task->UpdatedAt.ToIso8601());
+
+    TArray<TSharedPtr<FJsonValue>> LogValues;
+    for (const FString& LogLine : Task->Logs)
+    {
+        LogValues.Add(MakeShared<FJsonValueString>(LogLine));
+    }
+    Result->SetArrayField(TEXT("logs"), LogValues);
 
     if (!Task->ResponseJson.IsEmpty())
     {
@@ -367,6 +393,51 @@ FString UUnrealEditorWebUIBridge::RemoveTask(const FString& TaskId)
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetStringField(TEXT("taskId"), TaskId);
     Result->SetBoolField(TEXT("removed"), true);
+    return MakeSuccessResponse(FString(), Result);
+}
+
+FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
+{
+    FString Status;
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+        if (Task == nullptr)
+        {
+            return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
+        }
+
+        if (Task->Status == TEXT("queued"))
+        {
+            Task->Status = TEXT("cancelled");
+            Task->Progress = 100;
+            Task->UpdatedAt = FDateTime::UtcNow();
+            AppendTaskLogLocked(*Task, TEXT("Task cancelled before execution."));
+            Status = Task->Status;
+        }
+        else if (Task->Status == TEXT("running"))
+        {
+            return MakeErrorResponse(
+                FString(),
+                TEXT("task_already_running"),
+                TEXT("Running Python commands cannot be interrupted by the current task runner."));
+        }
+        else
+        {
+            return MakeErrorResponse(
+                FString(),
+                TEXT("task_not_cancellable"),
+                FString::Printf(TEXT("Task is already %s."), *Task->Status));
+        }
+    }
+
+    BroadcastTaskEvent(TaskId, Status, FString(), 100, TEXT("Task cancelled before execution."));
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("taskId"), TaskId);
+    Result->SetStringField(TEXT("status"), Status);
+    Result->SetNumberField(TEXT("progress"), 100);
+    Result->SetBoolField(TEXT("cancelled"), true);
     return MakeSuccessResponse(FString(), Result);
 }
 
@@ -462,7 +533,16 @@ void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)
 
 void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString RequestJson)
 {
-    UpdateTaskStatus(TaskId, TEXT("running"));
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+        if (Task == nullptr || Task->Status == TEXT("cancelled"))
+        {
+            return;
+        }
+    }
+
+    UpdateTaskStatus(TaskId, TEXT("running"), FString(), 10, TEXT("Task running on the editor game thread."));
 
     const FString ResponseJson = ExecuteCommand(RequestJson);
     const TSharedRef<FJsonObject> Response = ParseJsonObjectOrEmpty(ResponseJson);
@@ -470,10 +550,20 @@ void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString Reque
     bool bOk = false;
     Response->TryGetBoolField(TEXT("ok"), bOk);
 
-    UpdateTaskStatus(TaskId, bOk ? TEXT("completed") : TEXT("failed"), ResponseJson);
+    UpdateTaskStatus(
+        TaskId,
+        bOk ? TEXT("completed") : TEXT("failed"),
+        ResponseJson,
+        100,
+        bOk ? TEXT("Task completed.") : TEXT("Task failed."));
 }
 
-void UUnrealEditorWebUIBridge::UpdateTaskStatus(const FString& TaskId, const FString& Status, const FString& ResponseJson)
+void UUnrealEditorWebUIBridge::UpdateTaskStatus(
+    const FString& TaskId,
+    const FString& Status,
+    const FString& ResponseJson,
+    int32 Progress,
+    const FString& LogLine)
 {
     {
         FScopeLock Lock(&TasksCriticalSection);
@@ -481,17 +571,27 @@ void UUnrealEditorWebUIBridge::UpdateTaskStatus(const FString& TaskId, const FSt
         {
             Task->Status = Status;
             Task->UpdatedAt = FDateTime::UtcNow();
+            if (Progress != INDEX_NONE)
+            {
+                Task->Progress = FMath::Clamp(Progress, 0, 100);
+            }
             if (!ResponseJson.IsEmpty())
             {
                 Task->ResponseJson = ResponseJson;
             }
+            AppendTaskLogLocked(*Task, LogLine);
         }
     }
 
-    BroadcastTaskEvent(TaskId, Status, ResponseJson);
+    BroadcastTaskEvent(TaskId, Status, ResponseJson, Progress, LogLine);
 }
 
-void UUnrealEditorWebUIBridge::BroadcastTaskEvent(const FString& TaskId, const FString& Status, const FString& ResponseJson)
+void UUnrealEditorWebUIBridge::BroadcastTaskEvent(
+    const FString& TaskId,
+    const FString& Status,
+    const FString& ResponseJson,
+    int32 Progress,
+    const FString& LogLine)
 {
     if (!EventDispatcher)
     {
@@ -503,6 +603,14 @@ void UUnrealEditorWebUIBridge::BroadcastTaskEvent(const FString& TaskId, const F
     Root->SetStringField(TEXT("taskId"), TaskId);
     Root->SetStringField(TEXT("status"), Status);
     Root->SetStringField(TEXT("updatedAt"), FDateTime::UtcNow().ToIso8601());
+    if (Progress != INDEX_NONE)
+    {
+        Root->SetNumberField(TEXT("progress"), FMath::Clamp(Progress, 0, 100));
+    }
+    if (!LogLine.IsEmpty())
+    {
+        Root->SetStringField(TEXT("log"), LogLine);
+    }
     if (!ResponseJson.IsEmpty())
     {
         Root->SetStringField(TEXT("responseJson"), ResponseJson);

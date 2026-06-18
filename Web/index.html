@@ -174,7 +174,7 @@
           log(`task ${taskId} -> ${JSON.stringify(taskResponse, null, 2)}`);
 
           const status = taskResponse.ok && taskResponse.result && taskResponse.result.status;
-          if (status === "completed" || status === "failed") {
+          if (status === "completed" || status === "failed" || status === "cancelled") {
             return taskResponse.result;
           }
 

@@ -9,8 +9,8 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Dockable editor tab powered by `SWebBrowser`.
 - `UObject` bridge exposed to JavaScript as `window.ue.editorwebui`.
 - Typed JSON command bridge via `executecommand(requestJson)`.
-- Task-style command API via `startcommand`, `gettask`, and `removetask`.
-- Task status events pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
+- Task-style command API via `startcommand`, `gettask`, `canceltask`, and `removetask`.
+- Task status, progress, log, cancellation, and cleanup APIs pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
 - Configurable startup URL support for local packaged UI or loopback dev servers.
 - Unsafe browser navigation is redirected back to the last allowed bridge URL.
 - Python command registry with command metadata, permission labels, and payload schema validation.
@@ -51,6 +51,7 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - `Web/index.html` loads in the dockable tab.
 - JavaScript can call `executecommand` with a JSON request.
 - JavaScript can start a task and poll it until completion.
+- JavaScript can cancel queued tasks and inspect task progress/log lines.
 - JavaScript can receive pushed task status events.
 - Startup URL can switch between packaged local HTML and a loopback dev server.
 - Unsafe remote, `javascript:`, or `data:` startup URLs are rejected.

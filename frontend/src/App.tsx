@@ -45,7 +45,9 @@ type BridgeResponse<T> =
 
 type TaskResult = {
   taskId: string
-  status: 'queued' | 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  progress?: number
+  logs?: string[]
   responseJson?: string
 }
 
@@ -60,6 +62,8 @@ type WebUIEvent = {
   type: string
   taskId?: string
   status?: string
+  progress?: number
+  log?: string
   updatedAt?: string
   responseJson?: string
 }
@@ -95,6 +99,7 @@ declare global {
         startcommand(requestJson: string): Promise<string>
         gettask(taskId: string): Promise<string>
         removetask(taskId: string): Promise<string>
+        canceltask(taskId: string): Promise<string>
         getwebuisettings(): Promise<string>
         setwebuisettings(settingsJson: string): Promise<string>
       }
@@ -143,8 +148,10 @@ function App() {
       const time = new Date().toLocaleTimeString()
       const taskSummary = detail.taskId ? ` ${detail.taskId}` : ''
       const statusSummary = detail.status ? ` ${detail.status}` : ''
+      const progressSummary = typeof detail.progress === 'number' ? ` ${detail.progress}%` : ''
+      const logSummary = detail.log ? ` ${detail.log}` : ''
       setEventLines((lines) => [
-        `[${time}] ${detail.type}${taskSummary}${statusSummary}`,
+        `[${time}] ${detail.type}${taskSummary}${statusSummary}${progressSummary}${logSummary}`,
         ...lines,
       ].slice(0, 80))
     }
@@ -199,7 +206,7 @@ function App() {
   async function pollTask(taskId: string) {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const task = await callBridge<TaskResult>('gettask', taskId)
-      if (task.status === 'completed' || task.status === 'failed') {
+      if (task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') {
         return task
       }
 
