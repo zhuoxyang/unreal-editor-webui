@@ -9,6 +9,7 @@ Windows local validation on 2026-06-18:
 - Plugin descriptor JSON: passed with `python3 -m json.tool UnrealEditorWebUI.uplugin`.
 - Python syntax: passed with `python3 -m py_compile Python/*.py`.
 - Python registry tests: passed with `python -m unittest discover -s tests`.
+- Windows packaging script missing-RunUAT failure path: passed with `powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 Z:\missing\RunUAT.bat $env:TEMP\UnrealEditorWebUI-MissingRunUAT`.
 - Whitespace diff check: passed with `git diff --check` (Windows line-ending warnings only).
 
 CI coverage added in `.github/workflows/ci.yml`:
@@ -16,7 +17,7 @@ CI coverage added in `.github/workflows/ci.yml`:
 - Node 22 frontend install/build/lint.
 - Python 3.11 descriptor, syntax, registry unit tests, and whitespace validation.
 
-Historical validation:
+Historical UE validation:
 
 - UE 5.7 BuildPlugin: passed on macOS arm64+x64 with `scripts/package-plugin.sh`.
 - UE 5.7 real project smoke test: passed with `/Users/zhuolyang/Documents/Unreal Projects/nuts/nuts.uproject`.
@@ -39,14 +40,24 @@ Validated:
 - UE Editor opened the project successfully.
 - `Window > Unreal Editor WebUI` loaded the demo Web UI successfully.
 
-## UE 5.5 Status
+## BuildPlugin Commands
 
-UE 5.5 is still pending validation because this machine only has `UE_5.7` installed under `/Users/Shared/Epic Games`.
+Run the packaging helper that matches your platform. The script stages a clean plugin copy and then calls `RunUAT BuildPlugin`.
 
-When a UE 5.5 installation is available, run:
+macOS/Linux:
 
 ```sh
 bash scripts/package-plugin.sh \
-  "/path/to/UE_5.5/Engine/Build/BatchFiles/RunUAT.sh" \
-  /tmp/UnrealEditorWebUI-UE55-Package
+  "/path/to/UE_5.7/Engine/Build/BatchFiles/RunUAT.sh" \
+  /tmp/UnrealEditorWebUI-Package
 ```
+
+Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
+  "C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\RunUAT.bat" `
+  "$env:TEMP\UnrealEditorWebUI-Package"
+```
+
+Use the same pattern for UE 5.5 or UE 5.6 by replacing the engine directory. The current Windows machine used for local validation does not have a discoverable Unreal Engine `RunUAT` path, so BuildPlugin was not rerun here.

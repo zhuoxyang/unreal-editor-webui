@@ -12,6 +12,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STAGING_DIR="$(mktemp -d)"
 PLUGIN_STAGE="$STAGING_DIR/UnrealEditorWebUI"
 
+if [[ ! -f "$RUN_UAT" ]]; then
+  echo "RunUAT path not found: $RUN_UAT" >&2
+  exit 1
+fi
+
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "rsync is required to stage the plugin package." >&2
+  exit 1
+fi
+
 cleanup() {
   rm -rf "$STAGING_DIR"
 }

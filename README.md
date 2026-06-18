@@ -76,12 +76,20 @@ The build output is written to `Web/dist`. If that folder is missing, the plugin
 
 ## Package The Plugin
 
-Use the repository script when packaging after frontend development. It stages a clean copy of the plugin and excludes local dependency folders such as `frontend/node_modules`.
+Use the repository scripts when packaging after frontend development. They stage a clean copy of the plugin and exclude local dependency folders such as `frontend/node_modules`.
 
 ```sh
 bash scripts/package-plugin.sh \
   "/Users/Shared/Epic Games/UE_5.7/Engine/Build/BatchFiles/RunUAT.sh" \
   /tmp/UnrealEditorWebUI-Package
+```
+
+On Windows, use the PowerShell script with `RunUAT.bat`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
+  "C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\RunUAT.bat" `
+  "$env:TEMP\UnrealEditorWebUI-Package"
 ```
 
 You can still run `RunUAT BuildPlugin` directly from a clean checkout, but the script is safer after `npm install`.
