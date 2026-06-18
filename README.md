@@ -19,6 +19,7 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Opens a dockable editor tab backed by `SWebBrowser`.
 - Loads `Web/dist/index.html` when a frontend build exists, otherwise falls back to `Web/index.html`.
 - Supports local static Web UI and configurable dev server startup URLs.
+- Exposes Web UI startup configuration in `Project Settings > Plugins > Unreal Editor WebUI`.
 - Restricts bridge-capable startup and navigation URLs to packaged `Web/` files, `about:blank`, or loopback `http(s)` hosts.
 - Exposes synchronous and task-style bridge methods to JavaScript.
 - Tracks task progress, logs, cancellation state, and bounded cleanup for task-style commands.
@@ -157,7 +158,9 @@ The current event type is `task.status`, with statuses such as `queued`, `runnin
 
 ## Web UI Startup Settings
 
-The plugin reads startup settings from the per-project editor ini section `UnrealEditorWebUI`:
+The easiest path is `Edit > Project Settings > Plugins > Unreal Editor WebUI`. These settings are backed by UE's native settings system and mirrored to the existing per-project editor ini section `UnrealEditorWebUI` for compatibility.
+
+You can also configure the same values directly in ini:
 
 ```ini
 [UnrealEditorWebUI]

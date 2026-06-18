@@ -24,6 +24,7 @@ public class UnrealEditorWebUI : ModuleRules
             new[]
             {
                 "ApplicationCore",
+                "DeveloperSettings",
                 "InputCore",
                 "LevelEditor",
                 "Projects",

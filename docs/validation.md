@@ -11,6 +11,7 @@ Windows local validation on 2026-06-18:
 - Python registry tests: passed with `python -m unittest discover -s tests` (15 tests).
 - Windows packaging script missing-RunUAT failure path: passed with `powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 Z:\missing\RunUAT.bat $env:TEMP\UnrealEditorWebUI-MissingRunUAT`.
 - Whitespace diff check: passed with `git diff --check` (Windows line-ending warnings only).
+- UE native settings integration was source-reviewed against `UDeveloperSettings` APIs, but not BuildPlugin-compiled on this Windows machine because no local Unreal Engine `RunUAT` path is discoverable.
 
 CI coverage added in `.github/workflows/ci.yml`:
 

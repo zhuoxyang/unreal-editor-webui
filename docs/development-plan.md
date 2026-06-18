@@ -12,6 +12,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Task-style command API via `startcommand`, `gettask`, `canceltask`, and `removetask`.
 - Task status, progress, log, cancellation, and cleanup APIs pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
 - Configurable startup URL support for local packaged UI or loopback dev servers.
+- Native settings surface under `Project Settings > Plugins > Unreal Editor WebUI`, mirrored to the legacy ini keys.
 - Unsafe browser navigation is redirected back to the last allowed bridge URL.
 - Python command registry with command metadata, permission labels, recursive payload schema validation, defaults, and dry-run markers.
 - React/Vite frontend that discovers commands, generates schema-aware forms, filters command lists, and builds into `Web/dist`.
@@ -31,7 +32,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 2. Add more command-specific result renderers for validation reports.
 3. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
 4. Expand the asset-tool demo with validation and batch operations.
-5. Add UE native settings panels for the Web UI startup and bridge safety options.
+5. Add optional validation/status widgets for Web UI startup and bridge safety options.
 
 ## Design Direction
 
@@ -55,6 +56,8 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - JavaScript can cancel queued tasks and inspect task progress/log lines.
 - JavaScript can receive pushed task status events.
 - Startup URL can switch between packaged local HTML and a loopback dev server.
+- Startup settings are discoverable under `Project Settings > Plugins > Unreal Editor WebUI`.
+- Existing `[UnrealEditorWebUI]` ini keys continue to be read and written by bridge APIs.
 - Unsafe remote, `javascript:`, or `data:` startup URLs are rejected.
 - Unsafe browser navigation is redirected away after URL changes.
 - C++ can dispatch to the trusted Python command registry.

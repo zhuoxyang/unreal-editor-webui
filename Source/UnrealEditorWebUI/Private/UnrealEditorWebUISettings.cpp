@@ -8,6 +8,9 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
+#include "UObject/UnrealType.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogUnrealEditorWebUISettings, Log, All);
 
 namespace
 {
@@ -185,25 +188,34 @@ namespace
         FJsonSerializer::Serialize(JsonObject, Writer);
         return Output;
     }
-}
 
-namespace UnrealEditorWebUISettings
-{
-    FUnrealEditorWebUISettings Load()
+    void ApplyLegacyConfig(FUnrealEditorWebUISettings& Settings)
     {
-        FUnrealEditorWebUISettings Settings;
-
-        if (GConfig != nullptr)
+        if (GConfig == nullptr)
         {
-            GConfig->GetBool(SettingsSection, TEXT("bUseDevServer"), Settings.bUseDevServer, GEditorPerProjectIni);
-            GConfig->GetString(SettingsSection, TEXT("DevServerURL"), Settings.DevServerURL, GEditorPerProjectIni);
-            GConfig->GetString(SettingsSection, TEXT("StartupURL"), Settings.StartupURL, GEditorPerProjectIni);
+            return;
         }
 
-        return Settings;
+        bool bUseDevServer = false;
+        if (GConfig->GetBool(SettingsSection, TEXT("bUseDevServer"), bUseDevServer, GEditorPerProjectIni))
+        {
+            Settings.bUseDevServer = bUseDevServer;
+        }
+
+        FString DevServerURL;
+        if (GConfig->GetString(SettingsSection, TEXT("DevServerURL"), DevServerURL, GEditorPerProjectIni))
+        {
+            Settings.DevServerURL = DevServerURL;
+        }
+
+        FString StartupURL;
+        if (GConfig->GetString(SettingsSection, TEXT("StartupURL"), StartupURL, GEditorPerProjectIni))
+        {
+            Settings.StartupURL = StartupURL;
+        }
     }
 
-    void Save(const FUnrealEditorWebUISettings& Settings)
+    void SaveLegacyConfig(const FUnrealEditorWebUISettings& Settings)
     {
         if (GConfig == nullptr)
         {
@@ -214,6 +226,111 @@ namespace UnrealEditorWebUISettings
         GConfig->SetString(SettingsSection, TEXT("DevServerURL"), *Settings.DevServerURL, GEditorPerProjectIni);
         GConfig->SetString(SettingsSection, TEXT("StartupURL"), *Settings.StartupURL, GEditorPerProjectIni);
         GConfig->Flush(false, GEditorPerProjectIni);
+    }
+}
+
+void UUnrealEditorWebUIEditorSettings::PostInitProperties()
+{
+    Super::PostInitProperties();
+
+    if (HasAnyFlags(RF_ClassDefaultObject))
+    {
+        FUnrealEditorWebUISettings RuntimeSettings = ToRuntimeSettings();
+        ApplyLegacyConfig(RuntimeSettings);
+        ApplyRuntimeSettings(RuntimeSettings);
+    }
+}
+
+#if WITH_EDITOR
+FName UUnrealEditorWebUIEditorSettings::GetContainerName() const
+{
+    return FName(TEXT("Project"));
+}
+
+FName UUnrealEditorWebUIEditorSettings::GetCategoryName() const
+{
+    return FName(TEXT("Plugins"));
+}
+
+FName UUnrealEditorWebUIEditorSettings::GetSectionName() const
+{
+    return FName(TEXT("UnrealEditorWebUI"));
+}
+
+FText UUnrealEditorWebUIEditorSettings::GetSectionText() const
+{
+    return NSLOCTEXT("UnrealEditorWebUISettings", "SectionText", "Unreal Editor WebUI");
+}
+
+FText UUnrealEditorWebUIEditorSettings::GetSectionDescription() const
+{
+    return NSLOCTEXT(
+        "UnrealEditorWebUISettings",
+        "SectionDescription",
+        "Configure the embedded Unreal Editor WebUI startup URL and loopback development server.");
+}
+
+void UUnrealEditorWebUIEditorSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+    Super::PostEditChangeProperty(PropertyChangedEvent);
+
+    FUnrealEditorWebUISettings RuntimeSettings = ToRuntimeSettings();
+    FString DevServerURLCopy = RuntimeSettings.DevServerURL;
+    FString StartupURLCopy = RuntimeSettings.StartupURL;
+    FString Error;
+    if (!ValidateStartupURL(TEXT("DevServerURL"), DevServerURLCopy, Error))
+    {
+        UE_LOG(LogUnrealEditorWebUISettings, Warning, TEXT("%s"), *Error);
+    }
+    if (!ValidateStartupURL(TEXT("StartupURL"), StartupURLCopy, Error))
+    {
+        UE_LOG(LogUnrealEditorWebUISettings, Warning, TEXT("%s"), *Error);
+    }
+
+    SaveConfig();
+    SaveLegacyConfig(RuntimeSettings);
+}
+#endif
+
+FUnrealEditorWebUISettings UUnrealEditorWebUIEditorSettings::ToRuntimeSettings() const
+{
+    FUnrealEditorWebUISettings RuntimeSettings;
+    RuntimeSettings.bUseDevServer = bUseDevServer;
+    RuntimeSettings.DevServerURL = DevServerURL;
+    RuntimeSettings.StartupURL = StartupURL;
+    return RuntimeSettings;
+}
+
+void UUnrealEditorWebUIEditorSettings::ApplyRuntimeSettings(const FUnrealEditorWebUISettings& Settings)
+{
+    bUseDevServer = Settings.bUseDevServer;
+    DevServerURL = Settings.DevServerURL;
+    StartupURL = Settings.StartupURL;
+}
+
+namespace UnrealEditorWebUISettings
+{
+    FUnrealEditorWebUISettings Load()
+    {
+        const UUnrealEditorWebUIEditorSettings* NativeSettings = GetDefault<UUnrealEditorWebUIEditorSettings>();
+        FUnrealEditorWebUISettings Settings = NativeSettings != nullptr
+            ? NativeSettings->ToRuntimeSettings()
+            : FUnrealEditorWebUISettings();
+
+        ApplyLegacyConfig(Settings);
+        return Settings;
+    }
+
+    void Save(const FUnrealEditorWebUISettings& Settings)
+    {
+        UUnrealEditorWebUIEditorSettings* NativeSettings = GetMutableDefault<UUnrealEditorWebUIEditorSettings>();
+        if (NativeSettings != nullptr)
+        {
+            NativeSettings->ApplyRuntimeSettings(Settings);
+            NativeSettings->SaveConfig();
+        }
+
+        SaveLegacyConfig(Settings);
     }
 
     FString ResolveStartupURL()
