@@ -25,7 +25,8 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
-- Generates frontend command forms from command metadata and schemas.
+- Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
+- Supports command search, permission filtering, schema defaults, and recent payload reuse in the React console.
 - Requires confirmation before running `write` or `destructive` commands, including a native editor confirmation in the bridge path.
 - Shows command-specific result views for starter asset commands.
 - Includes safe starter commands:
@@ -201,15 +202,19 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
-The registry validates a small JSON-schema-like subset before dispatching. `write` and `destructive` commands require bridge-supplied exact command capability after native confirmation, so command permissions are not only frontend labels. Confirmed `write` commands are remembered for the current WebUI tab session; `destructive` commands still require confirmation every time. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
+The registry validates a small JSON-schema-like subset before dispatching. Supported schema features include `required`, `additionalProperties`, `enum`, string `minLength`/`maxLength`, numeric `minimum`/`maximum`, arrays with `items`/`minItems`/`maxItems`, nested object schemas, defaults, and `xDryRun` boolean field markers. Defaults are applied before the handler runs. `write` and `destructive` commands require bridge-supplied exact command capability after native confirmation, so command permissions are not only frontend labels. Confirmed `write` commands are remembered for the current WebUI tab session; `destructive` commands still require confirmation every time. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
-The React frontend reads this metadata from `system.commands` and generates basic forms for supported field types:
+The React frontend reads this metadata from `system.commands` and generates forms for supported field types:
 
 - `string`
 - `number`
 - `integer`
 - `boolean`
 - `enum`
+- `array` JSON fields
+- `object` JSON fields
+
+Forms also surface schema constraints such as min/max values, default values, and dry-run markers. Command cards can be searched, filtered by permission, reset to schema defaults, cleared, or refilled from recent successful payloads.
 
 Starter asset commands include:
 
@@ -221,6 +226,5 @@ The frontend renders those asset results as tables instead of raw JSON, while ot
 ## Roadmap
 
 - Verify `BuildPlugin` with a local UE 5.5 install.
-- Add progress percentages/log streaming for long-running tasks.
-- Add richer schema support and more command result views.
+- Add more command-specific result views and production editor workflows.
 - Add tests or a sample host UE project.

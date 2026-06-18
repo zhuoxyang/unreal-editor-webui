@@ -1,3 +1,4 @@
+import copy
 import json
 import traceback
 from typing import Any, Callable
@@ -19,6 +20,7 @@ def command(
     description: str = "",
     permission: str = "read",
     schema: dict[str, Any] | None = None,
+    supports_dry_run: bool = False,
 ) -> Callable[[CommandHandler], CommandHandler]:
     """Register a Python command that can be called from the editor Web UI."""
 
@@ -29,6 +31,7 @@ def command(
             "description": description,
             "permission": permission,
             "schema": schema or {"type": "object", "properties": {}},
+            "supportsDryRun": supports_dry_run,
         }
         return handler
 
@@ -91,43 +94,162 @@ def _validate_type(value: Any, expected_type: str) -> bool:
     return True
 
 
-def _validate_payload(payload: dict[str, Any], schema: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
+def _format_schema_path(path: list[str]) -> str:
+    return ".".join(path)
 
-    if schema.get("type", "object") != "object":
-        return ["Command payload schema must be an object schema."]
+
+def _get_schema_number(schema: dict[str, Any], key: str) -> int | float | None:
+    value = schema.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _get_schema_integer(schema: dict[str, Any], key: str) -> int | None:
+    value = schema.get(key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def _expected_types(expected_type: Any) -> list[str]:
+    if isinstance(expected_type, str):
+        return [expected_type]
+    if isinstance(expected_type, list):
+        return [item for item in expected_type if isinstance(item, str)]
+    return []
+
+
+def _type_label(expected_types: list[str]) -> str:
+    if len(expected_types) == 1:
+        return expected_types[0]
+    return "one of: " + ", ".join(expected_types)
+
+
+def _apply_schema_defaults(value: Any, schema: dict[str, Any]) -> Any:
+    if not isinstance(schema, dict):
+        return value
+
+    schema_types = set(_expected_types(schema.get("type")))
+    if "object" in schema_types and isinstance(value, dict):
+        result = dict(value)
+        properties = schema.get("properties", {})
+        if isinstance(properties, dict):
+            for key, property_schema in properties.items():
+                if not isinstance(property_schema, dict):
+                    continue
+
+                if key not in result and "default" in property_schema:
+                    result[key] = copy.deepcopy(property_schema["default"])
+
+                if key in result:
+                    result[key] = _apply_schema_defaults(result[key], property_schema)
+        return result
+
+    if "array" in schema_types and isinstance(value, list):
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            return [_apply_schema_defaults(item, items_schema) for item in value]
+
+    return value
+
+
+def _validate_schema_value(value: Any, schema: dict[str, Any], path: list[str]) -> list[str]:
+    errors: list[str] = []
+    field_path = _format_schema_path(path)
+
+    expected_types = _expected_types(schema.get("type"))
+    if expected_types and not any(_validate_type(value, expected_type) for expected_type in expected_types):
+        errors.append(f"Field '{field_path}' must be {_type_label(expected_types)}.")
+        return errors
+
+    enum_values = schema.get("enum")
+    if enum_values is not None and value not in enum_values:
+        errors.append(f"Field '{field_path}' must be one of: {enum_values}")
+
+    if isinstance(value, str):
+        min_length = _get_schema_integer(schema, "minLength")
+        max_length = _get_schema_integer(schema, "maxLength")
+        if min_length is not None and len(value) < min_length:
+            errors.append(f"Field '{field_path}' must be at least {min_length} characters.")
+        if max_length is not None and len(value) > max_length:
+            errors.append(f"Field '{field_path}' must be at most {max_length} characters.")
+
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        minimum = _get_schema_number(schema, "minimum")
+        maximum = _get_schema_number(schema, "maximum")
+        exclusive_minimum = _get_schema_number(schema, "exclusiveMinimum")
+        exclusive_maximum = _get_schema_number(schema, "exclusiveMaximum")
+        if minimum is not None and value < minimum:
+            errors.append(f"Field '{field_path}' must be greater than or equal to {minimum}.")
+        if maximum is not None and value > maximum:
+            errors.append(f"Field '{field_path}' must be less than or equal to {maximum}.")
+        if exclusive_minimum is not None and value <= exclusive_minimum:
+            errors.append(f"Field '{field_path}' must be greater than {exclusive_minimum}.")
+        if exclusive_maximum is not None and value >= exclusive_maximum:
+            errors.append(f"Field '{field_path}' must be less than {exclusive_maximum}.")
+
+    if isinstance(value, list):
+        min_items = _get_schema_integer(schema, "minItems")
+        max_items = _get_schema_integer(schema, "maxItems")
+        if min_items is not None and len(value) < min_items:
+            errors.append(f"Field '{field_path}' must include at least {min_items} items.")
+        if max_items is not None and len(value) > max_items:
+            errors.append(f"Field '{field_path}' must include at most {max_items} items.")
+
+        items_schema = schema.get("items")
+        if isinstance(items_schema, dict):
+            for index, item in enumerate(value):
+                errors.extend(_validate_schema_value(item, items_schema, [*path[:-1], f"{path[-1]}[{index}]"]))
+
+    if isinstance(value, dict):
+        errors.extend(_validate_object_payload(value, schema, path))
+
+    return errors
+
+
+def _validate_object_payload(payload: dict[str, Any], schema: dict[str, Any], path: list[str]) -> list[str]:
+    errors: list[str] = []
+    base_path = _format_schema_path(path)
 
     properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        properties = {}
+
     required = schema.get("required", [])
+    if not isinstance(required, list):
+        required = []
     additional_properties = schema.get("additionalProperties", True)
 
     for key in required:
-        if key not in payload:
-            errors.append(f"Missing required field: {key}")
+        if isinstance(key, str) and key not in payload:
+            missing_path = ".".join([base_path, key]) if base_path else key
+            errors.append(f"Missing required field: {missing_path}")
 
     if additional_properties is False:
         for key in payload:
             if key not in properties:
-                errors.append(f"Unexpected field: {key}")
+                unexpected_path = ".".join([base_path, key]) if base_path else key
+                errors.append(f"Unexpected field: {unexpected_path}")
 
     for key, value in payload.items():
         property_schema = properties.get(key)
-        if not isinstance(property_schema, dict):
+        child_path = [*path, key] if path else [key]
+        if isinstance(property_schema, dict):
+            errors.extend(_validate_schema_value(value, property_schema, child_path))
             continue
 
-        expected_type = property_schema.get("type")
-        if expected_type and not _validate_type(value, expected_type):
-            errors.append(f"Field '{key}' must be {expected_type}.")
-
-        enum_values = property_schema.get("enum")
-        if enum_values is not None and value not in enum_values:
-            errors.append(f"Field '{key}' must be one of: {enum_values}")
-
-        max_length = property_schema.get("maxLength")
-        if isinstance(max_length, int) and isinstance(value, str) and len(value) > max_length:
-            errors.append(f"Field '{key}' must be at most {max_length} characters.")
+        if isinstance(additional_properties, dict):
+            errors.extend(_validate_schema_value(value, additional_properties, child_path))
 
     return errors
+
+
+def _validate_payload(payload: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+    if schema.get("type", "object") != "object":
+        return ["Command payload schema must be an object schema."]
+
+    return _validate_object_payload(payload, schema, [])
 
 
 def _asset_to_dict(asset: Any) -> dict[str, str]:
@@ -233,7 +355,9 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
                 f'Command "{command_name}" requires {permission} permission.',
             )
 
-        validation_errors = _validate_payload(payload, metadata.get("schema", {}))
+        schema = metadata.get("schema", {})
+        payload = _apply_schema_defaults(payload, schema)
+        validation_errors = _validate_payload(payload, schema)
         if validation_errors:
             return _error(
                 request_id,
@@ -308,16 +432,30 @@ def project_info(payload: dict[str, Any]) -> dict[str, str]:
         "type": "object",
         "properties": {
             "message": {"type": "string", "maxLength": 1024},
+            "dryRun": {
+                "type": "boolean",
+                "description": "Validate the command without writing to the Unreal log.",
+                "default": False,
+                "xDryRun": True,
+            },
         },
         "required": ["message"],
         "additionalProperties": False,
     },
+    supports_dry_run=True,
 )
-def editor_log(payload: dict[str, Any]) -> dict[str, str]:
+def editor_log(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "Hello from Unreal Editor WebUI"))
+    if bool(payload.get("dryRun", False)):
+        return {
+            "logged": message,
+            "dryRun": True,
+        }
+
     unreal.log(message)
     return {
         "logged": message,
+        "dryRun": False,
     }
 
 
@@ -345,6 +483,7 @@ def selected_assets(payload: dict[str, Any]) -> dict[str, Any]:
             "path": {
                 "type": "string",
                 "description": "Content path, for example /Game",
+                "minLength": 1,
                 "maxLength": 512,
                 "default": "/Game",
             },
@@ -357,6 +496,8 @@ def selected_assets(payload: dict[str, Any]) -> dict[str, Any]:
                 "type": "integer",
                 "description": "Maximum number of assets to return.",
                 "default": 50,
+                "minimum": 1,
+                "maximum": 500,
             },
         },
         "required": ["path"],

@@ -13,12 +13,13 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 - Task status, progress, log, cancellation, and cleanup APIs pushed from C++ into the browser through `SWebBrowser::ExecuteJavascript`.
 - Configurable startup URL support for local packaged UI or loopback dev servers.
 - Unsafe browser navigation is redirected back to the last allowed bridge URL.
-- Python command registry with command metadata, permission labels, and payload schema validation.
-- React/Vite frontend that discovers commands, generates simple schema forms, and builds into `Web/dist`.
+- Python command registry with command metadata, permission labels, recursive payload schema validation, defaults, and dry-run markers.
+- React/Vite frontend that discovers commands, generates schema-aware forms, filters command lists, and builds into `Web/dist`.
 - Frontend and native editor confirmation guards for `write` and `destructive` commands.
 - Exact command capability policy for privileged command execution.
 - Bounded task storage with cleanup for completed task records.
 - Command-specific table result views for starter asset commands.
+- Recent payload reuse and schema-default presets in the command console.
 - Clean package script that stages the plugin without local frontend dependencies.
 - Starter asset commands for selected Content Browser assets and Asset Registry path listing.
 - Static `Web/index.html` smoke-test UI.
@@ -27,10 +28,10 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 ## Near-Term Goals
 
 1. Compile and smoke test inside a real UE 5.5+ project.
-2. Add progress percentages and log streaming for long-running tasks.
-3. Add more command-specific result renderers for validation reports.
-4. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
-5. Expand the asset-tool demo with validation and batch operations.
+2. Add more command-specific result renderers for validation reports.
+3. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
+4. Expand the asset-tool demo with validation and batch operations.
+5. Add UE native settings panels for the Web UI startup and bridge safety options.
 
 ## Design Direction
 
@@ -62,6 +63,8 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - Invalid payloads are rejected before command handlers run.
 - Privileged commands are rejected unless the bridge grants exact command capability.
 - Frontend can generate runnable forms from command metadata.
+- Frontend can search commands, filter by permission, load schema defaults, and reuse recent payloads.
+- Python registry validates nested objects, arrays, numeric bounds, string bounds, defaults, and dry-run schema markers.
 - Asset demo commands return useful editor data.
 - `write` and `destructive` command launches require confirmation.
 - Starter asset results render as tables.

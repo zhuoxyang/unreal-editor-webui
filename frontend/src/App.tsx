@@ -3,13 +3,28 @@ import type { ChangeEvent } from 'react'
 import './App.css'
 
 type DraftValue = string | boolean
+type PermissionFilter = 'all' | 'read' | 'write' | 'destructive'
+type ExecutionMode = 'run' | 'task'
+type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
 
 type SchemaProperty = {
-  type?: 'string' | 'number' | 'integer' | 'boolean'
+  type?: SchemaPropertyType | SchemaPropertyType[]
   description?: string
   enum?: Array<string | number | boolean>
-  default?: string | number | boolean
+  default?: unknown
+  minLength?: number
   maxLength?: number
+  minimum?: number
+  maximum?: number
+  exclusiveMinimum?: number
+  exclusiveMaximum?: number
+  minItems?: number
+  maxItems?: number
+  items?: SchemaProperty
+  properties?: Record<string, SchemaProperty>
+  required?: string[]
+  additionalProperties?: boolean | SchemaProperty
+  xDryRun?: boolean
 }
 
 type CommandSchema = {
@@ -24,6 +39,7 @@ type CommandMetadata = {
   description: string
   permission: 'read' | 'write' | 'destructive' | string
   schema: CommandSchema
+  supportsDryRun?: boolean
 }
 
 type BridgeResponse<T> =
@@ -91,6 +107,17 @@ type AssetListResult = {
   }>
 }
 
+type RecentExecution = {
+  id: string
+  command: string
+  mode: ExecutionMode
+  payload: Record<string, unknown>
+  ranAt: string
+}
+
+const RECENT_EXECUTIONS_STORAGE_KEY = 'unreal-editor-webui.recentExecutions'
+const MAX_RECENT_EXECUTIONS = 12
+
 declare global {
   interface Window {
     ue?: {
@@ -115,11 +142,72 @@ function createRequestId() {
   return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+function getPropertyTypes(property: SchemaProperty) {
+  if (Array.isArray(property.type)) {
+    return property.type
+  }
+
+  return property.type ? [property.type] : []
+}
+
+function propertyHasType(property: SchemaProperty, type: SchemaPropertyType) {
+  return getPropertyTypes(property).includes(type)
+}
+
+function isStructuredProperty(property: SchemaProperty) {
+  return propertyHasType(property, 'array') || propertyHasType(property, 'object')
+}
+
+function commandHasDryRun(command: CommandMetadata) {
+  return (
+    command.supportsDryRun === true ||
+    Object.values(command.schema.properties || {}).some((property) => property.xDryRun === true)
+  )
+}
+
+function loadStoredRecentExecutions(): RecentExecution[] {
+  try {
+    const stored = globalThis.localStorage?.getItem(RECENT_EXECUTIONS_STORAGE_KEY)
+    if (!stored) {
+      return []
+    }
+
+    const parsed = JSON.parse(stored) as RecentExecution[]
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed.filter((item) => item && typeof item.command === 'string' && typeof item.ranAt === 'string')
+  } catch {
+    return []
+  }
+}
+
+function formatSchemaDefault(value: unknown) {
+  if (value === undefined) {
+    return ''
+  }
+
+  return typeof value === 'string' ? value : JSON.stringify(value)
+}
+
+function formatRecentTime(value: string) {
+  const timestamp = new Date(value)
+  if (Number.isNaN(timestamp.getTime())) {
+    return value
+  }
+
+  return timestamp.toLocaleTimeString()
+}
+
 function App() {
   const [commands, setCommands] = useState<CommandMetadata[]>([])
   const [settings, setSettings] = useState<WebUISettings | null>(null)
   const [payloadDrafts, setPayloadDrafts] = useState<Record<string, Record<string, DraftValue>>>({})
   const [commandResults, setCommandResults] = useState<Record<string, unknown>>({})
+  const [commandSearch, setCommandSearch] = useState('')
+  const [permissionFilter, setPermissionFilter] = useState<PermissionFilter>('all')
+  const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(loadStoredRecentExecutions)
   const [eventLines, setEventLines] = useState<string[]>([])
   const [logLines, setLogLines] = useState<string[]>([
     'Open this app inside the Unreal Editor WebUI tab to enable the bridge.',
@@ -128,14 +216,24 @@ function App() {
   const bridge = window.ue?.editorwebui
   const bridgeReady = Boolean(bridge)
 
+  const filteredCommands = useMemo(() => {
+    const search = commandSearch.trim().toLowerCase()
+
+    return commands.filter((command) => {
+      const matchesPermission = permissionFilter === 'all' || command.permission === permissionFilter
+      const searchText = `${command.name} ${command.description}`.toLowerCase()
+      return matchesPermission && (!search || searchText.includes(search))
+    })
+  }, [commands, commandSearch, permissionFilter])
+
   const commandGroups = useMemo(() => {
-    return commands.reduce<Record<string, CommandMetadata[]>>((groups, command) => {
+    return filteredCommands.reduce<Record<string, CommandMetadata[]>>((groups, command) => {
       const [groupName] = command.name.split('.')
       groups[groupName] = groups[groupName] || []
       groups[groupName].push(command)
       return groups
     }, {})
-  }, [commands])
+  }, [filteredCommands])
 
   useEffect(() => {
     function handleWebUIEvent(event: Event) {
@@ -159,6 +257,14 @@ function App() {
     window.addEventListener('unreal-editor-webui', handleWebUIEvent)
     return () => window.removeEventListener('unreal-editor-webui', handleWebUIEvent)
   }, [])
+
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem(RECENT_EXECUTIONS_STORAGE_KEY, JSON.stringify(recentExecutions))
+    } catch {
+      // Local storage is optional in embedded browser contexts.
+    }
+  }, [recentExecutions])
 
   function log(message: string) {
     const time = new Date().toLocaleTimeString()
@@ -256,10 +362,18 @@ function App() {
 
   function getDefaultValue(property: SchemaProperty): DraftValue {
     if (property.default !== undefined) {
-      return typeof property.default === 'boolean' ? property.default : String(property.default)
+      if (propertyHasType(property, 'boolean')) {
+        return property.default === true
+      }
+
+      if (isStructuredProperty(property)) {
+        return JSON.stringify(property.default, null, 2)
+      }
+
+      return String(property.default)
     }
 
-    return property.type === 'boolean' ? false : ''
+    return propertyHasType(property, 'boolean') ? false : ''
   }
 
   function getFieldValue(command: CommandMetadata, fieldName: string, property: SchemaProperty) {
@@ -276,6 +390,70 @@ function App() {
     }))
   }
 
+  function getDraftFromPayload(command: CommandMetadata, payload: Record<string, unknown>) {
+    return Object.fromEntries(
+      Object.entries(command.schema.properties || {}).map(([fieldName, property]) => {
+        const payloadValue = payload[fieldName]
+        if (payloadValue === undefined) {
+          return [fieldName, getDefaultValue(property)]
+        }
+
+        if (propertyHasType(property, 'boolean')) {
+          return [fieldName, payloadValue === true]
+        }
+
+        if (isStructuredProperty(property)) {
+          return [fieldName, JSON.stringify(payloadValue, null, 2)]
+        }
+
+        return [fieldName, String(payloadValue)]
+      }),
+    ) as Record<string, DraftValue>
+  }
+
+  function loadPayloadDraft(command: CommandMetadata, payload: Record<string, unknown>) {
+    setPayloadDrafts((drafts) => ({
+      ...drafts,
+      [command.name]: getDraftFromPayload(command, payload),
+    }))
+  }
+
+  function loadSchemaDefaults(command: CommandMetadata) {
+    loadPayloadDraft(command, {})
+  }
+
+  function clearPayloadDraft(command: CommandMetadata) {
+    const cleared = Object.fromEntries(
+      Object.entries(command.schema.properties || {}).map(([fieldName, property]) => [
+        fieldName,
+        propertyHasType(property, 'boolean') ? false : '',
+      ]),
+    ) as Record<string, DraftValue>
+
+    setPayloadDrafts((drafts) => ({
+      ...drafts,
+      [command.name]: cleared,
+    }))
+  }
+
+  function recordRecentExecution(command: CommandMetadata, payload: Record<string, unknown>, mode: ExecutionMode) {
+    setRecentExecutions((items) => {
+      const payloadKey = JSON.stringify(payload)
+      const nextItem: RecentExecution = {
+        id: createRequestId(),
+        command: command.name,
+        mode,
+        payload,
+        ranAt: new Date().toISOString(),
+      }
+
+      return [
+        nextItem,
+        ...items.filter((item) => item.command !== command.name || JSON.stringify(item.payload) !== payloadKey),
+      ].slice(0, MAX_RECENT_EXECUTIONS)
+    })
+  }
+
   function buildPayload(command: CommandMetadata) {
     const payload: Record<string, unknown> = {}
     const properties = Object.entries(command.schema.properties || {})
@@ -284,12 +462,39 @@ function App() {
     for (const [fieldName, property] of properties) {
       const rawValue = getFieldValue(command, fieldName, property)
 
-      if (property.type === 'boolean') {
+      if (propertyHasType(property, 'boolean')) {
         payload[fieldName] = Boolean(rawValue)
         continue
       }
 
-      if (property.type === 'number' || property.type === 'integer') {
+      if (isStructuredProperty(property)) {
+        const jsonText = String(rawValue).trim()
+        if (jsonText === '' && !required.has(fieldName)) {
+          continue
+        }
+
+        let parsedValue: unknown
+        try {
+          parsedValue = JSON.parse(jsonText)
+        } catch {
+          throw new Error(`${command.name}.${fieldName} must be valid JSON`)
+        }
+
+        const allowsArray = propertyHasType(property, 'array')
+        const allowsObject = propertyHasType(property, 'object')
+        const isArray = Array.isArray(parsedValue)
+        const isObject = parsedValue !== null && typeof parsedValue === 'object' && !isArray
+
+        if (!((allowsArray && isArray) || (allowsObject && isObject))) {
+          const expected = allowsArray && allowsObject ? 'JSON array or object' : allowsArray ? 'JSON array' : 'JSON object'
+          throw new Error(`${command.name}.${fieldName} must be a ${expected}`)
+        }
+
+        payload[fieldName] = parsedValue
+        continue
+      }
+
+      if (propertyHasType(property, 'number') || propertyHasType(property, 'integer')) {
         if (rawValue === '' && !required.has(fieldName)) {
           continue
         }
@@ -299,7 +504,7 @@ function App() {
           throw new Error(`${command.name}.${fieldName} must be a number`)
         }
 
-        payload[fieldName] = property.type === 'integer' ? Math.trunc(numericValue) : numericValue
+        payload[fieldName] = propertyHasType(property, 'integer') ? Math.trunc(numericValue) : numericValue
         continue
       }
 
@@ -321,7 +526,9 @@ function App() {
         return
       }
 
-      const result = await runCommand<unknown>(command.name, buildPayload(command))
+      const payload = buildPayload(command)
+      const result = await runCommand<unknown>(command.name, payload)
+      recordRecentExecution(command, payload, 'run')
       setCommandResults((results) => ({
         ...results,
         [command.name]: result,
@@ -338,10 +545,12 @@ function App() {
         return
       }
 
-      const taskId = await startCommand(command.name, buildPayload(command))
+      const payload = buildPayload(command)
+      const taskId = await startCommand(command.name, payload)
       const task = await pollTask(taskId)
       await callBridge<{ removed: boolean }>('removetask', taskId)
       log(`${command.name} task final response -> ${task.responseJson || 'no response'}`)
+      recordRecentExecution(command, payload, 'task')
 
       if (task.responseJson) {
         const response = JSON.parse(task.responseJson) as BridgeResponse<unknown>
@@ -355,6 +564,54 @@ function App() {
     } catch (error) {
       log(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  function describeFieldConstraints(property: SchemaProperty) {
+    const constraints: string[] = []
+
+    if (typeof property.minimum === 'number') {
+      constraints.push(`min ${property.minimum}`)
+    }
+    if (typeof property.maximum === 'number') {
+      constraints.push(`max ${property.maximum}`)
+    }
+    if (typeof property.exclusiveMinimum === 'number') {
+      constraints.push(`> ${property.exclusiveMinimum}`)
+    }
+    if (typeof property.exclusiveMaximum === 'number') {
+      constraints.push(`< ${property.exclusiveMaximum}`)
+    }
+    if (typeof property.minLength === 'number') {
+      constraints.push(`min length ${property.minLength}`)
+    }
+    if (typeof property.maxLength === 'number') {
+      constraints.push(`max length ${property.maxLength}`)
+    }
+    if (typeof property.minItems === 'number') {
+      constraints.push(`min items ${property.minItems}`)
+    }
+    if (typeof property.maxItems === 'number') {
+      constraints.push(`max items ${property.maxItems}`)
+    }
+    if (property.default !== undefined) {
+      constraints.push(`default ${formatSchemaDefault(property.default)}`)
+    }
+
+    return constraints.join(' | ')
+  }
+
+  function renderFieldHint(property: SchemaProperty) {
+    const constraints = describeFieldConstraints(property)
+
+    if (!property.description && !constraints) {
+      return null
+    }
+
+    return (
+      <small>
+        {[property.description, constraints].filter(Boolean).join(' | ')}
+      </small>
+    )
   }
 
   function renderField(command: CommandMetadata, fieldName: string, property: SchemaProperty) {
@@ -382,14 +639,18 @@ function App() {
               </option>
             ))}
           </select>
-          {property.description ? <small>{property.description}</small> : null}
+          {renderFieldHint(property)}
         </label>
       )
     }
 
-    if (property.type === 'boolean') {
+    if (propertyHasType(property, 'boolean')) {
       return (
-        <label className="schema-field checkbox" key={fieldName} htmlFor={inputId}>
+        <label
+          className={property.xDryRun ? 'schema-field checkbox dry-run-field' : 'schema-field checkbox'}
+          key={fieldName}
+          htmlFor={inputId}
+        >
           <input
             id={inputId}
             type="checkbox"
@@ -402,7 +663,50 @@ function App() {
             {fieldName}
             {required ? <em>*</em> : null}
           </span>
-          {property.description ? <small>{property.description}</small> : null}
+          {renderFieldHint(property)}
+        </label>
+      )
+    }
+
+    if (isStructuredProperty(property)) {
+      return (
+        <label className="schema-field" key={fieldName} htmlFor={inputId}>
+          <span>
+            {fieldName}
+            {required ? <em>*</em> : null}
+          </span>
+          <textarea
+            id={inputId}
+            value={String(value)}
+            placeholder={propertyHasType(property, 'array') ? '[]' : '{}'}
+            rows={5}
+            onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+              updateField(command.name, fieldName, event.target.value)
+            }
+          />
+          {renderFieldHint(property)}
+        </label>
+      )
+    }
+
+    if (propertyHasType(property, 'string') && typeof property.maxLength === 'number' && property.maxLength > 160) {
+      return (
+        <label className="schema-field" key={fieldName} htmlFor={inputId}>
+          <span>
+            {fieldName}
+            {required ? <em>*</em> : null}
+          </span>
+          <textarea
+            id={inputId}
+            value={String(value)}
+            minLength={property.minLength}
+            maxLength={property.maxLength}
+            rows={4}
+            onChange={(event: ChangeEvent<HTMLTextAreaElement>) =>
+              updateField(command.name, fieldName, event.target.value)
+            }
+          />
+          {renderFieldHint(property)}
         </label>
       )
     }
@@ -415,15 +719,39 @@ function App() {
         </span>
         <input
           id={inputId}
-          type={property.type === 'number' || property.type === 'integer' ? 'number' : 'text'}
+          type={propertyHasType(property, 'number') || propertyHasType(property, 'integer') ? 'number' : 'text'}
           value={String(value)}
+          min={property.minimum}
+          max={property.maximum}
+          minLength={property.minLength}
           maxLength={property.maxLength}
+          step={propertyHasType(property, 'integer') ? 1 : undefined}
           onChange={(event: ChangeEvent<HTMLInputElement>) =>
             updateField(command.name, fieldName, event.target.value)
           }
         />
-        {property.description ? <small>{property.description}</small> : null}
+        {renderFieldHint(property)}
       </label>
+    )
+  }
+
+  function renderPayloadPresets(command: CommandMetadata) {
+    const recentForCommand = recentExecutions.filter((item) => item.command === command.name).slice(0, 3)
+
+    return (
+      <div className="payload-presets">
+        <button type="button" onClick={() => loadSchemaDefaults(command)}>
+          Defaults
+        </button>
+        <button type="button" onClick={() => clearPayloadDraft(command)}>
+          Clear
+        </button>
+        {recentForCommand.map((item) => (
+          <button type="button" key={item.id} onClick={() => loadPayloadDraft(command, item.payload)}>
+            {item.mode === 'task' ? 'Task' : 'Run'} {formatRecentTime(item.ranAt)}
+          </button>
+        ))}
+      </div>
     )
   }
 
@@ -560,17 +888,50 @@ function App() {
       <section className="grid">
         <div className="panel">
           <h2>Commands</h2>
-          {Object.keys(commandGroups).length === 0 ? (
-            <p className="muted">Load metadata from <code>system.commands</code>.</p>
+          <div className="command-browser">
+            <input
+              type="search"
+              value={commandSearch}
+              placeholder="Search commands"
+              onChange={(event: ChangeEvent<HTMLInputElement>) => setCommandSearch(event.target.value)}
+            />
+            <select
+              value={permissionFilter}
+              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                setPermissionFilter(event.target.value as PermissionFilter)
+              }
+            >
+              <option value="all">All permissions</option>
+              <option value="read">Read</option>
+              <option value="write">Write</option>
+              <option value="destructive">Destructive</option>
+            </select>
+            <span>{filteredCommands.length} shown</span>
+          </div>
+          {commands.length === 0 ? (
+            <p className="muted">
+              Load metadata from <code>system.commands</code>.
+            </p>
+          ) : filteredCommands.length === 0 ? (
+            <p className="muted">No commands match the current filters.</p>
           ) : (
             Object.entries(commandGroups).map(([groupName, groupCommands]) => (
               <div className="command-group" key={groupName}>
                 <h3>{groupName}</h3>
                 {groupCommands.map((command) => (
                   <article className="command-card" key={command.name}>
-                    <div>
+                    <div className="command-card-header">
                       <strong>{command.name}</strong>
-                      <span className={`badge ${command.permission}`}>{command.permission}</span>
+                      <span className="badge-group">
+                        <span className={`badge ${command.permission}`} title={`${command.permission} permission`}>
+                          {command.permission}
+                        </span>
+                        {commandHasDryRun(command) ? (
+                          <span className="badge dry-run" title="Dry-run capable">
+                            dry-run
+                          </span>
+                        ) : null}
+                      </span>
                     </div>
                     <p>{command.description || 'No description provided.'}</p>
                     <div className="schema-form">
@@ -582,6 +943,7 @@ function App() {
                         <p className="muted">No payload fields.</p>
                       )}
                     </div>
+                    {renderPayloadPresets(command)}
                     <div className="command-actions">
                       <button type="button" onClick={() => runCommandFromMetadata(command)} disabled={!bridgeReady}>
                         Run
