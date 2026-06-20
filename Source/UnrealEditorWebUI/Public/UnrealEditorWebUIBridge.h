@@ -29,6 +29,7 @@ class UNREALEDITORWEBUI_API UUnrealEditorWebUIBridge : public UObject
 
 public:
     void SetEventDispatcher(TFunction<void(const FString&)> InEventDispatcher);
+    void ResetPrivilegedCommandApprovals();
 
     UFUNCTION()
     void PostMessage(const FString& Payload);
@@ -72,7 +73,10 @@ private:
         const FString& RequestJson,
         const FString& FunctionName,
         const FString& PermissionPolicyJson = FString()) const;
-    bool ConfirmPrivilegedCommand(const FString& CommandName, const FString& Permission) const;
+    bool ConfirmPrivilegedCommand(
+        const FString& CommandName,
+        const FString& Permission,
+        bool bAllowReusableApproval = true) const;
     bool HasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const;
     void GrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission);
     void PruneTasksLocked(const FDateTime& Now);

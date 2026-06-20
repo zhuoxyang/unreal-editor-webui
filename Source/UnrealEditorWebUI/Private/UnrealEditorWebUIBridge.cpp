@@ -234,6 +234,12 @@ void UUnrealEditorWebUIBridge::SetEventDispatcher(TFunction<void(const FString&)
     EventDispatcher = MoveTemp(InEventDispatcher);
 }
 
+void UUnrealEditorWebUIBridge::ResetPrivilegedCommandApprovals()
+{
+    FScopeLock Lock(&PrivilegedCommandApprovalsCriticalSection);
+    PrivilegedCommandApprovals.Reset();
+}
+
 FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
 {
     const FString RequestId = ExtractRequestId(RequestJson);
@@ -545,14 +551,25 @@ FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
         return MakeErrorResponse(FString(), TEXT("invalid_settings"), Error);
     }
 
+    if (!ConfirmPrivilegedCommand(TEXT("settings.update"), TEXT("write"), false))
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("permission_denied"),
+            TEXT("User declined the WebUI settings update."));
+    }
+
     UnrealEditorWebUISettings::Save(Settings);
     return MakeSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(Settings)));
 }
 
-bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(const FString& CommandName, const FString& Permission) const
+bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(
+    const FString& CommandName,
+    const FString& Permission,
+    bool bAllowReusableApproval) const
 {
     const FText Title = NSLOCTEXT("UnrealEditorWebUIBridge", "ConfirmPrivilegedCommandTitle", "Confirm WebUI Command");
-    const FText ApprovalScope = CanReusePrivilegedApproval(Permission)
+    const FText ApprovalScope = bAllowReusableApproval && CanReusePrivilegedApproval(Permission)
         ? NSLOCTEXT(
             "UnrealEditorWebUIBridge",
             "ConfirmPrivilegedCommandSessionScope",

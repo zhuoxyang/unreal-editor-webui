@@ -25,6 +25,7 @@ public class UnrealEditorWebUI : ModuleRules
             {
                 "ApplicationCore",
                 "DeveloperSettings",
+                "HTTP",
                 "InputCore",
                 "LevelEditor",
                 "Projects",

@@ -1,6 +1,7 @@
 #include "UnrealEditorWebUISettings.h"
 
 #include "Dom/JsonObject.h"
+#include "GenericPlatform/GenericPlatformHttp.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/MessageDialog.h"
@@ -89,7 +90,24 @@ namespace
             return false;
         }
 
-        FString FilePath = Url.Mid(7);
+        FString EncodedFilePath = Url.Mid(7);
+        int32 SuffixIndex = INDEX_NONE;
+        for (const TCHAR Delimiter : {TEXT('?'), TEXT('#')})
+        {
+            int32 DelimiterIndex = INDEX_NONE;
+            if (EncodedFilePath.FindChar(Delimiter, DelimiterIndex))
+            {
+                SuffixIndex = SuffixIndex == INDEX_NONE
+                    ? DelimiterIndex
+                    : FMath::Min(SuffixIndex, DelimiterIndex);
+            }
+        }
+        if (SuffixIndex != INDEX_NONE)
+        {
+            EncodedFilePath = EncodedFilePath.Left(SuffixIndex);
+        }
+
+        FString FilePath = FGenericPlatformHttp::UrlDecode(EncodedFilePath);
 #if PLATFORM_WINDOWS
         if (FilePath.Len() > 2 && FilePath[0] == TEXT('/') && FilePath[2] == TEXT(':'))
         {
@@ -97,10 +115,19 @@ namespace
         }
 #endif
 
+        FilePath = FPaths::ConvertRelativePathToFull(FilePath);
+        if (!FPaths::CollapseRelativeDirectories(FilePath))
+        {
+            return false;
+        }
         FPaths::NormalizeFilename(FilePath);
 
         FString AllowedWebDir = FPaths::ConvertRelativePathToFull(
             FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web")));
+        if (!FPaths::CollapseRelativeDirectories(AllowedWebDir))
+        {
+            return false;
+        }
         FPaths::NormalizeDirectoryName(AllowedWebDir);
 
         return FilePath == AllowedWebDir || FilePath.StartsWith(AllowedWebDir + TEXT("/"));

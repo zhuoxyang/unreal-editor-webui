@@ -105,6 +105,10 @@ private:
         FString Error;
         if (UnrealEditorWebUISettings::IsBridgeURLAllowed(NewUrl, Error))
         {
+            if (!LastAllowedURL.IsEmpty() && !NewUrl.Equals(LastAllowedURL, ESearchCase::CaseSensitive) && Bridge.Get() != nullptr)
+            {
+                Bridge->ResetPrivilegedCommandApprovals();
+            }
             LastAllowedURL = NewUrl;
             return;
         }
