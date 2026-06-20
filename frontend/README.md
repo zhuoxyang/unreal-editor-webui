@@ -19,6 +19,14 @@ npm run build
 
 The production build is emitted to `../Web/dist`, which the plugin loads before falling back to `Web/index.html`.
 
+## Test
+
+```sh
+npm test
+```
+
+Vitest covers schema value coercion, falsy result rendering, and resilient task restoration behavior.
+
 ## Bridge
 
 When loaded inside Unreal, the bridge is available at:

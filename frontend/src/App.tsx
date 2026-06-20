@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import './App.css'
+import { JsonResultView } from './components/JsonResultView'
+import {
+  decodeEnumOption,
+  encodeEnumOption,
+  hasCommandResult,
+  isSchemaScalar,
+  parseNumericDraft,
+} from './schema-form'
 
-type DraftValue = string | boolean
+type DraftValue = string | number | boolean
 type PermissionFilter = 'all' | 'read' | 'write' | 'destructive'
 type ExecutionMode = 'run' | 'task'
 type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
@@ -615,17 +623,11 @@ function App() {
     })
   }
 
-  function confirmCommand(command: CommandMetadata) {
-    if (command.permission !== 'write' && command.permission !== 'destructive') {
-      return true
-    }
-
-    const label = command.permission === 'destructive' ? 'destructive' : 'write'
-    return window.confirm(`Run ${label} command "${command.name}"?`)
-  }
-
   function getDefaultValue(property: SchemaProperty): DraftValue {
     if (property.default !== undefined) {
+      if (property.enum && isSchemaScalar(property.default) && property.enum.includes(property.default)) {
+        return property.default
+      }
       if (propertyHasType(property, 'boolean')) {
         return property.default === true
       }
@@ -662,6 +664,10 @@ function App() {
           return [fieldName, getDefaultValue(property)]
         }
 
+        if (property.enum && isSchemaScalar(payloadValue)) {
+          return [fieldName, payloadValue]
+        }
+
         if (propertyHasType(property, 'boolean')) {
           return [fieldName, payloadValue === true]
         }
@@ -690,7 +696,7 @@ function App() {
     const cleared = Object.fromEntries(
       Object.entries(command.schema.properties || {}).map(([fieldName, property]) => [
         fieldName,
-        propertyHasType(property, 'boolean') ? false : '',
+        property.enum ? '' : propertyHasType(property, 'boolean') ? false : '',
       ]),
     ) as Record<string, DraftValue>
 
@@ -725,6 +731,13 @@ function App() {
 
     for (const [fieldName, property] of properties) {
       const rawValue = getFieldValue(command, fieldName, property)
+
+      if (property.enum && rawValue === '') {
+        if (required.has(fieldName)) {
+          throw new Error(`${command.name}.${fieldName} is required`)
+        }
+        continue
+      }
 
       if (propertyHasType(property, 'boolean')) {
         payload[fieldName] = Boolean(rawValue)
@@ -763,12 +776,7 @@ function App() {
           continue
         }
 
-        const numericValue = Number(rawValue)
-        if (Number.isNaN(numericValue)) {
-          throw new Error(`${command.name}.${fieldName} must be a number`)
-        }
-
-        payload[fieldName] = propertyHasType(property, 'integer') ? Math.trunc(numericValue) : numericValue
+        payload[fieldName] = parseNumericDraft(rawValue, propertyHasType(property, 'integer'), `${command.name}.${fieldName}`)
         continue
       }
 
@@ -785,11 +793,6 @@ function App() {
 
   async function runCommandFromMetadata(command: CommandMetadata) {
     try {
-      if (!confirmCommand(command)) {
-        log(`Cancelled ${command.name}`)
-        return
-      }
-
       const payload = buildPayload(command)
       const result = await runCommand<unknown>(command.name, payload)
       recordRecentExecution(command, payload, 'run')
@@ -804,11 +807,6 @@ function App() {
 
   async function startTaskFromMetadata(command: CommandMetadata) {
     try {
-      if (!confirmCommand(command)) {
-        log(`Cancelled ${command.name}`)
-        return
-      }
-
       const payload = buildPayload(command)
       const task = await startCommand(command.name, payload)
       mergeTaskResult(task, {
@@ -921,6 +919,7 @@ function App() {
     const inputId = `${command.name}-${fieldName}`
 
     if (property.enum && property.enum.length > 0) {
+      const selectedValue = value === '' ? '' : encodeEnumOption(value)
       return (
         <label className="schema-field" key={fieldName} htmlFor={inputId}>
           <span>
@@ -929,13 +928,15 @@ function App() {
           </span>
           <select
             id={inputId}
-            value={String(value)}
-            onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-              updateField(command.name, fieldName, event.target.value)
-            }
+            value={selectedValue}
+            onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+              const nextValue = event.target.value
+              updateField(command.name, fieldName, nextValue === '' ? '' : decodeEnumOption(nextValue))
+            }}
           >
+            <option value="">Select a value</option>
             {property.enum.map((option) => (
-              <option key={String(option)} value={String(option)}>
+              <option key={encodeEnumOption(option)} value={encodeEnumOption(option)}>
                 {String(option)}
               </option>
             ))}
@@ -1236,7 +1237,7 @@ function App() {
 
   function renderCommandResult(commandName: string) {
     const result = commandResults[commandName]
-    if (!result) {
+    if (!hasCommandResult(commandResults, commandName)) {
       return null
     }
 
@@ -1248,11 +1249,7 @@ function App() {
       return renderAssetList(result as AssetListResult)
     }
 
-    return (
-      <div className="result-view">
-        <pre>{JSON.stringify(result, null, 2)}</pre>
-      </div>
-    )
+    return <JsonResultView result={result} />
   }
 
   return (
