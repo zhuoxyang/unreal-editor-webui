@@ -8,6 +8,8 @@ import unreal
 CommandHandler = Callable[[dict[str, Any]], Any]
 COMMANDS: dict[str, CommandHandler] = {}
 COMMAND_METADATA: dict[str, dict[str, Any]] = {}
+SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
+SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 DEFAULT_PERMISSION_POLICY = {
     "allowedCommand": "",
     "allowedPermission": "",
@@ -27,13 +29,28 @@ def command(
 ) -> Callable[[CommandHandler], CommandHandler]:
     """Register a Python command that can be called from the editor Web UI."""
 
+    normalized_name = name.strip() if isinstance(name, str) else ""
+    normalized_permission = permission.lower().strip() if isinstance(permission, str) else ""
+    normalized_schema = schema or {"type": "object", "properties": {}}
+
+    if not normalized_name:
+        raise ValueError("Command name must be a non-empty string.")
+    if normalized_permission not in SUPPORTED_PERMISSIONS:
+        raise ValueError(
+            f'Command "{normalized_name}" uses unsupported permission "{permission}". '
+            f"Expected one of: {sorted(SUPPORTED_PERMISSIONS)}"
+        )
+    if normalized_name in COMMANDS:
+        raise ValueError(f'Command "{normalized_name}" is already registered.')
+    _validate_command_schema(normalized_name, normalized_schema)
+
     def decorator(handler: CommandHandler) -> CommandHandler:
-        COMMANDS[name] = handler
-        COMMAND_METADATA[name] = {
-            "name": name,
+        COMMANDS[normalized_name] = handler
+        COMMAND_METADATA[normalized_name] = {
+            "name": normalized_name,
             "description": description,
-            "permission": permission,
-            "schema": schema or {"type": "object", "properties": {}},
+            "permission": normalized_permission,
+            "schema": normalized_schema,
             "supportsDryRun": supports_dry_run,
             "execution": {
                 "thread": execution_thread,
@@ -99,7 +116,52 @@ def _validate_type(value: Any, expected_type: str) -> bool:
         return isinstance(value, bool)
     if expected_type == "null":
         return value is None
-    return True
+    return False
+
+
+def _validate_command_schema(command_name: str, schema: Any) -> None:
+    def validate_node(node: Any, path: str) -> None:
+        if not isinstance(node, dict):
+            raise ValueError(f'Command "{command_name}" schema at {path} must be an object.')
+
+        declared_type = node.get("type")
+        declared_types = _expected_types(declared_type)
+        if declared_type is not None and not declared_types:
+            raise ValueError(f'Command "{command_name}" schema at {path} has an invalid type declaration.')
+
+        unsupported_types = [item for item in declared_types if item not in SUPPORTED_SCHEMA_TYPES]
+        if unsupported_types:
+            raise ValueError(
+                f'Command "{command_name}" schema at {path} uses unsupported type(s): '
+                f'{", ".join(unsupported_types)}.'
+            )
+
+        properties = node.get("properties")
+        if properties is not None:
+            if not isinstance(properties, dict):
+                raise ValueError(f'Command "{command_name}" schema properties at {path} must be an object.')
+            for property_name, property_schema in properties.items():
+                if not isinstance(property_name, str) or not property_name:
+                    raise ValueError(f'Command "{command_name}" schema at {path} has an invalid property name.')
+                validate_node(property_schema, f"{path}.{property_name}")
+
+        items = node.get("items")
+        if items is not None:
+            validate_node(items, f"{path}[]")
+
+        required = node.get("required")
+        if required is not None and (
+            not isinstance(required, list) or any(not isinstance(item, str) or not item for item in required)
+        ):
+            raise ValueError(f'Command "{command_name}" schema required list at {path} is invalid.')
+
+        enum_values = node.get("enum")
+        if enum_values is not None and not isinstance(enum_values, list):
+            raise ValueError(f'Command "{command_name}" schema enum at {path} must be an array.')
+
+    validate_node(schema, "payload")
+    if schema.get("type", "object") != "object":
+        raise ValueError(f'Command "{command_name}" payload schema must have type "object".')
 
 
 def _format_schema_path(path: list[str]) -> str:
@@ -289,6 +351,8 @@ def _permission_policy(policy: dict[str, Any] | None) -> dict[str, str]:
 
 def _permission_allowed(command_name: str, permission: str, policy: dict[str, str]) -> bool:
     normalized = permission.lower()
+    if normalized not in SUPPORTED_PERMISSIONS:
+        return False
     if normalized == "read":
         return True
     return policy["allowedCommand"] == command_name and policy["allowedPermission"] == normalized

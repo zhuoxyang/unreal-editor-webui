@@ -137,6 +137,37 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(destructive_allowed["ok"])
         self.assertTrue(destructive_allowed["result"]["destroyed"])
 
+    def test_unknown_permission_is_rejected_during_registration(self):
+        with self.assertRaisesRegex(ValueError, "unsupported permission"):
+            self.registry.command("test.permissionTypo", permission="wrtie")
+
+    def test_tampered_unknown_permission_fails_closed(self):
+        self.registry.COMMAND_METADATA["editor.log"]["permission"] = "wrtie"
+        response = parse_response(
+            self.registry.execute_command(
+                request("editor.log", {"message": "must not run"}),
+                {"allowedCommand": "editor.log", "allowedPermission": "wrtie"},
+            )
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "permission_denied")
+        self.assertEqual(self.unreal.logs, [])
+
+    def test_duplicate_command_registration_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "already registered"):
+            self.registry.command("system.ping")
+
+    def test_unknown_schema_type_is_rejected_during_registration(self):
+        with self.assertRaisesRegex(ValueError, "unsupported type"):
+            self.registry.command(
+                "test.invalidSchema",
+                schema={
+                    "type": "object",
+                    "properties": {"value": {"type": "strnig"}},
+                },
+            )
+
     def test_inspect_command_returns_permission_metadata(self):
         response = parse_response(self.registry.inspect_command(request("editor.log")))
 

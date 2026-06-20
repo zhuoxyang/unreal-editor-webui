@@ -199,6 +199,12 @@ namespace
         return Normalized == TEXT("write") || Normalized == TEXT("destructive");
     }
 
+    bool IsSupportedPermission(const FString& Permission)
+    {
+        const FString Normalized = Permission.ToLower();
+        return Normalized == TEXT("read") || IsPrivilegedPermission(Normalized);
+    }
+
     FString MakePrivilegedCommandKey(const FString& CommandName, const FString& Permission)
     {
         return FString::Printf(TEXT("%s:%s"), *Permission.ToLower(), *CommandName);
@@ -257,6 +263,14 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
     FString Permission;
     ResultObject->TryGetStringField(TEXT("command"), CommandName);
     ResultObject->TryGetStringField(TEXT("permission"), Permission);
+
+    if (CommandName.IsEmpty() || !IsSupportedPermission(Permission))
+    {
+        return MakeErrorResponse(
+            RequestId,
+            TEXT("invalid_preflight"),
+            TEXT("Command preflight returned invalid command permission metadata."));
+    }
 
     if (IsPrivilegedPermission(Permission)
         && (!CanReusePrivilegedApproval(Permission) || !HasPrivilegedCommandApproval(CommandName, Permission)))
