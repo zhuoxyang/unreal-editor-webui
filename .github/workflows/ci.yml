@@ -52,6 +52,9 @@ jobs:
       - name: Check Python syntax
         run: python -m py_compile Python/unreal_editor_webui_registry.py Python/unreal_editor_webui_demo.py
 
+      - name: Check Unix packaging script syntax
+        run: bash -n scripts/package-plugin.sh
+
       - name: Run Python registry tests
         run: python -m unittest discover -s tests
 
