@@ -143,7 +143,7 @@ const task = JSON.parse(await window.ue.editorwebui.gettask(taskId));
 await window.ue.editorwebui.removetask(taskId);
 ```
 
-Use `canceltask(taskId)` for queued work that should not run. Task records expose `cancellable`, `cancellationMode`, `executionThread`, `timeoutPolicy`, and `message` so clients can show whether cancellation is currently available instead of guessing from status alone. The React console keeps started tasks in a task panel and polls them until they reach `completed`, `failed`, `cancelled`, or `timed_out`, so long-running task UI is no longer tied to a short fixed timeout.
+Use `canceltask(taskId)` for queued work that should not run. `listtasks()` returns retained task records so the React panel can recover after a page reload. Task records expose `cancellable`, `cancellationMode`, `executionThread`, `timeoutPolicy`, and `message` so clients can show whether cancellation is currently available instead of guessing from status alone. The React console keeps started tasks in a task panel and polls them until they reach `completed`, `failed`, `cancelled`, or `timed_out`, so long-running task UI is no longer tied to a short fixed timeout. `removetask(taskId)` only removes terminal tasks.
 
 The current built-in Python command registry is marked as `execution.thread = "editor_game_thread"` with `cancellationMode = "queued_only"` and `timeoutPolicy = "none"`. This is intentional because the starter commands call Unreal Editor APIs that are not safe to invoke from arbitrary background threads. Queued tasks can be cancelled before execution. Once a task enters the running state, the bridge marks it non-cancellable and reports why.
 

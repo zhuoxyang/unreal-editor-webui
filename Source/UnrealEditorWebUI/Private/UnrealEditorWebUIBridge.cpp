@@ -180,6 +180,18 @@ namespace
         Result->SetStringField(TEXT("createdAt"), Task.CreatedAt.ToIso8601());
         Result->SetStringField(TEXT("updatedAt"), Task.UpdatedAt.ToIso8601());
 
+        const TSharedRef<FJsonObject> Request = ParseJsonObjectOrEmpty(Task.RequestJson);
+        FString CommandName;
+        if (Request->TryGetStringField(TEXT("command"), CommandName))
+        {
+            Result->SetStringField(TEXT("command"), CommandName);
+        }
+        const TSharedPtr<FJsonValue> PayloadValue = Request->TryGetField(TEXT("payload"));
+        if (PayloadValue.IsValid() && PayloadValue->Type == EJson::Object)
+        {
+            Result->SetField(TEXT("payload"), PayloadValue);
+        }
+
         TArray<TSharedPtr<FJsonValue>> LogValues;
         for (const FString& LogLine : Task.Logs)
         {
@@ -464,13 +476,48 @@ FString UUnrealEditorWebUIBridge::GetTask(const FString& TaskId) const
     return MakeSuccessResponse(FString(), Result);
 }
 
+FString UUnrealEditorWebUIBridge::ListTasks() const
+{
+    FScopeLock Lock(&TasksCriticalSection);
+
+    TArray<FString> TaskIds;
+    Tasks.GetKeys(TaskIds);
+    TaskIds.Sort([this](const FString& Left, const FString& Right)
+    {
+        return Tasks.FindChecked(Left).CreatedAt > Tasks.FindChecked(Right).CreatedAt;
+    });
+
+    TArray<TSharedPtr<FJsonValue>> TaskValues;
+    TaskValues.Reserve(TaskIds.Num());
+    for (const FString& TaskId : TaskIds)
+    {
+        const TSharedRef<FJsonObject> TaskObject = MakeShared<FJsonObject>();
+        WriteTaskResultFields(TaskObject, TaskId, Tasks.FindChecked(TaskId));
+        TaskValues.Add(MakeShared<FJsonValueObject>(TaskObject));
+    }
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetArrayField(TEXT("tasks"), TaskValues);
+    return MakeSuccessResponse(FString(), Result);
+}
+
 FString UUnrealEditorWebUIBridge::RemoveTask(const FString& TaskId)
 {
     FScopeLock Lock(&TasksCriticalSection);
-    if (Tasks.Remove(TaskId) == 0)
+    const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+    if (Task == nullptr)
     {
         return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
     }
+    if (!IsFinishedTaskStatus(Task->Status))
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("task_not_finished"),
+            FString::Printf(TEXT("Task must finish before removal. Current status: %s"), *Task->Status));
+    }
+
+    Tasks.Remove(TaskId);
 
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetStringField(TEXT("taskId"), TaskId);

@@ -68,6 +68,8 @@ type BridgeResponse<T> =
 type TaskResult = {
   taskId: string
   status: TaskStatus
+  command?: string
+  payload?: Record<string, unknown>
   progress?: number
   cancellable?: boolean
   cancellationMode?: string
@@ -150,6 +152,7 @@ declare global {
         executecommand(requestJson: string): Promise<string>
         startcommand(requestJson: string): Promise<string>
         gettask(taskId: string): Promise<string>
+        listtasks(): Promise<string>
         removetask(taskId: string): Promise<string>
         canceltask(taskId: string): Promise<string>
         getwebuisettings(): Promise<string>
@@ -312,8 +315,9 @@ function App() {
     setTaskRecords((records) => {
       const existing = records[task.taskId]
       const startedAt = existing?.startedAt || fallback?.startedAt || task.createdAt || new Date().toISOString()
-      const command = existing?.command || fallback?.command || 'unknown'
-      const payload = existing?.payload || fallback?.payload || {}
+      const command = task.command || existing?.command || fallback?.command || 'unknown'
+      const payload = task.payload || existing?.payload || fallback?.payload || {}
+      const replacesLastError = fallback && Object.prototype.hasOwnProperty.call(fallback, 'lastError')
 
       return {
         ...records,
@@ -332,7 +336,7 @@ function App() {
           message: task.message ?? existing?.message,
           logs: task.logs ?? existing?.logs ?? [],
           updatedAt: task.updatedAt || existing?.updatedAt || new Date().toISOString(),
-          lastError: fallback?.lastError ?? existing?.lastError,
+          lastError: replacesLastError ? fallback.lastError : existing?.lastError,
         },
       }
     })
@@ -435,47 +439,92 @@ function App() {
   }, [bridge])
 
   useEffect(() => {
+    if (!bridgeReady) {
+      return
+    }
+
+    let stopped = false
+    void callBridgeQuiet<{ tasks: TaskResult[] }>('listtasks')
+      .then((result) => {
+        if (!stopped) {
+          result.tasks.forEach((task) => mergeTaskResult(task))
+        }
+      })
+      .catch((error) => {
+        if (!stopped) {
+          log(`Unable to restore tasks: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      })
+
+    return () => {
+      stopped = true
+    }
+  }, [bridgeReady, callBridgeQuiet, log, mergeTaskResult])
+
+  const recordTaskPollingError = useCallback((taskId: string, error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    setTaskRecords((records) => {
+      const existing = records[taskId]
+      if (!existing) {
+        return records
+      }
+
+      return {
+        ...records,
+        [taskId]: {
+          ...existing,
+          lastError: message,
+        },
+      }
+    })
+  }, [])
+
+  useEffect(() => {
     if (!bridgeReady || !activeTaskKey) {
       return
     }
 
     let stopped = false
     const taskIds = activeTaskKey.split('|')
+    let timeoutId: number | undefined
+    let consecutiveFailures = 0
 
     async function refreshTasks() {
+      let hadFailure = false
       await Promise.all(taskIds.map(async (taskId) => {
         try {
           const task = await callBridgeQuiet<TaskResult>('gettask', taskId)
           if (!stopped) {
-            mergeTaskResult(task)
+            mergeTaskResult(task, { lastError: undefined })
           }
         } catch (error) {
+          hadFailure = true
           if (!stopped) {
-            mergeTaskResult(
-              {
-                taskId,
-                status: 'failed',
-                progress: 100,
-              },
-              {
-                lastError: error instanceof Error ? error.message : String(error),
-              },
-            )
+            recordTaskPollingError(taskId, error)
           }
         }
       }))
+
+      if (stopped) {
+        return
+      }
+
+      consecutiveFailures = hadFailure ? Math.min(consecutiveFailures + 1, 4) : 0
+      const delay = Math.min(1000 * 2 ** consecutiveFailures, 10000)
+      timeoutId = window.setTimeout(() => {
+        void refreshTasks()
+      }, delay)
     }
 
     void refreshTasks()
-    const intervalId = window.setInterval(() => {
-      void refreshTasks()
-    }, 1000)
 
     return () => {
       stopped = true
-      window.clearInterval(intervalId)
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId)
+      }
     }
-  }, [activeTaskKey, bridgeReady, callBridgeQuiet, mergeTaskResult])
+  }, [activeTaskKey, bridgeReady, callBridgeQuiet, mergeTaskResult, recordTaskPollingError])
 
   async function runCommand<T>(command: string, payload: Record<string, unknown> = {}) {
     const request = {
@@ -805,7 +854,10 @@ function App() {
     try {
       await callBridge<{ removed: boolean }>('removetask', taskId)
     } catch (error) {
-      log(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+      log(message)
+      recordTaskPollingError(taskId, error)
+      return
     }
 
     setTaskRecords((records) => {

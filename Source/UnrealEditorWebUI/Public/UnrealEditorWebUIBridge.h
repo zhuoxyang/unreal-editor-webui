@@ -44,6 +44,9 @@ public:
     FString GetTask(const FString& TaskId) const;
 
     UFUNCTION()
+    FString ListTasks() const;
+
+    UFUNCTION()
     FString RemoveTask(const FString& TaskId);
 
     UFUNCTION()
