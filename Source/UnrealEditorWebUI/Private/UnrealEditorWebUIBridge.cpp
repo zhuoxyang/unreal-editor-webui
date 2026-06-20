@@ -634,7 +634,7 @@ bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(
         FText::FromString(CommandName),
         ApprovalScope);
 
-    return FMessageDialog::Open(EAppMsgType::YesNo, Message, &Title) == EAppReturnType::Yes;
+    return FMessageDialog::Open(EAppMsgType::YesNo, Message, Title) == EAppReturnType::Yes;
 }
 
 bool UUnrealEditorWebUIBridge::HasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const

@@ -48,22 +48,20 @@ try {
 
     New-Item -ItemType Directory -Path $PluginStage -Force | Out-Null
 
-    $excludeDirs = @(
-        (Join-Path $RootDir ".git"),
-        (Join-Path $RootDir "Binaries"),
-        (Join-Path $RootDir "DerivedDataCache"),
-        (Join-Path $RootDir "Intermediate"),
-        (Join-Path $RootDir "Saved"),
-        (Join-Path $RootDir "frontend/node_modules"),
-        (Join-Path $RootDir "frontend/dist"),
-        (Join-Path $RootDir "node_modules"),
-        (Join-Path $RootDir "Python/__pycache__"),
-        (Join-Path $RootDir "tests/__pycache__")
-    )
+    Copy-Item -LiteralPath (Join-Path $RootDir "UnrealEditorWebUI.uplugin") -Destination $PluginDescriptor
 
-    & robocopy $RootDir $PluginStage /MIR /XD $excludeDirs /XF ".DS_Store" | Out-Host
-    if ($LASTEXITCODE -gt 7) {
-        throw "robocopy failed with exit code $LASTEXITCODE"
+    $pluginDirectories = @("Config", "Content", "Platforms", "Python", "Resources", "Shaders", "Source", "Web")
+    foreach ($directoryName in $pluginDirectories) {
+        $sourceDirectory = Join-Path $RootDir $directoryName
+        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
+            continue
+        }
+
+        $destinationDirectory = Join-Path $PluginStage $directoryName
+        & robocopy $sourceDirectory $destinationDirectory /MIR /XD "__pycache__" /XF ".DS_Store" "*.pyc" "*.pyo" | Out-Host
+        if ($LASTEXITCODE -gt 7) {
+            throw "robocopy failed for $directoryName with exit code $LASTEXITCODE"
+        }
     }
 
     & $RunUATPath BuildPlugin `

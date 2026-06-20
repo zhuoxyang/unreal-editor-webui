@@ -26,7 +26,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 
 bool FUnrealEditorWebUISettingsURLTest::RunTest(const FString& Parameters)
 {
-    UE_UNUSED(Parameters);
+    static_cast<void>(Parameters);
     const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
     if (!TestTrue(TEXT("Plugin is available"), Plugin.IsValid()))
     {

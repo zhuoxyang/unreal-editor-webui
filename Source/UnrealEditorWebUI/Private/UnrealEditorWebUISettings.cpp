@@ -341,7 +341,7 @@ void UUnrealEditorWebUIEditorSettings::PostEditChangeProperty(FPropertyChangedEv
         const FText Message = FText::FromString(FString::Printf(
             TEXT("%s\n\nThe invalid value was reverted to the last saved setting."),
             *FString::Join(ValidationErrors, TEXT("\n"))));
-        FMessageDialog::Open(EAppMsgType::Ok, Message, &Title);
+        FMessageDialog::Open(EAppMsgType::Ok, Message, Title);
     }
 
     SaveConfig();

@@ -46,20 +46,21 @@ if [[ ! -f "$FRONTEND_ENTRY" ]]; then
 fi
 
 mkdir -p "$PLUGIN_STAGE"
+cp "$ROOT_DIR/UnrealEditorWebUI.uplugin" "$PLUGIN_STAGE/UnrealEditorWebUI.uplugin"
 
-rsync -a --delete \
-  --exclude ".git/" \
-  --exclude ".DS_Store" \
-  --exclude "Binaries/" \
-  --exclude "DerivedDataCache/" \
-  --exclude "Intermediate/" \
-  --exclude "Saved/" \
-  --exclude "frontend/node_modules/" \
-  --exclude "frontend/dist/" \
-  --exclude "node_modules/" \
-  --exclude "Python/__pycache__/" \
-  --exclude "tests/__pycache__/" \
-  "$ROOT_DIR/" "$PLUGIN_STAGE/"
+for directory_name in Config Content Platforms Python Resources Shaders Source Web; do
+  source_directory="$ROOT_DIR/$directory_name"
+  if [[ ! -d "$source_directory" ]]; then
+    continue
+  fi
+
+  rsync -a --delete \
+    --exclude ".DS_Store" \
+    --exclude "__pycache__/" \
+    --exclude "*.pyc" \
+    --exclude "*.pyo" \
+    "$source_directory/" "$PLUGIN_STAGE/$directory_name/"
+done
 
 "$RUN_UAT" BuildPlugin \
   -Plugin="$PLUGIN_STAGE/UnrealEditorWebUI.uplugin" \
