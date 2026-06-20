@@ -2,22 +2,25 @@
 
 ## Latest Local Validation
 
-Windows local validation on 2026-06-18:
+Windows local validation on 2026-06-20:
 
 - Frontend build: passed with `npm run build`.
 - Frontend lint: passed with `npm run lint`.
+- Frontend tests: passed with `npm test` (10 tests across schema coercion, result rendering, and task recovery).
+- Frontend dependency audit: passed with 0 vulnerabilities after the clean packaging install.
 - Plugin descriptor JSON: passed with `python3 -m json.tool UnrealEditorWebUI.uplugin`.
 - Python syntax: passed with `python3 -m py_compile Python/*.py`.
-- Python registry tests: passed with `python -m unittest discover -s tests` (15 tests).
+- Python registry tests: passed with `python -m unittest discover -s tests` (19 tests).
 - Windows packaging script missing-RunUAT failure path: passed with `powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 Z:\missing\RunUAT.bat $env:TEMP\UnrealEditorWebUI-MissingRunUAT`.
 - Whitespace diff check: passed with `git diff --check` (Windows line-ending warnings only).
 - UE 5.5 BuildPlugin: passed on Windows 11 with `C:\Program Files\Epic Games\UE_5.5\Engine\Build\BatchFiles\RunUAT.bat`.
-- UE 5.5 BuildPlugin output: `C:\Users\zhuolyang\AppData\Local\Temp\UnrealEditorWebUI-Package-UE55-20260618213925`.
-- UE 5.5 settings smoke: `scripts/validate-settings-smoke.py` loaded `UUnrealEditorWebUIEditorSettings` in a temporary host project and confirmed the expected Project Settings path `Project > Plugins > Unreal Editor WebUI`. The smoke script passed; the commandlet process reported a non-zero exit because a user-global `C:/Users/zhuolyang/Documents/UnrealEngine/Python/init_unreal.py` startup script logged an unrelated LightAI error before the smoke script ran.
+- UE 5.5 BuildPlugin output: `C:\Users\zhuolyang\AppData\Local\Temp\UnrealEditorWebUI-Package-20260620202507`.
+- Packaging helper smoke: passed from lockfile install through React build and UE packaging. The package contains `Web/dist/index.html` and excludes local docs, frontend sources, and unrelated untracked files.
+- UE 5.5 settings smoke (last rerun 2026-06-18): `scripts/validate-settings-smoke.py` loaded `UUnrealEditorWebUIEditorSettings` in a temporary host project and confirmed the expected Project Settings path `Project > Plugins > Unreal Editor WebUI`. The smoke script passed; the commandlet process reported a non-zero exit because a user-global `C:/Users/zhuolyang/Documents/UnrealEngine/Python/init_unreal.py` startup script logged an unrelated LightAI error before the smoke script ran.
 
 CI coverage added in `.github/workflows/ci.yml`:
 
-- Node 22 frontend install/build/lint.
+- Node 22 frontend install/build/lint/test and packaged frontend entry-point validation.
 - Python 3.11 descriptor, syntax, registry unit tests, and whitespace validation.
 
 Historical UE validation:
