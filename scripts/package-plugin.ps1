@@ -15,11 +15,37 @@ if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) {
 
 $RunUATPath = (Resolve-Path -LiteralPath $RunUAT).Path
 $RootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+$FrontendDir = Join-Path $RootDir "frontend"
+$FrontendEntry = Join-Path $RootDir "Web/dist/index.html"
 $StagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ("UnrealEditorWebUI-" + [System.Guid]::NewGuid().ToString("N"))
 $PluginStage = Join-Path $StagingDir "UnrealEditorWebUI"
 $PluginDescriptor = Join-Path $PluginStage "UnrealEditorWebUI.uplugin"
 
 try {
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        throw "npm is required to build the React frontend before packaging."
+    }
+
+    Push-Location $FrontendDir
+    try {
+        & npm ci
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm ci failed with exit code $LASTEXITCODE"
+        }
+
+        & npm run build
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm run build failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path -LiteralPath $FrontendEntry -PathType Leaf)) {
+        throw "Frontend build did not create the expected entry point: $FrontendEntry"
+    }
+
     New-Item -ItemType Directory -Path $PluginStage -Force | Out-Null
 
     $excludeDirs = @(

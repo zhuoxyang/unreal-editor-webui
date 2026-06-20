@@ -35,6 +35,9 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Verify packaged frontend entry point
+        run: test -f Web/dist/index.html
+
       - name: Lint frontend
         working-directory: frontend
         run: npm run lint

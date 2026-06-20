@@ -80,7 +80,7 @@ The build output is written to `Web/dist`. If that folder is missing, the plugin
 
 ## Package The Plugin
 
-Use the repository scripts when packaging after frontend development. They stage a clean copy of the plugin and exclude local dependency folders such as `frontend/node_modules`.
+Use the repository scripts when packaging. They install the locked frontend dependencies, build the React app, verify `Web/dist/index.html`, and then stage a clean copy of the plugin without local dependency folders such as `frontend/node_modules`.
 
 ```sh
 bash scripts/package-plugin.sh \
@@ -96,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
   "$env:TEMP\UnrealEditorWebUI-Package"
 ```
 
-You can still run `RunUAT BuildPlugin` directly from a clean checkout, but the script is safer after `npm install`.
+Use the helper scripts for release packages so the React frontend is always rebuilt from the lockfile. Calling `RunUAT BuildPlugin` directly does not build `Web/dist` for you.
 
 See `docs/validation.md` for the latest local validation status.
 

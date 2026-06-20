@@ -9,6 +9,8 @@ fi
 RUN_UAT="$1"
 PACKAGE_DIR="$2"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FRONTEND_DIR="$ROOT_DIR/frontend"
+FRONTEND_ENTRY="$ROOT_DIR/Web/dist/index.html"
 STAGING_DIR="$(mktemp -d)"
 PLUGIN_STAGE="$STAGING_DIR/UnrealEditorWebUI"
 
@@ -22,10 +24,26 @@ if ! command -v rsync >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to build the React frontend before packaging." >&2
+  exit 1
+fi
+
 cleanup() {
   rm -rf "$STAGING_DIR"
 }
 trap cleanup EXIT
+
+(
+  cd "$FRONTEND_DIR"
+  npm ci
+  npm run build
+)
+
+if [[ ! -f "$FRONTEND_ENTRY" ]]; then
+  echo "Frontend build did not create the expected entry point: $FRONTEND_ENTRY" >&2
+  exit 1
+fi
 
 mkdir -p "$PLUGIN_STAGE"
 
