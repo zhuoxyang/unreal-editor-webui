@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import './App.css'
+import { InspectorPanel } from './components/InspectorPanel'
 import { ResultRenderer } from './components/ResultRenderer'
+import { ToolRackPanel } from './components/ToolRackPanel'
+import { WorkspacePanel } from './components/WorkspacePanel'
 import {
   decodeEnumOption,
   encodeEnumOption,
@@ -9,9 +12,18 @@ import {
   isSchemaScalar,
   parseNumericDraft,
 } from './schema-form'
+import {
+  commandCategoryId,
+  commandSupportsStage,
+  loadToolPreferences,
+  saveToolPreferences,
+  TOOL_CATEGORIES,
+  TOOL_PROJECTS,
+  TOOL_STAGES,
+} from './tool-manifest'
+import type { ToolCategoryId, ToolProjectId, ToolStageId } from './tool-manifest'
 
 type DraftValue = string | number | boolean
-type PermissionFilter = 'all' | 'read' | 'write' | 'destructive'
 type ExecutionMode = 'run' | 'task'
 type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
 type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out'
@@ -253,10 +265,10 @@ function App() {
   const [commandResults, setCommandResults] = useState<Record<string, unknown>>({})
   const [taskRecords, setTaskRecords] = useState<Record<string, TaskRecord>>({})
   const [commandSearch, setCommandSearch] = useState('')
-  const [permissionFilter, setPermissionFilter] = useState<PermissionFilter>('all')
+  const [toolPreferences, setToolPreferences] = useState(loadToolPreferences)
   const [selectedCommandName, setSelectedCommandName] = useState<string | null>(null)
-  const [workspaceTabs, setWorkspaceTabs] = useState<string[]>([])
-  const [favoriteCommands, setFavoriteCommands] = useState<string[]>([])
+  const [workspaceTabs, setWorkspaceTabs] = useState<string[]>(toolPreferences.openTabs)
+  const [favoriteCommands, setFavoriteCommands] = useState<string[]>(toolPreferences.favorites)
   const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(loadStoredRecentExecutions)
   const [eventLines, setEventLines] = useState<string[]>([])
   const [logLines, setLogLines] = useState<string[]>([
@@ -276,31 +288,24 @@ function App() {
 
   const activeTaskKey = activeTaskIds.join('|')
 
+  const activeProject = TOOL_PROJECTS.find((project) => project.id === toolPreferences.projectId) || TOOL_PROJECTS[0]
+  const availableStages = TOOL_STAGES.filter((stage) => activeProject.stages.includes(stage.id))
+
   const filteredCommands = useMemo(() => {
     const search = commandSearch.trim().toLowerCase()
 
     return commands.filter((command) => {
-      const matchesPermission = permissionFilter === 'all' || command.permission === permissionFilter
+      const matchesStage = commandSupportsStage(command, toolPreferences.stageId)
+      const categoryId = commandCategoryId(command)
+      const matchesCategory =
+        toolPreferences.categoryId === 'all' ||
+        (toolPreferences.categoryId === 'favorites' && favoriteCommands.includes(command.name)) ||
+        (toolPreferences.categoryId === 'recent' && recentExecutions.some((item) => item.command === command.name)) ||
+        categoryId === toolPreferences.categoryId
       const searchText = `${command.name} ${command.description} ${command.category || ''} ${(command.tags || []).join(' ')}`.toLowerCase()
-      return matchesPermission && (!search || searchText.includes(search))
+      return matchesStage && matchesCategory && (!search || searchText.includes(search))
     })
-  }, [commands, commandSearch, permissionFilter])
-
-  const commandGroups = useMemo(() => {
-    const groups = filteredCommands.reduce<Record<string, CommandMetadata[]>>((accumulator, command) => {
-      const [fallbackGroupName] = command.name.split('.')
-      const groupName = command.category || fallbackGroupName
-      accumulator[groupName] = accumulator[groupName] || []
-      accumulator[groupName].push(command)
-      return accumulator
-    }, {})
-
-    Object.values(groups).forEach((groupCommands) => {
-      groupCommands.sort((left, right) => (left.order ?? 100) - (right.order ?? 100) || left.name.localeCompare(right.name))
-    })
-
-    return groups
-  }, [filteredCommands])
+  }, [commands, commandSearch, favoriteCommands, recentExecutions, toolPreferences.categoryId, toolPreferences.stageId])
 
   const selectedCommand = useMemo(() => {
     if (selectedCommandName) {
@@ -316,6 +321,18 @@ function App() {
 
   const favoriteCommandSet = useMemo(() => new Set(favoriteCommands), [favoriteCommands])
 
+  const visibleFavoriteCommands = useMemo(() => {
+    return favoriteCommands
+      .map((name) => commands.find((command) => command.name === name))
+      .filter((command): command is CommandMetadata => Boolean(command))
+  }, [commands, favoriteCommands])
+
+  const visibleRecentCommands = useMemo(() => {
+    return recentCommandNames
+      .map((name) => commands.find((command) => command.name === name))
+      .filter((command): command is CommandMetadata => Boolean(command))
+  }, [commands, recentCommandNames])
+
   const openWorkspaceCommandNames = useMemo(() => {
     const names = workspaceTabs.filter((name) => commands.some((command) => command.name === name))
     if (selectedCommand && !names.includes(selectedCommand.name)) {
@@ -324,6 +341,16 @@ function App() {
 
     return names
   }, [commands, selectedCommand, workspaceTabs])
+
+  const workspaceCommandTabs = useMemo(() => {
+    return openWorkspaceCommandNames
+      .map((name) => commands.find((command) => command.name === name))
+      .filter((command): command is CommandMetadata => Boolean(command))
+      .map((command) => ({
+        name: command.name,
+        icon: command.icon,
+      }))
+  }, [commands, openWorkspaceCommandNames])
 
   function openCommandWorkspace(commandName: string) {
     setSelectedCommandName(commandName)
@@ -343,6 +370,30 @@ function App() {
     )
   }
 
+  function updateToolProject(projectId: ToolProjectId) {
+    const project = TOOL_PROJECTS.find((item) => item.id === projectId) || TOOL_PROJECTS[0]
+    const nextStage = project.stages.includes(toolPreferences.stageId) ? toolPreferences.stageId : project.stages[0]
+    setToolPreferences((preferences) => ({
+      ...preferences,
+      projectId,
+      stageId: nextStage,
+    }))
+  }
+
+  function updateToolStage(stageId: ToolStageId) {
+    setToolPreferences((preferences) => ({
+      ...preferences,
+      stageId,
+    }))
+  }
+
+  function updateToolCategory(categoryId: ToolCategoryId) {
+    setToolPreferences((preferences) => ({
+      ...preferences,
+      categoryId,
+    }))
+  }
+
   useEffect(() => {
     try {
       globalThis.localStorage?.setItem(RECENT_EXECUTIONS_STORAGE_KEY, JSON.stringify(recentExecutions))
@@ -350,6 +401,14 @@ function App() {
       // Local storage is optional in embedded browser contexts.
     }
   }, [recentExecutions])
+
+  useEffect(() => {
+    saveToolPreferences({
+      ...toolPreferences,
+      favorites: favoriteCommands,
+      openTabs: workspaceTabs,
+    })
+  }, [favoriteCommands, toolPreferences, workspaceTabs])
 
   const log = useCallback((message: string) => {
     const time = new Date().toLocaleTimeString()
@@ -1245,188 +1304,62 @@ function App() {
       </section>
 
       <section className="tool-shell-layout">
-        <aside className="panel tool-rack-panel">
-          <div className="panel-title-row">
-            <h2>Tool Rack</h2>
-            <span>{filteredCommands.length} shown</span>
-          </div>
-          <div className="command-browser tool-rack-search">
-            <input
-              type="search"
-              value={commandSearch}
-              placeholder="Search tools, tags, categories"
-              onChange={(event: ChangeEvent<HTMLInputElement>) => setCommandSearch(event.target.value)}
-            />
-            <select
-              value={permissionFilter}
-              onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                setPermissionFilter(event.target.value as PermissionFilter)
-              }
-            >
-              <option value="all">All permissions</option>
-              <option value="read">Read</option>
-              <option value="write">Write</option>
-              <option value="destructive">Destructive</option>
-            </select>
-          </div>
+        <ToolRackPanel
+          categories={TOOL_CATEGORIES}
+          categoryId={toolPreferences.categoryId}
+          commands={filteredCommands}
+          favoriteCommands={visibleFavoriteCommands}
+          onCategoryChange={updateToolCategory}
+          onOpenCommand={openCommandWorkspace}
+          onProjectChange={updateToolProject}
+          onSearchChange={setCommandSearch}
+          onStageChange={updateToolStage}
+          projectId={toolPreferences.projectId}
+          projects={TOOL_PROJECTS}
+          recentCommands={visibleRecentCommands}
+          search={commandSearch}
+          selectedCommandName={selectedCommand?.name || null}
+          shownCount={filteredCommands.length}
+          stageId={toolPreferences.stageId}
+          stages={availableStages}
+        />
 
-          {favoriteCommands.length > 0 ? (
-            <div className="tool-rack-section">
-              <h3>Favorites</h3>
-              {favoriteCommands
-                .map((name) => commands.find((command) => command.name === name))
-                .filter((command): command is CommandMetadata => Boolean(command))
-                .map((command) => (
-                  <button
-                    className={selectedCommand?.name === command.name ? 'tool-rack-item active' : 'tool-rack-item'}
-                    key={`favorite-${command.name}`}
-                    type="button"
-                    onClick={() => openCommandWorkspace(command.name)}
-                  >
-                    <span className="tool-rack-icon">{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
-                    <span>
-                      <strong>{command.name}</strong>
-                      <small>{command.description || 'No description provided.'}</small>
-                    </span>
-                  </button>
-                ))}
-            </div>
-          ) : null}
-
-          {recentCommandNames.length > 0 ? (
-            <div className="tool-rack-section">
-              <h3>Recent</h3>
-              {recentCommandNames
-                .map((name) => commands.find((command) => command.name === name))
-                .filter((command): command is CommandMetadata => Boolean(command))
-                .map((command) => (
-                  <button
-                    className={selectedCommand?.name === command.name ? 'tool-rack-item active' : 'tool-rack-item'}
-                    key={`recent-${command.name}`}
-                    type="button"
-                    onClick={() => openCommandWorkspace(command.name)}
-                  >
-                    <span className="tool-rack-icon">{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
-                    <span>
-                      <strong>{command.name}</strong>
-                      <small>{command.description || 'No description provided.'}</small>
-                    </span>
-                  </button>
-                ))}
-            </div>
-          ) : null}
-
-          {commands.length === 0 ? (
-            <p className="muted">Tool metadata loads automatically when the Unreal bridge is ready.</p>
-          ) : filteredCommands.length === 0 ? (
-            <p className="muted">No tools match the current filters.</p>
-          ) : (
-            Object.entries(commandGroups).map(([groupName, groupCommands]) => (
-              <div className="tool-rack-section" key={groupName}>
-                <h3>{groupName}</h3>
-                {groupCommands.map((command) => (
-                  <button
-                    className={selectedCommand?.name === command.name ? 'tool-rack-item active' : 'tool-rack-item'}
-                    key={command.name}
-                    type="button"
-                    onClick={() => openCommandWorkspace(command.name)}
-                  >
-                    <span className="tool-rack-icon">{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
-                    <span>
-                      <strong>{command.name}</strong>
-                      <small>{command.description || 'No description provided.'}</small>
-                    </span>
-                    <span className={`badge ${command.permission}`}>{command.permission}</span>
-                  </button>
-                ))}
-              </div>
-            ))
-          )}
-        </aside>
-
-        <section className="panel workspace-panel">
-          <div className="workspace-tabs">
-            {openWorkspaceCommandNames.length === 0 ? (
-              <span className="muted">Select a tool to open a workspace tab.</span>
+        <WorkspacePanel
+          activeTabName={selectedCommand?.name || null}
+          badges={
+            selectedCommand ? (
+              <>
+                <span className={`badge ${selectedCommand.permission}`}>{selectedCommand.permission}</span>
+                {commandHasDryRun(selectedCommand) ? <span className="badge dry-run">dry-run</span> : null}
+                {selectedCommand.execution?.thread ? (
+                  <span className="badge execution">{selectedCommand.execution.thread}</span>
+                ) : null}
+              </>
+            ) : null
+          }
+          category={selectedCommand?.category || selectedCommand?.name.split('.')[0]}
+          onCloseTab={closeCommandWorkspace}
+          onSelectTab={setSelectedCommandName}
+          result={
+            selectedCommand ? (
+              renderCommandResult(selectedCommand.name) || (
+                <p className="muted">Run this tool to see structured output in the workspace.</p>
+              )
             ) : (
-              openWorkspaceCommandNames.map((name) => {
-                const command = commands.find((item) => item.name === name)
-                if (!command) {
-                  return null
-                }
-
-                return (
-                  <button
-                    className={selectedCommand?.name === name ? 'workspace-tab active' : 'workspace-tab'}
-                    key={name}
-                    type="button"
-                    onClick={() => setSelectedCommandName(name)}
-                  >
-                    <span>{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
-                    {name}
-                    <span
-                      className="workspace-tab-close"
-                      role="button"
-                      tabIndex={0}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        closeCommandWorkspace(name)
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          event.stopPropagation()
-                          closeCommandWorkspace(name)
-                        }
-                      }}
-                    >
-                      x
-                    </span>
-                  </button>
-                )
-              })
-            )}
-          </div>
-
-          {selectedCommand ? (
-            <div className="workspace-content">
-              <div className="workspace-tool-header">
-                <div>
-                  <p className="eyebrow">{selectedCommand.category || selectedCommand.name.split('.')[0]}</p>
-                  <h2>{selectedCommand.name}</h2>
-                  <p>{selectedCommand.description || 'No description provided.'}</p>
-                </div>
-                <span className="badge-group">
-                  <span className={`badge ${selectedCommand.permission}`}>{selectedCommand.permission}</span>
-                  {commandHasDryRun(selectedCommand) ? <span className="badge dry-run">dry-run</span> : null}
-                  {selectedCommand.execution?.thread ? (
-                    <span className="badge execution">{selectedCommand.execution.thread}</span>
-                  ) : null}
-                </span>
-              </div>
-
-              <div className="workspace-result">
-                {renderCommandResult(selectedCommand.name) || (
-                  <p className="muted">Run this tool to see structured output in the workspace.</p>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="workspace-content">
               <p className="muted">No tool selected.</p>
-            </div>
-          )}
-        </section>
+            )
+          }
+          subtitle={selectedCommand?.description || 'No description provided.'}
+          tabs={workspaceCommandTabs}
+          title={selectedCommand?.name}
+        />
 
-        <aside className="panel inspector-panel">
-          <div className="panel-title-row">
-            <h2>Inspector</h2>
-            {selectedCommand ? (
-              <button type="button" onClick={() => toggleFavoriteCommand(selectedCommand.name)}>
-                {favoriteCommandSet.has(selectedCommand.name) ? 'Unfavorite' : 'Favorite'}
-              </button>
-            ) : null}
-          </div>
+        <InspectorPanel
+          favoriteLabel={
+            selectedCommand ? (favoriteCommandSet.has(selectedCommand.name) ? 'Unfavorite' : 'Favorite') : undefined
+          }
+          onToggleFavorite={selectedCommand ? () => toggleFavoriteCommand(selectedCommand.name) : undefined}
+        >
           {selectedCommand ? (
             <>
               <div className="schema-form">
@@ -1455,7 +1388,7 @@ function App() {
           ) : (
             <p className="muted">Select a tool to inspect its inputs.</p>
           )}
-        </aside>
+        </InspectorPanel>
       </section>
 
       <section className="tool-shell-bottom">

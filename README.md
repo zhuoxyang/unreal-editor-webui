@@ -99,6 +99,7 @@ powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
 Use the helper scripts for release packages so the React frontend is always rebuilt from the lockfile. Calling `RunUAT BuildPlugin` directly does not build `Web/dist` for you.
 
 See `docs/validation.md` for the latest local validation status.
+See `docs/tool-framework.md` for the tool rack manifest, prototype policy, and UE CI runner notes.
 
 ## JavaScript Command Example
 

@@ -1,4 +1,5 @@
 import { JsonResultView } from './JsonResultView'
+import { downloadText, resultToJson, resultToMarkdownSummary, rowsToCsv } from '../result-export'
 
 type ResultEnvelope = {
   protocolVersion?: number
@@ -65,6 +66,42 @@ function formatCell(value: unknown) {
     : JSON.stringify(value)
 }
 
+function exportRowsForView(result: unknown, view: string) {
+  const envelope = toEnvelope(result)
+  if (view === 'assetTable' && Array.isArray(envelope.assets)) return envelope.assets.filter(isRecord)
+  if (view === 'issueTable' && Array.isArray(envelope.issues)) return envelope.issues.filter(isRecord)
+  if (view === 'changeSet' && Array.isArray(envelope.changeSet)) return envelope.changeSet.filter(isRecord)
+  return []
+}
+
+function ResultActions({ result, view, commandName }: { result: unknown; view: string; commandName?: string }) {
+  const rows = exportRowsForView(result, view)
+  const basename = commandName || 'tool-result'
+
+  async function copyJson() {
+    await navigator.clipboard?.writeText(resultToJson(result))
+  }
+
+  return (
+    <div className="result-actions">
+      <button type="button" onClick={() => void copyJson()}>
+        Copy JSON
+      </button>
+      <button type="button" onClick={() => downloadText(`${basename}.json`, resultToJson(result), 'application/json')}>
+        JSON
+      </button>
+      {rows.length > 0 ? (
+        <button type="button" onClick={() => downloadText(`${basename}.csv`, rowsToCsv(rows), 'text/csv')}>
+          CSV
+        </button>
+      ) : null}
+      <button type="button" onClick={() => downloadText(`${basename}.md`, resultToMarkdownSummary(result), 'text/markdown')}>
+        Markdown
+      </button>
+    </div>
+  )
+}
+
 function AssetTableView({ result }: { result: unknown }) {
   const envelope = toEnvelope(result)
   const assets = Array.isArray(envelope.assets) ? envelope.assets : []
@@ -86,6 +123,7 @@ function AssetTableView({ result }: { result: unknown }) {
             {columns.map((column) => (
               <th key={column}>{column}</th>
             ))}
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -94,6 +132,11 @@ function AssetTableView({ result }: { result: unknown }) {
               {columns.map((column) => (
                 <td key={column}>{formatCell(isRecord(asset) ? asset[column] : '')}</td>
               ))}
+              <td>
+                <button className="inline-action" type="button">
+                  Select
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -180,20 +223,44 @@ function ChangeSetView({ result }: { result: unknown }) {
   )
 }
 
-export function ResultRenderer({ result, resultType }: ResultRendererProps) {
+export function ResultRenderer({ result, resultType, commandName }: ResultRendererProps) {
+  return <ResultRendererInner commandName={commandName} result={result} resultType={resultType} />
+}
+
+function ResultRendererInner({ result, resultType, commandName }: ResultRendererProps) {
   const view = viewForResult(result, resultType)
 
   if (view === 'assetTable') {
-    return <AssetTableView result={result} />
+    return (
+      <>
+        <ResultActions commandName={commandName} result={result} view={view} />
+        <AssetTableView result={result} />
+      </>
+    )
   }
 
   if (view === 'issueTable') {
-    return <IssueTableView result={result} />
+    return (
+      <>
+        <ResultActions commandName={commandName} result={result} view={view} />
+        <IssueTableView result={result} />
+      </>
+    )
   }
 
   if (view === 'changeSet') {
-    return <ChangeSetView result={result} />
+    return (
+      <>
+        <ResultActions commandName={commandName} result={result} view={view} />
+        <ChangeSetView result={result} />
+      </>
+    )
   }
 
-  return <JsonResultView result={result} />
+  return (
+    <>
+      <ResultActions commandName={commandName} result={result} view={view} />
+      <JsonResultView result={result} />
+    </>
+  )
 }

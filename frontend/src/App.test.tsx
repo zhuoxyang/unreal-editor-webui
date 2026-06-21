@@ -54,6 +54,7 @@ function installBridge(tasks: unknown[], overrides: Partial<NonNullable<NonNulla
 
 afterEach(() => {
   cleanup()
+  window.localStorage.clear()
   delete window.ue
 })
 
@@ -83,5 +84,26 @@ describe('task recovery', () => {
     expect(await screen.findByText('temporary bridge failure')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('running')).toBeInTheDocument())
     expect(screen.queryByText('failed')).not.toBeInTheDocument()
+  })
+})
+
+describe('tool preferences', () => {
+  it('restores project and open tabs from local storage', async () => {
+    window.localStorage.setItem(
+      'unreal-editor-webui.toolPreferences',
+      JSON.stringify({
+        projectId: 'neon',
+        stageId: 'art',
+        categoryId: 'all',
+        favorites: ['asset.scan'],
+        openTabs: ['asset.longScan'],
+      }),
+    )
+    installBridge([])
+
+    render(<App />)
+
+    expect(await screen.findByDisplayValue('Project Neon')).toBeInTheDocument()
+    expect((await screen.findAllByText('asset.longScan')).length).toBeGreaterThan(0)
   })
 })

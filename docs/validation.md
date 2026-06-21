@@ -6,11 +6,11 @@ Windows local validation on 2026-06-20:
 
 - Frontend build: passed with `npm run build`.
 - Frontend lint: passed with `npm run lint`.
-- Frontend tests: passed with `npm test` (10 tests across schema coercion, result rendering, and task recovery).
+- Frontend tests: passed with `npm test` (17 tests across schema coercion, result rendering/export, preferences, and task recovery).
 - Frontend dependency audit: passed with 0 vulnerabilities after the clean packaging install.
 - Plugin descriptor JSON: passed with `python3 -m json.tool UnrealEditorWebUI.uplugin`.
 - Python syntax: passed with `python3 -m py_compile Python/*.py`.
-- Python registry tests: passed with `python -m unittest discover -s tests` (19 tests).
+- Python registry tests: passed with `python -m unittest discover -s tests` (28 tests).
 - Windows packaging script missing-RunUAT failure path: passed with `powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 Z:\missing\RunUAT.bat $env:TEMP\UnrealEditorWebUI-MissingRunUAT`.
 - Whitespace diff check: passed with `git diff --check` (Windows line-ending warnings only).
 - UE 5.5 BuildPlugin: passed on Windows 11 with `C:\Program Files\Epic Games\UE_5.5\Engine\Build\BatchFiles\RunUAT.bat`.

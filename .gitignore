@@ -30,3 +30,10 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Local design/prototype scratch files
+docs/tool-hub-*.html
+docs/ue-tool-framework-*.html
+docs/ue-tool-framework-*.md
+tencent/
+ui-workflow-*

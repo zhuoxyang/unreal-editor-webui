@@ -430,6 +430,60 @@ class RegistryTests(unittest.TestCase):
             ],
         )
 
+    def test_asset_naming_validation_returns_issue_table(self):
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.validateNaming",
+                    {
+                        "assetPaths": ["/Game/Props/Chair", "/Game/Props/SM_Table", "/Game/Bad Path/T_Rock"],
+                    },
+                )
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["view"], "issueTable")
+        self.assertEqual(response["result"]["summary"]["checked"], 3)
+        self.assertEqual(response["result"]["summary"]["issues"], 2)
+        self.assertEqual(response["result"]["issues"][0]["severity"], "warning")
+
+    def test_texture_budget_validation_reports_oversized_textures(self):
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.validateTextureBudget",
+                    {
+                        "textures": [
+                            {"path": "/Game/T_OK", "width": 1024, "height": 1024},
+                            {"path": "/Game/T_Huge", "width": 8192, "height": 4096},
+                        ],
+                        "maxSize": 4096,
+                    },
+                )
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["summary"]["issues"], 1)
+        self.assertEqual(response["result"]["issues"][0]["assetPath"], "/Game/T_Huge")
+
+    def test_redirector_scan_reports_potential_redirectors(self):
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.scanRedirectors",
+                    {
+                        "assetPaths": ["/Game/Old/Redirector_Chair", "/Game/Props/SM_Table"],
+                    },
+                )
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["summary"]["issues"], 1)
+        self.assertIn("Redirector", response["result"]["issues"][0]["assetPath"])
+
     def test_long_run_demo_exposes_cooperative_execution_metadata(self):
         response = parse_response(self.registry.inspect_command(request("demo.longRun", {"steps": 3})))
 
