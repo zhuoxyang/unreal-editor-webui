@@ -1,5 +1,7 @@
 import copy
+import importlib
 import json
+import pkgutil
 import traceback
 from typing import Any, Callable
 
@@ -8,6 +10,8 @@ import unreal
 CommandHandler = Callable[[dict[str, Any]], Any]
 COMMANDS: dict[str, CommandHandler] = {}
 COMMAND_METADATA: dict[str, dict[str, Any]] = {}
+COMMAND_LOAD_ERRORS: list[dict[str, str]] = []
+METADATA_VERSION = 1
 SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 DEFAULT_PERMISSION_POLICY = {
@@ -26,6 +30,14 @@ def command(
     execution_thread: str = "editor_game_thread",
     cancellation_mode: str = "queued_only",
     timeout_policy: str = "none",
+    category: str = "",
+    icon: str = "",
+    tags: list[str] | None = None,
+    order: int = 100,
+    supported_asset_types: list[str] | None = None,
+    ui: dict[str, Any] | None = None,
+    result_type: str = "json",
+    warnings: list[str] | None = None,
 ) -> Callable[[CommandHandler], CommandHandler]:
     """Register a Python command that can be called from the editor Web UI."""
 
@@ -47,11 +59,20 @@ def command(
     def decorator(handler: CommandHandler) -> CommandHandler:
         COMMANDS[normalized_name] = handler
         COMMAND_METADATA[normalized_name] = {
+            "metadataVersion": METADATA_VERSION,
             "name": normalized_name,
             "description": description,
             "permission": normalized_permission,
             "schema": normalized_schema,
             "supportsDryRun": supports_dry_run,
+            "category": category,
+            "icon": icon,
+            "tags": tags or [],
+            "order": order,
+            "supportedAssetTypes": supported_asset_types or [],
+            "ui": ui or {},
+            "resultType": result_type,
+            "warnings": warnings or [],
             "execution": {
                 "thread": execution_thread,
                 "cancellationMode": cancellation_mode,
@@ -61,6 +82,43 @@ def command(
         return handler
 
     return decorator
+
+
+def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> None:
+    COMMAND_LOAD_ERRORS.clear()
+
+    try:
+        package = importlib.import_module(package_name)
+    except Exception as exc:
+        COMMAND_LOAD_ERRORS.append(
+            {
+                "module": package_name,
+                "error": str(exc),
+            }
+        )
+        return
+
+    package_paths = getattr(package, "__path__", None)
+    if package_paths is None:
+        COMMAND_LOAD_ERRORS.append(
+            {
+                "module": package_name,
+                "error": "Command package does not expose __path__.",
+            }
+        )
+        return
+
+    for module_info in sorted(pkgutil.iter_modules(package_paths), key=lambda item: item.name):
+        module_name = f"{package_name}.{module_info.name}"
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            COMMAND_LOAD_ERRORS.append(
+                {
+                    "module": module_name,
+                    "error": str(exc),
+                }
+            )
 
 
 def _success(request_id: str | None, result: Any) -> str:
@@ -358,6 +416,28 @@ def _permission_allowed(command_name: str, permission: str, policy: dict[str, st
     return policy["allowedCommand"] == command_name and policy["allowedPermission"] == normalized
 
 
+def _prepare_command_payload(
+    request_id: str | None,
+    command_name: str,
+    payload: Any,
+    schema: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, _error(request_id, "invalid_payload", "Payload must be a JSON object.")
+
+    normalized_payload = _apply_schema_defaults(payload, schema)
+    validation_errors = _validate_payload(normalized_payload, schema)
+    if validation_errors:
+        return None, _error(
+            request_id,
+            "invalid_payload",
+            "Payload failed schema validation.",
+            details=validation_errors,
+        )
+
+    return normalized_payload, None
+
+
 def inspect_command(request_json: str) -> str:
     request_id = None
 
@@ -368,6 +448,7 @@ def inspect_command(request_json: str) -> str:
 
         request_id = request.get("id")
         command_name = request.get("command")
+        payload = request.get("payload", {})
 
         if not isinstance(command_name, str) or not command_name:
             return _error(request_id, "invalid_command", "Command must be a non-empty string.")
@@ -376,12 +457,19 @@ def inspect_command(request_json: str) -> str:
         if metadata is None:
             return _error(request_id, "unknown_command", f"Unknown command: {command_name}")
 
+        schema = metadata.get("schema", {})
+        normalized_payload, payload_error = _prepare_command_payload(request_id, command_name, payload, schema)
+        if payload_error is not None:
+            return payload_error
+
         return _success(
             request_id,
             {
                 "command": command_name,
                 "permission": str(metadata.get("permission", "read")),
                 "execution": metadata.get("execution", {}),
+                "payloadValid": True,
+                "normalizedPayload": normalized_payload,
             },
         )
 
@@ -411,9 +499,6 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
         if not isinstance(command_name, str) or not command_name:
             return _error(request_id, "invalid_command", "Command must be a non-empty string.")
 
-        if not isinstance(payload, dict):
-            return _error(request_id, "invalid_payload", "Payload must be a JSON object.")
-
         handler = COMMANDS.get(command_name)
         if handler is None:
             return _error(request_id, "unknown_command", f"Unknown command: {command_name}")
@@ -429,17 +514,11 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
             )
 
         schema = metadata.get("schema", {})
-        payload = _apply_schema_defaults(payload, schema)
-        validation_errors = _validate_payload(payload, schema)
-        if validation_errors:
-            return _error(
-                request_id,
-                "invalid_payload",
-                "Payload failed schema validation.",
-                details=validation_errors,
-            )
+        normalized_payload, payload_error = _prepare_command_payload(request_id, command_name, payload, schema)
+        if payload_error is not None:
+            return payload_error
 
-        return _success(request_id, handler(payload))
+        return _success(request_id, handler(normalized_payload))
 
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
@@ -452,159 +531,4 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
         )
 
 
-@command(
-    "system.commands",
-    description="List commands exposed by the Python registry.",
-    permission="read",
-)
-def list_commands(payload: dict[str, Any]) -> dict[str, Any]:
-    commands = [COMMAND_METADATA[name] for name in sorted(COMMAND_METADATA)]
-    return {
-        "commands": commands,
-    }
-
-
-@command(
-    "system.ping",
-    description="Round-trip smoke test for the command bridge.",
-    permission="read",
-    schema={
-        "type": "object",
-        "properties": {
-            "source": {"type": "string", "maxLength": 64},
-            "at": {"type": "number"},
-        },
-        "additionalProperties": True,
-    },
-)
-def ping(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "message": "pong",
-        "echo": payload,
-    }
-
-
-@command(
-    "editor.projectInfo",
-    description="Return basic project information from the Unreal Editor.",
-    permission="read",
-)
-def project_info(payload: dict[str, Any]) -> dict[str, str]:
-    project_dir = unreal.Paths.project_dir() if hasattr(unreal, "Paths") else ""
-    return {
-        "projectName": unreal.SystemLibrary.get_project_name(),
-        "projectDir": project_dir,
-    }
-
-
-@command(
-    "editor.log",
-    description="Write a message to the Unreal log.",
-    permission="write",
-    schema={
-        "type": "object",
-        "properties": {
-            "message": {"type": "string", "maxLength": 1024},
-            "dryRun": {
-                "type": "boolean",
-                "description": "Validate the command without writing to the Unreal log.",
-                "default": False,
-                "xDryRun": True,
-            },
-        },
-        "required": ["message"],
-        "additionalProperties": False,
-    },
-    supports_dry_run=True,
-)
-def editor_log(payload: dict[str, Any]) -> dict[str, Any]:
-    message = str(payload.get("message", "Hello from Unreal Editor WebUI"))
-    if bool(payload.get("dryRun", False)):
-        return {
-            "logged": message,
-            "dryRun": True,
-        }
-
-    unreal.log(message)
-    return {
-        "logged": message,
-        "dryRun": False,
-    }
-
-
-@command(
-    "editor.selectedAssets",
-    description="Return assets currently selected in the Content Browser.",
-    permission="read",
-)
-def selected_assets(payload: dict[str, Any]) -> dict[str, Any]:
-    selected = unreal.EditorUtilityLibrary.get_selected_assets()
-    assets = [_asset_to_dict(asset) for asset in selected]
-    return {
-        "count": len(assets),
-        "assets": assets,
-    }
-
-
-@command(
-    "asset.listByPath",
-    description="List assets under a content path using the Asset Registry.",
-    permission="read",
-    schema={
-        "type": "object",
-        "properties": {
-            "path": {
-                "type": "string",
-                "description": "Content path, for example /Game",
-                "minLength": 1,
-                "maxLength": 512,
-                "default": "/Game",
-            },
-            "recursive": {
-                "type": "boolean",
-                "description": "Include child folders.",
-                "default": True,
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of assets to return.",
-                "default": 50,
-                "minimum": 1,
-                "maximum": 500,
-            },
-        },
-        "required": ["path"],
-        "additionalProperties": False,
-    },
-)
-def list_assets_by_path(payload: dict[str, Any]) -> dict[str, Any]:
-    path = str(payload.get("path", "/Game"))
-    recursive = bool(payload.get("recursive", True))
-    limit = int(payload.get("limit", 50))
-    limit = max(1, min(limit, 500))
-
-    asset_registry = unreal.AssetRegistryHelpers.get_asset_registry()
-    asset_data_items = asset_registry.get_assets_by_path(path, recursive)
-    assets = [_asset_data_to_dict(asset_data) for asset_data in asset_data_items[:limit]]
-
-    return {
-        "path": path,
-        "recursive": recursive,
-        "count": len(assets),
-        "truncated": len(asset_data_items) > limit,
-        "assets": assets,
-    }
-
-
-@command(
-    "demo.run",
-    description="Run the bundled Python demo command.",
-    permission="read",
-)
-def demo_run(payload: dict[str, Any]) -> dict[str, str]:
-    from unreal_editor_webui_demo import run_demo_command
-
-    project_name = run_demo_command()
-    return {
-        "projectName": project_name,
-    }
+load_command_modules()

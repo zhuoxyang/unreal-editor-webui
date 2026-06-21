@@ -106,6 +106,22 @@ namespace
         return Status == TEXT("completed") || Status == TEXT("failed") || Status == TEXT("cancelled") || Status == TEXT("timed_out");
     }
 
+    bool IsCooperativeExecutionThread(const FString& ExecutionThread)
+    {
+        return ExecutionThread.ToLower() == TEXT("editor_tick");
+    }
+
+    double ParseTimeoutSeconds(const FString& TimeoutPolicy)
+    {
+        const FString Normalized = TimeoutPolicy.ToLower();
+        if (!Normalized.StartsWith(TEXT("seconds:")))
+        {
+            return 0.0;
+        }
+
+        return FCString::Atod(*Normalized.Mid(8));
+    }
+
     void AppendTaskLogLocked(FUnrealEditorWebUITask& Task, const FString& LogLine)
     {
         if (LogLine.IsEmpty())
@@ -142,8 +158,10 @@ namespace
         }
         else if (Task.Status == TEXT("running"))
         {
-            Task.bCancellable = false;
-            Task.StatusMessage = TEXT("Running editor-thread Python commands cannot be interrupted safely.");
+            Task.bCancellable = Task.CancellationMode.ToLower() == TEXT("cooperative");
+            Task.StatusMessage = Task.bCancellable
+                ? TEXT("Running cooperatively on the editor tick and can be cancelled.")
+                : TEXT("Running editor-thread Python commands cannot be interrupted safely.");
         }
         else if (Task.Status == TEXT("completed"))
         {
@@ -415,6 +433,30 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         return MakeErrorResponse(FString(), TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
     }
 
+    const FString PreflightJson = ExecuteRegistryFunction(RequestJson, TEXT("inspect_command"));
+    const TSharedRef<FJsonObject> Preflight = ParseJsonObjectOrEmpty(PreflightJson);
+
+    bool bPreflightOk = false;
+    if (!Preflight->TryGetBoolField(TEXT("ok"), bPreflightOk) || !bPreflightOk)
+    {
+        return PreflightJson;
+    }
+
+    FString ExecutionThread;
+    FString CancellationMode;
+    FString TimeoutPolicy;
+    const TSharedPtr<FJsonObject> PreflightResult = Preflight->GetObjectField(TEXT("result"));
+    if (PreflightResult.IsValid())
+    {
+        const TSharedPtr<FJsonObject>* ExecutionObject = nullptr;
+        if (PreflightResult->TryGetObjectField(TEXT("execution"), ExecutionObject) && ExecutionObject != nullptr && ExecutionObject->IsValid())
+        {
+            (*ExecutionObject)->TryGetStringField(TEXT("thread"), ExecutionThread);
+            (*ExecutionObject)->TryGetStringField(TEXT("cancellationMode"), CancellationMode);
+            (*ExecutionObject)->TryGetStringField(TEXT("timeoutPolicy"), TimeoutPolicy);
+        }
+    }
+
     const FString TaskId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
     const FDateTime Now = FDateTime::UtcNow();
 
@@ -433,6 +475,9 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
         Task.RequestJson = RequestJson;
         Task.Status = TEXT("queued");
+        Task.ExecutionThread = ExecutionThread;
+        Task.CancellationMode = CancellationMode;
+        Task.TimeoutPolicy = TimeoutPolicy;
         Task.Progress = 0;
         Task.CreatedAt = Now;
         Task.UpdatedAt = Now;
@@ -441,14 +486,21 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
     }
     BroadcastTaskEvent(TaskId, TEXT("queued"), FString(), 0, TEXT("Task queued."));
 
-    const TWeakObjectPtr<UUnrealEditorWebUIBridge> WeakThis(this);
-    AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson]()
+    if (IsCooperativeExecutionThread(ExecutionThread))
     {
-        if (WeakThis.IsValid())
+        StartCooperativeTask(TaskId, RequestJson);
+    }
+    else
+    {
+        const TWeakObjectPtr<UUnrealEditorWebUIBridge> WeakThis(this);
+        AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson]()
         {
-            WeakThis->RunTask(TaskId, RequestJson);
-        }
-    });
+            if (WeakThis.IsValid())
+            {
+                WeakThis->RunTask(TaskId, RequestJson);
+            }
+        });
+    }
 
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     {
@@ -549,9 +601,19 @@ FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
         }
         else if (Task->Status == TEXT("running"))
         {
-            ApplyTaskLifecycleForStatusLocked(*Task);
-            Task->UpdatedAt = FDateTime::UtcNow();
-            AppendTaskLogLocked(*Task, TEXT("Cancellation requested, but this running editor-thread task is non-cancellable."));
+            if (Task->CancellationMode.ToLower() == TEXT("cooperative"))
+            {
+                Task->bCancellationRequested = true;
+                Task->UpdatedAt = FDateTime::UtcNow();
+                ApplyTaskLifecycleForStatusLocked(*Task);
+                AppendTaskLogLocked(*Task, TEXT("Cooperative cancellation requested."));
+            }
+            else
+            {
+                ApplyTaskLifecycleForStatusLocked(*Task);
+                Task->UpdatedAt = FDateTime::UtcNow();
+                AppendTaskLogLocked(*Task, TEXT("Cancellation requested, but this running editor-thread task is non-cancellable."));
+            }
             Status = Task->Status;
         }
         else
@@ -570,7 +632,7 @@ FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
         bCancelled ? 100 : INDEX_NONE,
         bCancelled
             ? TEXT("Task cancelled before execution.")
-            : TEXT("Cancellation requested, but this running editor-thread task is non-cancellable."));
+            : TEXT("Cancellation requested."));
 
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     {
@@ -682,6 +744,152 @@ void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)
         }
 
         Tasks.Remove(OldestFinishedTaskId);
+    }
+}
+
+void UUnrealEditorWebUIBridge::StartCooperativeTask(const FString& TaskId, const FString& RequestJson)
+{
+    int32 TotalSteps = 10;
+    const TSharedRef<FJsonObject> Request = ParseJsonObjectOrEmpty(RequestJson);
+    const TSharedPtr<FJsonValue> PayloadValue = Request->TryGetField(TEXT("payload"));
+    const TSharedPtr<FJsonObject> Payload = PayloadValue.IsValid() ? PayloadValue->AsObject() : nullptr;
+    if (Payload.IsValid())
+    {
+        double RequestedSteps = 0.0;
+        if (Payload->TryGetNumberField(TEXT("steps"), RequestedSteps))
+        {
+            TotalSteps = FMath::Clamp(FMath::RoundToInt(RequestedSteps), 1, 100);
+        }
+    }
+
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        if (FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
+        {
+            Task->Status = TEXT("running");
+            Task->Progress = 1;
+            Task->CooperativeStep = 0;
+            Task->CooperativeTotalSteps = TotalSteps;
+            Task->UpdatedAt = FDateTime::UtcNow();
+            ApplyTaskLifecycleForStatusLocked(*Task);
+            AppendTaskLogLocked(*Task, FString::Printf(TEXT("Cooperative task started with %d step(s)."), TotalSteps));
+        }
+    }
+
+    BroadcastTaskEvent(TaskId, TEXT("running"), FString(), 1, TEXT("Cooperative task started."));
+    EnsureCooperativeTicker();
+}
+
+bool UUnrealEditorWebUIBridge::TickCooperativeTasks(float DeltaTime)
+{
+    TArray<FString> TaskIds;
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+        {
+            if (Pair.Value.Status == TEXT("running") && IsCooperativeExecutionThread(Pair.Value.ExecutionThread))
+            {
+                TaskIds.Add(Pair.Key);
+            }
+        }
+    }
+
+    for (const FString& TaskId : TaskIds)
+    {
+        FString TerminalStatus;
+        FString TerminalResponseJson;
+        FString LogLine;
+        int32 Progress = INDEX_NONE;
+
+        {
+            FScopeLock Lock(&TasksCriticalSection);
+            FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+            if (Task == nullptr || Task->Status != TEXT("running"))
+            {
+                continue;
+            }
+
+            if (Task->bCancellationRequested)
+            {
+                TerminalStatus = TEXT("cancelled");
+                Progress = 100;
+                LogLine = TEXT("Cooperative task cancelled.");
+            }
+            else
+            {
+                const double TimeoutSeconds = ParseTimeoutSeconds(Task->TimeoutPolicy);
+                if (TimeoutSeconds > 0.0 && (FDateTime::UtcNow() - Task->CreatedAt).GetTotalSeconds() >= TimeoutSeconds)
+                {
+                    TerminalStatus = TEXT("timed_out");
+                    Progress = 100;
+                    LogLine = FString::Printf(TEXT("Task timed out after %.2f second(s)."), TimeoutSeconds);
+                }
+                else
+                {
+                    Task->CooperativeStep = FMath::Min(Task->CooperativeStep + 1, FMath::Max(1, Task->CooperativeTotalSteps));
+                    const int32 TotalSteps = FMath::Max(1, Task->CooperativeTotalSteps);
+                    Progress = FMath::Clamp(FMath::RoundToInt((static_cast<float>(Task->CooperativeStep) / static_cast<float>(TotalSteps)) * 100.0f), 1, 100);
+                    LogLine = FString::Printf(TEXT("Cooperative step %d/%d."), Task->CooperativeStep, TotalSteps);
+
+                    if (Task->CooperativeStep >= TotalSteps)
+                    {
+                        TerminalStatus = TEXT("completed");
+
+                        const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+                        Result->SetStringField(TEXT("mode"), TEXT("cooperative"));
+                        Result->SetNumberField(TEXT("steps"), TotalSteps);
+                        Result->SetStringField(TEXT("message"), TEXT("Cooperative demo task completed without blocking the editor."));
+                        TerminalResponseJson = MakeSuccessResponse(ExtractRequestId(Task->RequestJson), Result);
+                    }
+                }
+            }
+        }
+
+        if (!TerminalStatus.IsEmpty())
+        {
+            UpdateTaskStatus(TaskId, TerminalStatus, TerminalResponseJson, 100, LogLine);
+        }
+        else
+        {
+            UpdateTaskStatus(TaskId, TEXT("running"), FString(), Progress, LogLine);
+        }
+    }
+
+    StopCooperativeTickerIfIdle();
+    return CooperativeTaskTickerHandle.IsValid();
+}
+
+void UUnrealEditorWebUIBridge::EnsureCooperativeTicker()
+{
+    if (CooperativeTaskTickerHandle.IsValid())
+    {
+        return;
+    }
+
+    CooperativeTaskTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateUObject(this, &UUnrealEditorWebUIBridge::TickCooperativeTasks),
+        0.25f);
+}
+
+void UUnrealEditorWebUIBridge::StopCooperativeTickerIfIdle()
+{
+    bool bHasCooperativeTask = false;
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+        {
+            if (Pair.Value.Status == TEXT("running") && IsCooperativeExecutionThread(Pair.Value.ExecutionThread))
+            {
+                bHasCooperativeTask = true;
+                break;
+            }
+        }
+    }
+
+    if (!bHasCooperativeTask && CooperativeTaskTickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(CooperativeTaskTickerHandle);
+        CooperativeTaskTickerHandle.Reset();
     }
 }
 

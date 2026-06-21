@@ -1,0 +1,101 @@
+name: UE CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/ue-ci.yml"
+      - "Config/**"
+      - "Python/**"
+      - "Source/**"
+      - "Web/**"
+      - "frontend/**"
+      - "scripts/**"
+      - "UnrealEditorWebUI.uplugin"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/ue-ci.yml"
+      - "Config/**"
+      - "Python/**"
+      - "Source/**"
+      - "Web/**"
+      - "frontend/**"
+      - "scripts/**"
+      - "UnrealEditorWebUI.uplugin"
+
+jobs:
+  buildplugin-and-automation:
+    name: UE 5.5 BuildPlugin and automation
+    runs-on: [self-hosted, windows, ue-5.5]
+    timeout-minutes: 90
+    env:
+      UE_ROOT: C:\Program Files\Epic Games\UE_5.5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate runner prerequisites
+        shell: pwsh
+        run: |
+          $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
+          $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) { throw "RunUAT not found: $RunUAT" }
+          if (-not (Test-Path -LiteralPath $EditorCmd -PathType Leaf)) { throw "UnrealEditor-Cmd not found: $EditorCmd" }
+          node --version
+          npm --version
+
+      - name: Build packaged plugin
+        shell: pwsh
+        run: |
+          $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
+          $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 $RunUAT $PackageDir
+          if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "UnrealEditorWebUI.uplugin") -PathType Leaf)) {
+            throw "Packaged plugin descriptor missing."
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "Web/dist/index.html") -PathType Leaf)) {
+            throw "Packaged React frontend entry point missing."
+          }
+
+      - name: Create temporary host project
+        shell: pwsh
+        run: |
+          $ProjectDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-HostProject"
+          $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
+          $ProjectPath = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir
+          "HOST_PROJECT=$ProjectPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Run UE automation tests
+        shell: pwsh
+        run: |
+          $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation.log"
+          & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.Settings.URLAllowlist; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+
+      - name: Run native settings smoke
+        shell: pwsh
+        run: |
+          $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke.log"
+          & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+
+      - name: Upload UE logs
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: unreal-editor-webui-ue-logs
+          path: |
+            ${{ runner.temp }}/UnrealEditorWebUI-*.log
+            ${{ runner.temp }}/UnrealEditorWebUI-Package/HostProject/Saved/Logs/**
+          if-no-files-found: ignore
+
+      - name: Upload packaged plugin
+        uses: actions/upload-artifact@v6
+        if: success()
+        with:
+          name: UnrealEditorWebUI-Package-UE55
+          path: ${{ runner.temp }}/UnrealEditorWebUI-Package
+          if-no-files-found: error

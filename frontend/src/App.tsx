@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import './App.css'
-import { JsonResultView } from './components/JsonResultView'
+import { ResultRenderer } from './components/ResultRenderer'
 import {
   decodeEnumOption,
   encodeEnumOption,
@@ -44,11 +44,20 @@ type CommandSchema = {
 }
 
 type CommandMetadata = {
+  metadataVersion?: number
   name: string
   description: string
   permission: 'read' | 'write' | 'destructive' | string
   schema: CommandSchema
   supportsDryRun?: boolean
+  category?: string
+  icon?: string
+  tags?: string[]
+  order?: number
+  supportedAssetTypes?: string[]
+  ui?: Record<string, unknown>
+  resultType?: string
+  warnings?: string[]
   execution?: {
     thread?: string
     cancellationMode?: string
@@ -110,29 +119,6 @@ type WebUIEvent = {
   log?: string
   updatedAt?: string
   responseJson?: string
-}
-
-type AssetSelectionResult = {
-  count: number
-  assets: Array<{
-    name: string
-    path: string
-    className: string
-  }>
-}
-
-type AssetListResult = {
-  path: string
-  recursive: boolean
-  count: number
-  truncated: boolean
-  assets: Array<{
-    assetName: string
-    packageName: string
-    packagePath: string
-    objectPath: string
-    assetClass: string
-  }>
 }
 
 type RecentExecution = {
@@ -268,6 +254,9 @@ function App() {
   const [taskRecords, setTaskRecords] = useState<Record<string, TaskRecord>>({})
   const [commandSearch, setCommandSearch] = useState('')
   const [permissionFilter, setPermissionFilter] = useState<PermissionFilter>('all')
+  const [selectedCommandName, setSelectedCommandName] = useState<string | null>(null)
+  const [workspaceTabs, setWorkspaceTabs] = useState<string[]>([])
+  const [favoriteCommands, setFavoriteCommands] = useState<string[]>([])
   const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(loadStoredRecentExecutions)
   const [eventLines, setEventLines] = useState<string[]>([])
   const [logLines, setLogLines] = useState<string[]>([
@@ -292,19 +281,67 @@ function App() {
 
     return commands.filter((command) => {
       const matchesPermission = permissionFilter === 'all' || command.permission === permissionFilter
-      const searchText = `${command.name} ${command.description}`.toLowerCase()
+      const searchText = `${command.name} ${command.description} ${command.category || ''} ${(command.tags || []).join(' ')}`.toLowerCase()
       return matchesPermission && (!search || searchText.includes(search))
     })
   }, [commands, commandSearch, permissionFilter])
 
   const commandGroups = useMemo(() => {
-    return filteredCommands.reduce<Record<string, CommandMetadata[]>>((groups, command) => {
-      const [groupName] = command.name.split('.')
-      groups[groupName] = groups[groupName] || []
-      groups[groupName].push(command)
-      return groups
+    const groups = filteredCommands.reduce<Record<string, CommandMetadata[]>>((accumulator, command) => {
+      const [fallbackGroupName] = command.name.split('.')
+      const groupName = command.category || fallbackGroupName
+      accumulator[groupName] = accumulator[groupName] || []
+      accumulator[groupName].push(command)
+      return accumulator
     }, {})
+
+    Object.values(groups).forEach((groupCommands) => {
+      groupCommands.sort((left, right) => (left.order ?? 100) - (right.order ?? 100) || left.name.localeCompare(right.name))
+    })
+
+    return groups
   }, [filteredCommands])
+
+  const selectedCommand = useMemo(() => {
+    if (selectedCommandName) {
+      return commands.find((command) => command.name === selectedCommandName) || filteredCommands[0] || null
+    }
+
+    return filteredCommands[0] || null
+  }, [commands, filteredCommands, selectedCommandName])
+
+  const recentCommandNames = useMemo(() => {
+    return Array.from(new Set(recentExecutions.map((item) => item.command))).slice(0, 6)
+  }, [recentExecutions])
+
+  const favoriteCommandSet = useMemo(() => new Set(favoriteCommands), [favoriteCommands])
+
+  const openWorkspaceCommandNames = useMemo(() => {
+    const names = workspaceTabs.filter((name) => commands.some((command) => command.name === name))
+    if (selectedCommand && !names.includes(selectedCommand.name)) {
+      return [selectedCommand.name, ...names]
+    }
+
+    return names
+  }, [commands, selectedCommand, workspaceTabs])
+
+  function openCommandWorkspace(commandName: string) {
+    setSelectedCommandName(commandName)
+    setWorkspaceTabs((tabs) => (tabs.includes(commandName) ? tabs : [commandName, ...tabs].slice(0, 8)))
+  }
+
+  function closeCommandWorkspace(commandName: string) {
+    setWorkspaceTabs((tabs) => tabs.filter((name) => name !== commandName))
+    if (selectedCommandName === commandName) {
+      setSelectedCommandName(workspaceTabs.find((name) => name !== commandName) || null)
+    }
+  }
+
+  function toggleFavoriteCommand(commandName: string) {
+    setFavoriteCommands((items) =>
+      items.includes(commandName) ? items.filter((name) => name !== commandName) : [commandName, ...items].slice(0, 12),
+    )
+  }
 
   useEffect(() => {
     try {
@@ -554,15 +591,6 @@ function App() {
     return callBridge<TaskResult>('startcommand', JSON.stringify(request))
   }
 
-  async function loadCommands() {
-    try {
-      const result = await runCommand<{ commands: CommandMetadata[] }>('system.commands')
-      setCommands(result.commands)
-    } catch (error) {
-      log(error instanceof Error ? error.message : String(error))
-    }
-  }
-
   async function loadSettings() {
     try {
       const result = await callBridge<WebUISettings>('getwebuisettings')
@@ -574,19 +602,34 @@ function App() {
     }
   }
 
-  async function runAsyncDemo() {
-    try {
-      const task = await startCommand('demo.run')
-      mergeTaskResult(task, {
-        command: 'demo.run',
-        payload: {},
-        startedAt: new Date().toISOString(),
-      })
-      log(`async demo started -> ${task.taskId}`)
-    } catch (error) {
-      log(error instanceof Error ? error.message : String(error))
+  useEffect(() => {
+    if (!bridgeReady) {
+      return
     }
-  }
+
+    const timeoutId = window.setTimeout(() => {
+      void callBridgeQuiet<{ commands: CommandMetadata[] }>(
+        'executecommand',
+        JSON.stringify({
+          id: createRequestId(),
+          command: 'system.commands',
+          payload: {},
+        }),
+      )
+        .then((result) => setCommands(Array.isArray(result.commands) ? result.commands : []))
+        .catch((error) => log(error instanceof Error ? error.message : String(error)))
+
+      void callBridgeQuiet<WebUISettings>('getwebuisettings')
+        .then((result) => {
+          setSettings(result)
+          setSettingsDraft(result)
+          setSettingsMessage('')
+        })
+        .catch((error) => log(error instanceof Error ? error.message : String(error)))
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [bridgeReady, callBridgeQuiet, log])
 
   async function saveSettings() {
     if (!settingsDraft) {
@@ -1060,6 +1103,14 @@ function App() {
   function renderTaskRecord(task: TaskRecord) {
     const canCancel = task.cancellable === true
     const canRemove = isTerminalTaskStatus(task.status)
+    let parsedTaskResponse: BridgeResponse<unknown> | null = null
+    if (task.responseJson) {
+      try {
+        parsedTaskResponse = JSON.parse(task.responseJson) as BridgeResponse<unknown>
+      } catch {
+        parsedTaskResponse = null
+      }
+    }
 
     return (
       <article className="task-card" key={task.taskId}>
@@ -1092,7 +1143,11 @@ function App() {
         {task.responseJson ? (
           <details>
             <summary>Response</summary>
-            <pre>{task.responseJson}</pre>
+            {parsedTaskResponse?.ok ? (
+              <ResultRenderer result={parsedTaskResponse.result} resultType={commands.find((command) => command.name === task.command)?.resultType} />
+            ) : (
+              <pre>{task.responseJson}</pre>
+            )}
           </details>
         ) : null}
         <div className="task-actions">
@@ -1164,103 +1219,24 @@ function App() {
     )
   }
 
-  function renderAssetSelection(result: AssetSelectionResult) {
-    return (
-      <div className="result-view">
-        <div className="result-summary">Selected assets: {result.count}</div>
-        {result.assets.length > 0 ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Class</th>
-                <th>Path</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.assets.map((asset) => (
-                <tr key={asset.path || asset.name}>
-                  <td>{asset.name}</td>
-                  <td>{asset.className || '-'}</td>
-                  <td>
-                    <code>{asset.path || '-'}</code>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted">No selected assets.</p>
-        )}
-      </div>
-    )
-  }
-
-  function renderAssetList(result: AssetListResult) {
-    return (
-      <div className="result-view">
-        <div className="result-summary">
-          {result.count} assets under <code>{result.path}</code>
-          {result.truncated ? ' (truncated)' : ''}
-        </div>
-        {result.assets.length > 0 ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Asset</th>
-                <th>Class</th>
-                <th>Package Path</th>
-                <th>Object Path</th>
-              </tr>
-            </thead>
-            <tbody>
-              {result.assets.map((asset) => (
-                <tr key={asset.objectPath || asset.packageName || asset.assetName}>
-                  <td>{asset.assetName}</td>
-                  <td>{asset.assetClass || '-'}</td>
-                  <td>
-                    <code>{asset.packagePath || '-'}</code>
-                  </td>
-                  <td>
-                    <code>{asset.objectPath || '-'}</code>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p className="muted">No assets found.</p>
-        )}
-      </div>
-    )
-  }
-
   function renderCommandResult(commandName: string) {
     const result = commandResults[commandName]
     if (!hasCommandResult(commandResults, commandName)) {
       return null
     }
 
-    if (commandName === 'editor.selectedAssets') {
-      return renderAssetSelection(result as AssetSelectionResult)
-    }
-
-    if (commandName === 'asset.listByPath') {
-      return renderAssetList(result as AssetListResult)
-    }
-
-    return <JsonResultView result={result} />
+    const command = commands.find((item) => item.name === commandName)
+    return <ResultRenderer commandName={commandName} result={result} resultType={command?.resultType} />
   }
 
   return (
-    <main className="app-shell">
-      <section className="hero">
+    <main className="app-shell tool-shell">
+      <section className="tool-shell-header">
         <div>
           <p className="eyebrow">Unreal Editor WebUI</p>
-          <h1>React command console for UE editor tools</h1>
+          <h1>Tool Rack Workspace</h1>
           <p className="lede">
-            Discover Python registry commands, run typed JSON requests, poll task state,
-            and inspect Web UI startup settings from a Vite frontend.
+            Search, favorite, open, inspect, and run Unreal editor tools from a persistent workspace shell.
           </p>
         </div>
         <span className={bridgeReady ? 'status ready' : 'status'}>
@@ -1268,36 +1244,17 @@ function App() {
         </span>
       </section>
 
-      <section className="toolbar">
-        <button onClick={loadCommands} disabled={!bridgeReady}>
-          Load command metadata
-        </button>
-        <button onClick={loadSettings} disabled={!bridgeReady}>
-          Read Web UI settings
-        </button>
-        <button
-          onClick={() =>
-            runCommand('editor.log', { message: 'Hello from the React WebUI command console' }).catch((error) =>
-              log(error instanceof Error ? error.message : String(error)),
-            )
-          }
-          disabled={!bridgeReady}
-        >
-          Write UE log
-        </button>
-        <button onClick={runAsyncDemo} disabled={!bridgeReady}>
-          Run async demo
-        </button>
-      </section>
-
-      <section className="grid">
-        <div className="panel">
-          <h2>Commands</h2>
-          <div className="command-browser">
+      <section className="tool-shell-layout">
+        <aside className="panel tool-rack-panel">
+          <div className="panel-title-row">
+            <h2>Tool Rack</h2>
+            <span>{filteredCommands.length} shown</span>
+          </div>
+          <div className="command-browser tool-rack-search">
             <input
               type="search"
               value={commandSearch}
-              placeholder="Search commands"
+              placeholder="Search tools, tags, categories"
               onChange={(event: ChangeEvent<HTMLInputElement>) => setCommandSearch(event.target.value)}
             />
             <select
@@ -1311,76 +1268,199 @@ function App() {
               <option value="write">Write</option>
               <option value="destructive">Destructive</option>
             </select>
-            <span>{filteredCommands.length} shown</span>
           </div>
+
+          {favoriteCommands.length > 0 ? (
+            <div className="tool-rack-section">
+              <h3>Favorites</h3>
+              {favoriteCommands
+                .map((name) => commands.find((command) => command.name === name))
+                .filter((command): command is CommandMetadata => Boolean(command))
+                .map((command) => (
+                  <button
+                    className={selectedCommand?.name === command.name ? 'tool-rack-item active' : 'tool-rack-item'}
+                    key={`favorite-${command.name}`}
+                    type="button"
+                    onClick={() => openCommandWorkspace(command.name)}
+                  >
+                    <span className="tool-rack-icon">{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
+                    <span>
+                      <strong>{command.name}</strong>
+                      <small>{command.description || 'No description provided.'}</small>
+                    </span>
+                  </button>
+                ))}
+            </div>
+          ) : null}
+
+          {recentCommandNames.length > 0 ? (
+            <div className="tool-rack-section">
+              <h3>Recent</h3>
+              {recentCommandNames
+                .map((name) => commands.find((command) => command.name === name))
+                .filter((command): command is CommandMetadata => Boolean(command))
+                .map((command) => (
+                  <button
+                    className={selectedCommand?.name === command.name ? 'tool-rack-item active' : 'tool-rack-item'}
+                    key={`recent-${command.name}`}
+                    type="button"
+                    onClick={() => openCommandWorkspace(command.name)}
+                  >
+                    <span className="tool-rack-icon">{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
+                    <span>
+                      <strong>{command.name}</strong>
+                      <small>{command.description || 'No description provided.'}</small>
+                    </span>
+                  </button>
+                ))}
+            </div>
+          ) : null}
+
           {commands.length === 0 ? (
-            <p className="muted">
-              Load metadata from <code>system.commands</code>.
-            </p>
+            <p className="muted">Tool metadata loads automatically when the Unreal bridge is ready.</p>
           ) : filteredCommands.length === 0 ? (
-            <p className="muted">No commands match the current filters.</p>
+            <p className="muted">No tools match the current filters.</p>
           ) : (
             Object.entries(commandGroups).map(([groupName, groupCommands]) => (
-              <div className="command-group" key={groupName}>
+              <div className="tool-rack-section" key={groupName}>
                 <h3>{groupName}</h3>
                 {groupCommands.map((command) => (
-                  <article className="command-card" key={command.name}>
-                    <div className="command-card-header">
+                  <button
+                    className={selectedCommand?.name === command.name ? 'tool-rack-item active' : 'tool-rack-item'}
+                    key={command.name}
+                    type="button"
+                    onClick={() => openCommandWorkspace(command.name)}
+                  >
+                    <span className="tool-rack-icon">{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
+                    <span>
                       <strong>{command.name}</strong>
-                      <span className="badge-group">
-                        <span className={`badge ${command.permission}`} title={`${command.permission} permission`}>
-                          {command.permission}
-                        </span>
-                        {commandHasDryRun(command) ? (
-                          <span className="badge dry-run" title="Dry-run capable">
-                            dry-run
-                          </span>
-                        ) : null}
-                        {command.execution?.thread ? (
-                          <span className="badge execution" title="Task execution thread">
-                            {command.execution.thread}
-                          </span>
-                        ) : null}
-                      </span>
-                    </div>
-                    <p>{command.description || 'No description provided.'}</p>
-                    <div className="schema-form">
-                      {Object.entries(command.schema.properties || {}).length > 0 ? (
-                        Object.entries(command.schema.properties || {}).map(([fieldName, property]) =>
-                          renderField(command, fieldName, property),
-                        )
-                      ) : (
-                        <p className="muted">No payload fields.</p>
-                      )}
-                    </div>
-                    {renderPayloadPresets(command)}
-                    <div className="command-actions">
-                      <button type="button" onClick={() => runCommandFromMetadata(command)} disabled={!bridgeReady}>
-                        Run
-                      </button>
-                      <button type="button" onClick={() => startTaskFromMetadata(command)} disabled={!bridgeReady}>
-                        Start task
-                      </button>
-                    </div>
-                    {renderCommandResult(command.name)}
-                    <details>
-                      <summary>Schema</summary>
-                      <pre>{JSON.stringify(command.schema, null, 2)}</pre>
-                    </details>
-                  </article>
+                      <small>{command.description || 'No description provided.'}</small>
+                    </span>
+                    <span className={`badge ${command.permission}`}>{command.permission}</span>
+                  </button>
                 ))}
               </div>
             ))
           )}
-        </div>
+        </aside>
 
-        <div className="panel">
-          <h2>Startup Settings</h2>
-          {renderSettingsEditor()}
-        </div>
+        <section className="panel workspace-panel">
+          <div className="workspace-tabs">
+            {openWorkspaceCommandNames.length === 0 ? (
+              <span className="muted">Select a tool to open a workspace tab.</span>
+            ) : (
+              openWorkspaceCommandNames.map((name) => {
+                const command = commands.find((item) => item.name === name)
+                if (!command) {
+                  return null
+                }
 
+                return (
+                  <button
+                    className={selectedCommand?.name === name ? 'workspace-tab active' : 'workspace-tab'}
+                    key={name}
+                    type="button"
+                    onClick={() => setSelectedCommandName(name)}
+                  >
+                    <span>{command.icon || command.name[0]?.toUpperCase() || '?'}</span>
+                    {name}
+                    <span
+                      className="workspace-tab-close"
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        closeCommandWorkspace(name)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          event.stopPropagation()
+                          closeCommandWorkspace(name)
+                        }
+                      }}
+                    >
+                      x
+                    </span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+
+          {selectedCommand ? (
+            <div className="workspace-content">
+              <div className="workspace-tool-header">
+                <div>
+                  <p className="eyebrow">{selectedCommand.category || selectedCommand.name.split('.')[0]}</p>
+                  <h2>{selectedCommand.name}</h2>
+                  <p>{selectedCommand.description || 'No description provided.'}</p>
+                </div>
+                <span className="badge-group">
+                  <span className={`badge ${selectedCommand.permission}`}>{selectedCommand.permission}</span>
+                  {commandHasDryRun(selectedCommand) ? <span className="badge dry-run">dry-run</span> : null}
+                  {selectedCommand.execution?.thread ? (
+                    <span className="badge execution">{selectedCommand.execution.thread}</span>
+                  ) : null}
+                </span>
+              </div>
+
+              <div className="workspace-result">
+                {renderCommandResult(selectedCommand.name) || (
+                  <p className="muted">Run this tool to see structured output in the workspace.</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="workspace-content">
+              <p className="muted">No tool selected.</p>
+            </div>
+          )}
+        </section>
+
+        <aside className="panel inspector-panel">
+          <div className="panel-title-row">
+            <h2>Inspector</h2>
+            {selectedCommand ? (
+              <button type="button" onClick={() => toggleFavoriteCommand(selectedCommand.name)}>
+                {favoriteCommandSet.has(selectedCommand.name) ? 'Unfavorite' : 'Favorite'}
+              </button>
+            ) : null}
+          </div>
+          {selectedCommand ? (
+            <>
+              <div className="schema-form">
+                {Object.entries(selectedCommand.schema.properties || {}).length > 0 ? (
+                  Object.entries(selectedCommand.schema.properties || {}).map(([fieldName, property]) =>
+                    renderField(selectedCommand, fieldName, property),
+                  )
+                ) : (
+                  <p className="muted">No payload fields.</p>
+                )}
+              </div>
+              {renderPayloadPresets(selectedCommand)}
+              <div className="command-actions">
+                <button type="button" onClick={() => runCommandFromMetadata(selectedCommand)} disabled={!bridgeReady}>
+                  Run
+                </button>
+                <button type="button" onClick={() => startTaskFromMetadata(selectedCommand)} disabled={!bridgeReady}>
+                  Start task
+                </button>
+              </div>
+              <details>
+                <summary>Schema</summary>
+                <pre>{JSON.stringify(selectedCommand.schema, null, 2)}</pre>
+              </details>
+            </>
+          ) : (
+            <p className="muted">Select a tool to inspect its inputs.</p>
+          )}
+        </aside>
+      </section>
+
+      <section className="tool-shell-bottom">
         <div className="panel task-panel">
-          <h2>Tasks</h2>
+          <h2>Task Monitor</h2>
           {taskList.length > 0 ? (
             <div className="task-list">
               {taskList.map((task) => renderTaskRecord(task))}
@@ -1391,12 +1471,17 @@ function App() {
         </div>
 
         <div className="panel log-panel">
-          <h2>Task Events</h2>
+          <h2>Message Log</h2>
           {eventLines.length > 0 ? (
             <pre>{eventLines.join('\n')}</pre>
           ) : (
             <p className="muted">Task status events will appear here.</p>
           )}
+        </div>
+
+        <div className="panel">
+          <h2>Startup Settings</h2>
+          {renderSettingsEditor()}
         </div>
 
         <div className="panel log-panel">

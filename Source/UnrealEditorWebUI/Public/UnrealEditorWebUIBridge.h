@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "HAL/CriticalSection.h"
 #include "Templates/Function.h"
 #include "UObject/Object.h"
@@ -16,7 +17,10 @@ struct FUnrealEditorWebUITask
     FString TimeoutPolicy;
     FString StatusMessage;
     int32 Progress = 0;
+    int32 CooperativeStep = 0;
+    int32 CooperativeTotalSteps = 0;
     bool bCancellable = false;
+    bool bCancellationRequested = false;
     TArray<FString> Logs;
     FDateTime CreatedAt;
     FDateTime UpdatedAt;
@@ -83,6 +87,10 @@ private:
     bool HasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const;
     void GrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission);
     void PruneTasksLocked(const FDateTime& Now);
+    void StartCooperativeTask(const FString& TaskId, const FString& RequestJson);
+    bool TickCooperativeTasks(float DeltaTime);
+    void EnsureCooperativeTicker();
+    void StopCooperativeTickerIfIdle();
 
 private:
     mutable FCriticalSection TasksCriticalSection;
@@ -90,4 +98,5 @@ private:
     mutable FCriticalSection PrivilegedCommandApprovalsCriticalSection;
     TSet<FString> PrivilegedCommandApprovals;
     TFunction<void(const FString&)> EventDispatcher;
+    FTSTicker::FDelegateHandle CooperativeTaskTickerHandle;
 };

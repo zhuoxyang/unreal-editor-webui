@@ -11,9 +11,35 @@ function bridgeError(message: string) {
 }
 
 function installBridge(tasks: unknown[], overrides: Partial<NonNullable<NonNullable<Window['ue']>['editorwebui']>> = {}) {
+  const commands = [
+    {
+      name: 'asset.scan',
+      description: 'Scan assets',
+      permission: 'read',
+      schema: { type: 'object', properties: {} },
+      category: 'Assets',
+      icon: 'search',
+      order: 10,
+    },
+    {
+      name: 'asset.longScan',
+      description: 'Long asset scan',
+      permission: 'read',
+      schema: { type: 'object', properties: {} },
+      category: 'Assets',
+      icon: 'timer',
+      order: 20,
+    },
+  ]
   window.ue = {
     editorwebui: {
-      executecommand: vi.fn(async () => bridgeResponse({})),
+      executecommand: vi.fn(async (requestJson: string) => {
+        const request = JSON.parse(requestJson) as { command?: string }
+        if (request.command === 'system.commands') {
+          return bridgeResponse({ commands })
+        }
+        return bridgeResponse({})
+      }),
       startcommand: vi.fn(async () => bridgeResponse({})),
       gettask: vi.fn(async () => bridgeResponse({})),
       listtasks: vi.fn(async () => bridgeResponse({ tasks })),
@@ -43,7 +69,7 @@ describe('task recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
 
     expect(await screen.findByText('backend refused removal')).toBeInTheDocument()
-    expect(screen.getByText('asset.scan')).toBeInTheDocument()
+    expect(screen.getAllByText('asset.scan').length).toBeGreaterThan(0)
   })
 
   it('keeps a running task non-terminal after a transient polling error', async () => {

@@ -4,6 +4,204 @@
   padding: 32px;
 }
 
+.tool-shell {
+  display: grid;
+  grid-template-rows: auto minmax(520px, 1fr) auto;
+  gap: 16px;
+  padding: 18px;
+}
+
+.tool-shell-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 20px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.tool-shell-header h1 {
+  margin: 0;
+}
+
+.tool-shell-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1.4fr) minmax(300px, 0.78fr);
+  gap: 14px;
+  min-height: 0;
+}
+
+.panel-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panel-title-row h2 {
+  margin: 0;
+}
+
+.panel-title-row span {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.tool-rack-panel,
+.workspace-panel,
+.inspector-panel {
+  min-height: 0;
+  overflow: auto;
+}
+
+.tool-rack-search {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.tool-rack-section + .tool-rack-section {
+  margin-top: 16px;
+}
+
+.tool-rack-section h3 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool-rack-item {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text-h);
+  text-align: left;
+}
+
+.tool-rack-item + .tool-rack-item {
+  margin-top: 8px;
+}
+
+.tool-rack-item:hover,
+.tool-rack-item.active {
+  border-color: rgba(147, 197, 253, 0.48);
+  background: rgba(79, 124, 255, 0.12);
+}
+
+.tool-rack-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(147, 197, 253, 0.14);
+  color: #bfdbfe;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.tool-rack-item strong,
+.tool-rack-item small {
+  display: block;
+}
+
+.tool-rack-item small {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.workspace-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.workspace-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+
+.workspace-tab.active {
+  border-color: rgba(147, 197, 253, 0.48);
+  background: rgba(79, 124, 255, 0.14);
+  color: var(--text-h);
+}
+
+.workspace-tab-close {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+}
+
+.workspace-content {
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.workspace-tool-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.workspace-tool-header h2 {
+  margin: 0;
+}
+
+.workspace-tool-header p {
+  margin: 6px 0 0;
+  color: var(--text);
+}
+
+.workspace-result {
+  display: grid;
+  gap: 12px;
+}
+
+.inspector-panel details {
+  margin-top: 12px;
+}
+
+.tool-shell-bottom {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+  gap: 14px;
+}
+
 .hero,
 .toolbar,
 .panel {
@@ -532,5 +730,15 @@ details pre {
 
   .command-browser {
     grid-template-columns: 1fr;
+  }
+
+  .tool-shell-layout,
+  .tool-shell-bottom {
+    grid-template-columns: 1fr;
+  }
+
+  .tool-shell-header,
+  .workspace-tool-header {
+    flex-direction: column;
   }
 }

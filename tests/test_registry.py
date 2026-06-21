@@ -2,6 +2,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 
@@ -32,10 +33,18 @@ def make_unreal_stub():
 def load_registry():
     unreal = make_unreal_stub()
     sys.modules["unreal"] = unreal
+    python_dir = str(REGISTRY_PATH.parent)
+    if python_dir not in sys.path:
+        sys.path.insert(0, python_dir)
 
-    spec = importlib.util.spec_from_file_location("registry_under_test", REGISTRY_PATH)
+    for module_name in list(sys.modules):
+        if module_name == "unreal_editor_webui_registry" or module_name.startswith("unreal_editor_webui_commands"):
+            del sys.modules[module_name]
+
+    spec = importlib.util.spec_from_file_location("unreal_editor_webui_registry", REGISTRY_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    sys.modules["unreal_editor_webui_registry"] = module
     spec.loader.exec_module(module)
     return module, unreal
 
@@ -169,7 +178,7 @@ class RegistryTests(unittest.TestCase):
             )
 
     def test_inspect_command_returns_permission_metadata(self):
-        response = parse_response(self.registry.inspect_command(request("editor.log")))
+        response = parse_response(self.registry.inspect_command(request("editor.log", {"message": "hello"})))
 
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["command"], "editor.log")
@@ -177,6 +186,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(response["result"]["execution"]["thread"], "editor_game_thread")
         self.assertEqual(response["result"]["execution"]["cancellationMode"], "queued_only")
         self.assertEqual(response["result"]["execution"]["timeoutPolicy"], "none")
+        self.assertTrue(response["result"]["payloadValid"])
 
     def test_unknown_command_is_rejected(self):
         response = parse_response(self.registry.execute_command(request("missing.command")))
@@ -198,6 +208,23 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "invalid_payload")
         self.assertIn("Missing required field: message", response["error"]["details"])
+
+    def test_inspect_command_rejects_invalid_payload_before_execution(self):
+        response = parse_response(self.registry.inspect_command(request("editor.log")))
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "invalid_payload")
+        self.assertIn("Missing required field: message", response["error"]["details"])
+        self.assertEqual(self.unreal.logs, [])
+
+    def test_inspect_command_applies_defaults_to_normalized_payload(self):
+        response = parse_response(self.registry.inspect_command(request("asset.listByPath", {})))
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(response["result"]["payloadValid"])
+        self.assertEqual(response["result"]["normalizedPayload"]["path"], "/Game")
+        self.assertTrue(response["result"]["normalizedPayload"]["recursive"])
+        self.assertEqual(response["result"]["normalizedPayload"]["limit"], 50)
 
     def test_schema_validation_rejects_wrong_field_type(self):
         response = parse_response(
@@ -318,6 +345,99 @@ class RegistryTests(unittest.TestCase):
         self.assertTrue(editor_log["supportsDryRun"])
         self.assertTrue(editor_log["schema"]["properties"]["dryRun"]["xDryRun"])
         self.assertEqual(editor_log["execution"]["thread"], "editor_game_thread")
+        rename_batch = commands["asset.renameBatch"]
+        self.assertTrue(rename_batch["supportsDryRun"])
+        self.assertTrue(rename_batch["schema"]["properties"]["dryRun"]["xDryRun"])
+        self.assertEqual(rename_batch["metadataVersion"], 1)
+        self.assertEqual(rename_batch["category"], "Assets")
+        self.assertEqual(rename_batch["icon"], "edit-3")
+        self.assertEqual(rename_batch["resultType"], "changeSet")
+        self.assertIn("asset", rename_batch["tags"])
+
+    def test_command_module_load_errors_are_reported_without_clearing_healthy_commands(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_dir = pathlib.Path(temp_dir) / "broken_command_package"
+            package_dir.mkdir()
+            (package_dir / "__init__.py").write_text("", encoding="utf-8")
+            (package_dir / "broken.py").write_text("raise RuntimeError('broken import')\n", encoding="utf-8")
+            sys.path.insert(0, temp_dir)
+            try:
+                self.registry.load_command_modules("broken_command_package")
+            finally:
+                sys.path.remove(temp_dir)
+
+        self.assertIn("system.ping", self.registry.COMMANDS)
+        self.assertEqual(len(self.registry.COMMAND_LOAD_ERRORS), 1)
+        self.assertEqual(self.registry.COMMAND_LOAD_ERRORS[0]["module"], "broken_command_package.broken")
+        self.assertIn("broken import", self.registry.COMMAND_LOAD_ERRORS[0]["error"])
+
+    def test_batch_rename_dry_run_returns_change_set(self):
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.renameBatch",
+                    {
+                        "assetPaths": ["/Game/Props/SM_OldChair", "/Game/Props/SM_Table"],
+                        "search": "Old",
+                        "replace": "New",
+                    },
+                ),
+                {"allowedCommand": "asset.renameBatch", "allowedPermission": "write"},
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        result = response["result"]
+        self.assertEqual(result["view"], "changeSet")
+        self.assertTrue(result["summary"]["dryRun"])
+        self.assertEqual(result["summary"]["changed"], 1)
+        self.assertEqual(result["summary"]["skipped"], 1)
+        self.assertEqual(result["changeSet"][0]["after"], "/Game/Props/SM_NewChair")
+
+    def test_batch_rename_apply_reports_changed_and_failed_assets(self):
+        renamed = []
+
+        class EditorAssetLibrary:
+            @staticmethod
+            def rename_asset(source, target):
+                renamed.append((source, target))
+                return "Fail" not in source
+
+        self.unreal.EditorAssetLibrary = EditorAssetLibrary
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.renameBatch",
+                    {
+                        "assetPaths": ["/Game/Props/SM_OldChair", "/Game/Props/SM_OldFail"],
+                        "search": "Old",
+                        "replace": "New",
+                        "dryRun": False,
+                    },
+                ),
+                {"allowedCommand": "asset.renameBatch", "allowedPermission": "write"},
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["summary"]["changed"], 1)
+        self.assertEqual(response["result"]["summary"]["failed"], 1)
+        self.assertEqual(
+            renamed,
+            [
+                ("/Game/Props/SM_OldChair", "/Game/Props/SM_NewChair"),
+                ("/Game/Props/SM_OldFail", "/Game/Props/SM_NewFail"),
+            ],
+        )
+
+    def test_long_run_demo_exposes_cooperative_execution_metadata(self):
+        response = parse_response(self.registry.inspect_command(request("demo.longRun", {"steps": 3})))
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["execution"]["thread"], "editor_tick")
+        self.assertEqual(response["result"]["execution"]["cancellationMode"], "cooperative")
+        self.assertEqual(response["result"]["execution"]["timeoutPolicy"], "seconds:10")
+        self.assertEqual(response["result"]["normalizedPayload"]["steps"], 3)
 
     def test_handler_exception_hides_traceback_from_response(self):
         @self.registry.command("test.raise")
