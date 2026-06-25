@@ -31,14 +31,19 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Supports command search, permission filtering, schema defaults, recent payload reuse, and editable startup settings in the React console.
 - Requires confirmation before running `write` or `destructive` commands, including a native editor confirmation in the bridge path.
 - Shows command-specific result views for starter asset commands.
-- Includes safe starter commands:
+- Includes starter commands:
   - `system.commands`
   - `system.ping`
   - `editor.projectInfo`
   - `editor.log`
   - `editor.selectedAssets`
   - `asset.listByPath`
+  - `asset.validateNaming`
+  - `asset.validateTextureBudget`
+  - `asset.scanRedirectors`
+  - `asset.renameBatch`
   - `demo.run`
+  - `demo.longRun`
 
 ## Install In A UE Project
 
@@ -54,9 +59,12 @@ This project targets editor tooling, not packaged runtime/game UI.
 
 The React app lives in `frontend/`.
 
+Use Node.js 22.13 or newer, or Node.js 20.19 or newer. The repository includes
+an `.nvmrc` pinned to Node.js 22.13.0 for local development.
+
 ```sh
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 

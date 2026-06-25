@@ -10,13 +10,7 @@ public class UnrealEditorWebUI : ModuleRules
             new[]
             {
                 "Core",
-                "CoreUObject",
-                "Engine",
-                "Json",
-                "Slate",
-                "SlateCore",
-                "WebBrowser",
-                "WebBrowserWidget"
+                "CoreUObject"
             }
         );
 
@@ -25,13 +19,19 @@ public class UnrealEditorWebUI : ModuleRules
             {
                 "ApplicationCore",
                 "DeveloperSettings",
+                "Engine",
                 "HTTP",
                 "InputCore",
+                "Json",
                 "LevelEditor",
                 "Projects",
                 "PythonScriptPlugin",
+                "Slate",
+                "SlateCore",
                 "ToolMenus",
-                "UnrealEd"
+                "UnrealEd",
+                "WebBrowser",
+                "WebBrowserWidget"
             }
         );
     }

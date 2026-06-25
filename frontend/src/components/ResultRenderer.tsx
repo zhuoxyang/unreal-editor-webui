@@ -123,7 +123,6 @@ function AssetTableView({ result }: { result: unknown }) {
             {columns.map((column) => (
               <th key={column}>{column}</th>
             ))}
-            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -132,11 +131,6 @@ function AssetTableView({ result }: { result: unknown }) {
               {columns.map((column) => (
                 <td key={column}>{formatCell(isRecord(asset) ? asset[column] : '')}</td>
               ))}
-              <td>
-                <button className="inline-action" type="button">
-                  Select
-                </button>
-              </td>
             </tr>
           ))}
         </tbody>

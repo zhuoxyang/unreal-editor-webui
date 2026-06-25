@@ -55,6 +55,11 @@ export function downloadText(filename: string, contents: string, mimeType: strin
   const link = document.createElement('a')
   link.href = url
   link.download = filename
+  link.style.display = 'none'
+  document.body.appendChild(link)
   link.click()
-  URL.revokeObjectURL(url)
+  window.setTimeout(() => {
+    link.remove()
+    URL.revokeObjectURL(url)
+  }, 0)
 }

@@ -4,8 +4,10 @@ React/Vite frontend for the Unreal Editor WebUI plugin.
 
 ## Development
 
+Use Node.js 22.13 or newer, or Node.js 20.19 or newer.
+
 ```sh
-npm install
+npm ci
 npm run dev
 ```
 

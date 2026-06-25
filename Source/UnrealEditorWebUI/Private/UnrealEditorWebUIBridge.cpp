@@ -12,6 +12,7 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/ScopeExit.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -355,6 +356,10 @@ FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
     IFileManager::Get().MakeDirectory(*ResultDir, true);
 
     const FString ResultPath = FPaths::CreateTempFilename(*ResultDir, TEXT("Command_"), TEXT(".json"));
+    ON_SCOPE_EXIT
+    {
+        IFileManager::Get().Delete(*ResultPath);
+    };
 
     const FString EncodedPythonDir = EncodeBase64Utf8(PythonDir);
     const FString EncodedRequestJson = EncodeBase64Utf8(RequestJson);
@@ -412,7 +417,6 @@ FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
     const bool bExecuted = PythonPlugin->ExecPythonCommand(*PythonCode);
     if (!bExecuted)
     {
-        IFileManager::Get().Delete(*ResultPath);
         return MakeErrorResponse(RequestId, TEXT("python_execution_failed"), TEXT("Failed to execute the Python command registry."));
     }
 
@@ -422,7 +426,6 @@ FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
         return MakeErrorResponse(RequestId, TEXT("missing_response"), TEXT("Python command registry did not write a response."));
     }
 
-    IFileManager::Get().Delete(*ResultPath);
     return ResponseJson;
 }
 
