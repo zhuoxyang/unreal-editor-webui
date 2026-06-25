@@ -1,0 +1,34 @@
+[
+  {
+    "title": "Frontend architecture: split App.tsx into focused hooks and panels",
+    "body": "Category: frontend architecture\n\nProblem:\n`frontend/src/App.tsx` owns bridge calls, task polling, schema forms, settings, recent execution persistence, and rendering. This makes future tool features harder to maintain and test.\n\nProposed work:\n- Extract bridge access into a focused hook/module.\n- Extract task monitoring and polling into its own hook/panel boundary.\n- Extract command catalog filtering and payload draft handling.\n- Keep user-facing behavior unchanged while making the code easier to extend.\n\nAcceptance criteria:\n- Existing frontend tests still pass on a supported Node version.\n- App.tsx becomes primarily composition instead of owning all workflows."
+  },
+  {
+    "title": "Native bridge architecture: split Python invocation, task lifecycle, permissions, and events",
+    "body": "Category: native bridge architecture\n\nProblem:\n`UnrealEditorWebUIBridge.cpp` currently combines permission approval, Python registry invocation, task storage/lifecycle, ticker logic, and browser event dispatch.\n\nProposed work:\n- Move Python registry execution helpers into a focused native helper.\n- Move task lifecycle/store concerns into a focused helper or module.\n- Keep permission approval and event dispatch easier to audit.\n- Preserve existing bridge API shape.\n\nAcceptance criteria:\n- UE automation/build still passes on the UE runner.\n- Web bridge method behavior remains compatible."
+  },
+  {
+    "title": "Type safety: enable stricter TypeScript checks incrementally",
+    "body": "Category: frontend type safety\n\nProblem:\nThe frontend processes bridge JSON and command schemas, but TypeScript strictness is still limited.\n\nProposed work:\n- Enable `strict` first.\n- Evaluate `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` in follow-up commits.\n- Replace loose assumptions around bridge response and schema field rendering with explicit narrowing.\n\nAcceptance criteria:\n- `npm run build` succeeds on supported Node.\n- Runtime behavior stays unchanged."
+  },
+  {
+    "title": "Task runtime: turn cooperative demo into a real long-running job protocol",
+    "body": "Category: task runtime\n\nProblem:\n`demo.longRun` currently exercises C++ ticker progress but does not dispatch a real Python cooperative handler.\n\nProposed work:\n- Define a small cooperative job protocol for progress, cancellation, and timeout checks.\n- Route demo long-run through the same protocol used by future long-running tools.\n- Document which work is safe on editor tick vs editor game thread.\n\nAcceptance criteria:\n- The demo reports progress through the existing task UI.\n- Cancellation and timeout behavior remain visible to the frontend."
+  },
+  {
+    "title": "Result UX: add real asset table row actions",
+    "body": "Category: frontend UX\n\nProblem:\nThe asset table previously exposed a placeholder Select action. It has been removed, but useful row actions are still missing.\n\nProposed work:\n- Add supported row actions such as copy/open/select where safe.\n- Render only actions that are available for the current result type.\n- Add tests for visible actions and disabled/unavailable states.\n\nAcceptance criteria:\n- No placeholder actions are shown.\n- At least one useful asset row action is wired end-to-end."
+  },
+  {
+    "title": "CI: add Node and Python version matrix coverage",
+    "body": "Category: CI and compatibility\n\nProblem:\nLocal validation found Python 3.9 and Node version compatibility gaps that CI did not cover directly.\n\nProposed work:\n- Run Python registry tests on 3.9 and 3.11.\n- Run frontend checks on Node 20.19+ and 22.13+.\n- Keep UE-specific validation in the self-hosted workflow.\n\nAcceptance criteria:\n- Hosted CI catches the supported local toolchain floor.\n- Existing validation steps remain intact."
+  },
+  {
+    "title": "Tool manifest: move project/stage catalog out of hard-coded frontend state",
+    "body": "Category: configuration/productization\n\nProblem:\n`frontend/src/tool-manifest.ts` hard-codes starter projects and stages. Production teams will need project-specific catalogs without editing frontend source.\n\nProposed work:\n- Introduce a checked-in JSON manifest or bridge-loaded settings source.\n- Validate stored preferences against the loaded manifest.\n- Preserve current starter defaults as fallback data.\n\nAcceptance criteria:\n- Tool catalog defaults still work offline.\n- Project/stage data can be changed without editing React component code."
+  },
+  {
+    "title": "Workflow automation: document or script issue/PR creation flow",
+    "body": "Category: repository workflow\n\nProblem:\nRepo maintenance work benefits from issue-first branches and linked PRs, but local environments may not have GitHub CLI installed or authenticated.\n\nProposed work:\n- Document supported options: GitHub CLI, Git credential manager token, or browser session.\n- Add a small maintainer script if useful for creating issue batches from a JSON file.\n- Avoid storing secrets in the repository.\n\nAcceptance criteria:\n- Maintainers can reproduce issue/PR creation without guessing credentials setup.\n- No tokens or private credentials are committed."
+  }
+]

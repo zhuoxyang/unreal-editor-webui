@@ -66,6 +66,21 @@ function formatCell(value: unknown) {
     : JSON.stringify(value)
 }
 
+function assetCopyPath(asset: unknown) {
+  if (!isRecord(asset)) {
+    return null
+  }
+
+  for (const key of ['objectPath', 'path', 'packageName']) {
+    const value = asset[key]
+    if (typeof value === 'string' && value.length > 0) {
+      return value
+    }
+  }
+
+  return null
+}
+
 function exportRowsForView(result: unknown, view: string) {
   const envelope = toEnvelope(result)
   if (view === 'assetTable' && Array.isArray(envelope.assets)) return envelope.assets.filter(isRecord)
@@ -111,6 +126,7 @@ function AssetTableView({ result }: { result: unknown }) {
   }
 
   const columns = Array.from(new Set(assets.flatMap((asset) => (isRecord(asset) ? Object.keys(asset) : []))))
+  const hasCopyableAssets = assets.some((asset) => assetCopyPath(asset) !== null)
 
   return (
     <div className="result-view">
@@ -123,16 +139,36 @@ function AssetTableView({ result }: { result: unknown }) {
             {columns.map((column) => (
               <th key={column}>{column}</th>
             ))}
+            {hasCopyableAssets ? <th>Actions</th> : null}
           </tr>
         </thead>
         <tbody>
-          {assets.map((asset, index) => (
-            <tr key={isRecord(asset) ? String(asset.objectPath || asset.path || asset.assetName || index) : index}>
-              {columns.map((column) => (
-                <td key={column}>{formatCell(isRecord(asset) ? asset[column] : '')}</td>
-              ))}
-            </tr>
-          ))}
+          {assets.map((asset, index) => {
+            const copyPath = assetCopyPath(asset)
+
+            return (
+              <tr key={isRecord(asset) ? String(asset.objectPath || asset.path || asset.assetName || index) : index}>
+                {columns.map((column) => (
+                  <td key={column}>{formatCell(isRecord(asset) ? asset[column] : '')}</td>
+                ))}
+                {hasCopyableAssets ? (
+                  <td>
+                    {copyPath ? (
+                      <button
+                        className="inline-action"
+                        type="button"
+                        onClick={() => void navigator.clipboard?.writeText(copyPath)}
+                      >
+                        Copy path
+                      </button>
+                    ) : (
+                      '-'
+                    )}
+                  </td>
+                ) : null}
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>

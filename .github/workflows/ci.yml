@@ -7,23 +7,22 @@ on:
   pull_request:
 
 jobs:
-  validate:
-    name: Validate plugin and frontend
+  frontend:
+    name: Frontend (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20.19", "22.13"]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -46,17 +45,42 @@ jobs:
         working-directory: frontend
         run: npm test
 
+  python:
+    name: Python registry (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
       - name: Validate plugin descriptor JSON
         run: python -m json.tool UnrealEditorWebUI.uplugin
 
       - name: Check Python syntax
         run: python -m py_compile Python/unreal_editor_webui_registry.py Python/unreal_editor_webui_demo.py
 
-      - name: Check Unix packaging script syntax
-        run: bash -n scripts/package-plugin.sh
-
       - name: Run Python registry tests
         run: python -m unittest discover -s tests
+
+  repository:
+    name: Repository checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Check Unix packaging script syntax
+        run: bash -n scripts/package-plugin.sh
 
       - name: Check whitespace
         run: git diff --check

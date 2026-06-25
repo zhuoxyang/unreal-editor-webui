@@ -5,6 +5,15 @@ import { InspectorPanel } from './components/InspectorPanel'
 import { ResultRenderer } from './components/ResultRenderer'
 import { ToolRackPanel } from './components/ToolRackPanel'
 import { WorkspacePanel } from './components/WorkspacePanel'
+import { createRequestId, useEditorBridge } from './bridge'
+import type { BridgeResponse, TaskResult, WebUISettings } from './bridge'
+import {
+  formatRecentTime,
+  loadStoredRecentExecutions,
+  MAX_RECENT_EXECUTIONS,
+  saveStoredRecentExecutions,
+} from './recent-executions'
+import type { ExecutionMode, RecentExecution } from './recent-executions'
 import {
   decodeEnumOption,
   encodeEnumOption,
@@ -22,11 +31,11 @@ import {
   TOOL_STAGES,
 } from './tool-manifest'
 import type { ToolCategoryId, ToolProjectId, ToolStageId } from './tool-manifest'
+import { isTerminalTaskStatus, parseTaskStatus } from './task-model'
+import type { TaskRecord, WebUIEvent } from './task-model'
 
 type DraftValue = string | number | boolean
-type ExecutionMode = 'run' | 'task'
 type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
-type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timed_out'
 
 type SchemaProperty = {
   type?: SchemaPropertyType | SchemaPropertyType[]
@@ -77,108 +86,6 @@ type CommandMetadata = {
   }
 }
 
-type BridgeResponse<T> =
-  | {
-      id: string | null
-      ok: true
-      result: T
-    }
-  | {
-      id: string | null
-      ok: false
-      error: {
-        code: string
-        message: string
-        details?: string[]
-        traceback?: string
-      }
-    }
-
-type TaskResult = {
-  taskId: string
-  status: TaskStatus
-  command?: string
-  payload?: Record<string, unknown>
-  progress?: number
-  cancellable?: boolean
-  cancellationMode?: string
-  executionThread?: string
-  timeoutPolicy?: string
-  message?: string
-  logs?: string[]
-  createdAt?: string
-  updatedAt?: string
-  responseJson?: string
-}
-
-type WebUISettings = {
-  useDevServer: boolean
-  devServerUrl: string
-  startupUrl: string
-  resolvedUrl: string
-}
-
-type WebUIEvent = {
-  type: string
-  taskId?: string
-  status?: string
-  progress?: number
-  cancellable?: boolean
-  cancellationMode?: string
-  executionThread?: string
-  timeoutPolicy?: string
-  message?: string
-  log?: string
-  updatedAt?: string
-  responseJson?: string
-}
-
-type RecentExecution = {
-  id: string
-  command: string
-  mode: ExecutionMode
-  payload: Record<string, unknown>
-  ranAt: string
-}
-
-type TaskRecord = TaskResult & {
-  command: string
-  payload: Record<string, unknown>
-  startedAt: string
-  lastError?: string
-}
-
-const RECENT_EXECUTIONS_STORAGE_KEY = 'unreal-editor-webui.recentExecutions'
-const MAX_RECENT_EXECUTIONS = 12
-
-declare global {
-  interface Window {
-    ue?: {
-      editorwebui?: {
-        executecommand(requestJson: string): Promise<string>
-        startcommand(requestJson: string): Promise<string>
-        gettask(taskId: string): Promise<string>
-        listtasks(): Promise<string>
-        removetask(taskId: string): Promise<string>
-        canceltask(taskId: string): Promise<string>
-        getwebuisettings(): Promise<string>
-        setwebuisettings(settingsJson: string): Promise<string>
-      }
-    }
-  }
-}
-
-type EditorWebUIBridge = NonNullable<NonNullable<Window['ue']>['editorwebui']>
-type BridgeMethodName = keyof EditorWebUIBridge
-
-function createRequestId() {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID()
-  }
-
-  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
 function getPropertyTypes(property: SchemaProperty) {
   if (Array.isArray(property.type)) {
     return property.type
@@ -202,58 +109,12 @@ function commandHasDryRun(command: CommandMetadata) {
   )
 }
 
-function loadStoredRecentExecutions(): RecentExecution[] {
-  try {
-    const stored = globalThis.localStorage?.getItem(RECENT_EXECUTIONS_STORAGE_KEY)
-    if (!stored) {
-      return []
-    }
-
-    const parsed = JSON.parse(stored) as RecentExecution[]
-    if (!Array.isArray(parsed)) {
-      return []
-    }
-
-    return parsed.filter((item) => item && typeof item.command === 'string' && typeof item.ranAt === 'string')
-  } catch {
-    return []
-  }
-}
-
 function formatSchemaDefault(value: unknown) {
   if (value === undefined) {
     return ''
   }
 
   return typeof value === 'string' ? value : JSON.stringify(value)
-}
-
-function formatRecentTime(value: string) {
-  const timestamp = new Date(value)
-  if (Number.isNaN(timestamp.getTime())) {
-    return value
-  }
-
-  return timestamp.toLocaleTimeString()
-}
-
-function isTerminalTaskStatus(status: TaskStatus) {
-  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'timed_out'
-}
-
-function parseTaskStatus(status: string | undefined): TaskStatus | null {
-  if (
-    status === 'queued' ||
-    status === 'running' ||
-    status === 'completed' ||
-    status === 'failed' ||
-    status === 'cancelled' ||
-    status === 'timed_out'
-  ) {
-    return status
-  }
-
-  return null
 }
 
 function App() {
@@ -275,8 +136,12 @@ function App() {
     'Open this app inside the Unreal Editor WebUI tab to enable the bridge.',
   ])
 
-  const bridge = window.ue?.editorwebui
-  const bridgeReady = Boolean(bridge)
+  const log = useCallback((message: string) => {
+    const time = new Date().toLocaleTimeString()
+    setLogLines((lines) => [`[${time}] ${message}`, ...lines].slice(0, 80))
+  }, [])
+
+  const { bridgeReady, callBridge, callBridgeQuiet } = useEditorBridge(log)
 
   const taskList = useMemo(() => {
     return Object.values(taskRecords).sort((left, right) => right.startedAt.localeCompare(left.startedAt))
@@ -395,11 +260,7 @@ function App() {
   }
 
   useEffect(() => {
-    try {
-      globalThis.localStorage?.setItem(RECENT_EXECUTIONS_STORAGE_KEY, JSON.stringify(recentExecutions))
-    } catch {
-      // Local storage is optional in embedded browser contexts.
-    }
+    saveStoredRecentExecutions(recentExecutions)
   }, [recentExecutions])
 
   useEffect(() => {
@@ -409,11 +270,6 @@ function App() {
       openTabs: workspaceTabs,
     })
   }, [favoriteCommands, toolPreferences, workspaceTabs])
-
-  const log = useCallback((message: string) => {
-    const time = new Date().toLocaleTimeString()
-    setLogLines((lines) => [`[${time}] ${message}`, ...lines].slice(0, 80))
-  }, [])
 
   const mergeTaskResult = useCallback((task: TaskResult, fallback?: Partial<TaskRecord>) => {
     setTaskRecords((records) => {
@@ -508,39 +364,6 @@ function App() {
     window.addEventListener('unreal-editor-webui', handleWebUIEvent)
     return () => window.removeEventListener('unreal-editor-webui', handleWebUIEvent)
   }, [mergeTaskEvent])
-
-  const callBridge = useCallback(async <T,>(methodName: BridgeMethodName, ...args: string[]) => {
-    if (!bridge || typeof bridge[methodName] !== 'function') {
-      throw new Error(`Bridge method unavailable: ${methodName}`)
-    }
-
-    const method = bridge[methodName] as (...methodArgs: string[]) => Promise<string>
-    const responseJson = await method(...args)
-    const response = JSON.parse(responseJson) as BridgeResponse<T>
-    log(`${methodName} -> ${JSON.stringify(response, null, 2)}`)
-
-    if (!response.ok) {
-      throw new Error(response.error.message)
-    }
-
-    return response.result
-  }, [bridge, log])
-
-  const callBridgeQuiet = useCallback(async <T,>(methodName: BridgeMethodName, ...args: string[]) => {
-    if (!bridge || typeof bridge[methodName] !== 'function') {
-      throw new Error(`Bridge method unavailable: ${methodName}`)
-    }
-
-    const method = bridge[methodName] as (...methodArgs: string[]) => Promise<string>
-    const responseJson = await method(...args)
-    const response = JSON.parse(responseJson) as BridgeResponse<T>
-
-    if (!response.ok) {
-      throw new Error(response.error.message)
-    }
-
-    return response.result
-  }, [bridge])
 
   useEffect(() => {
     if (!bridgeReady) {

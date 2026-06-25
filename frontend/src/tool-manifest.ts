@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import toolCatalog from './tool-catalog.json'
 
 export type ToolProjectId = 'aurora' | 'neon' | 'mobile'
 export type ToolStageId = 'common' | 'art' | 'ta' | 'level' | 'release'
@@ -38,53 +39,19 @@ export type ToolShellPanel = {
 
 const TOOL_PREFERENCES_STORAGE_KEY = 'unreal-editor-webui.toolPreferences'
 
-export const TOOL_PROJECTS: ToolProject[] = [
-  {
-    id: 'aurora',
-    name: 'Project Aurora',
-    description: '高品质主机/PC 项目',
-    stages: ['common', 'art', 'ta', 'level', 'release'],
-  },
-  {
-    id: 'neon',
-    name: 'Project Neon',
-    description: '风格化动作项目',
-    stages: ['common', 'art', 'ta', 'release'],
-  },
-  {
-    id: 'mobile',
-    name: 'Project Mobile',
-    description: '移动端性能优先项目',
-    stages: ['common', 'ta', 'level', 'release'],
-  },
-]
-
-export const TOOL_STAGES: ToolStage[] = [
-  { id: 'common', label: '我的常用' },
-  { id: 'art', label: '创意设计' },
-  { id: 'ta', label: 'TA 工程' },
-  { id: 'level', label: '关卡制作' },
-  { id: 'release', label: '项目管理' },
-]
-
-export const TOOL_CATEGORIES: ToolCategory[] = [
-  { id: 'all', label: '全部工具', icon: '▦' },
-  { id: 'favorites', label: '收藏', icon: '★' },
-  { id: 'recent', label: '最近', icon: '◷' },
-  { id: 'assets', label: '资产', icon: '◈' },
-  { id: 'materials', label: '材质', icon: '✦' },
-  { id: 'level', label: '关卡', icon: '⎔' },
-  { id: 'release', label: '发布', icon: '✓' },
-  { id: 'system', label: '系统', icon: '⚙' },
-]
-
-export const DEFAULT_TOOL_PREFERENCES: ToolPreferenceState = {
-  projectId: 'aurora',
-  stageId: 'common',
-  categoryId: 'all',
-  favorites: ['asset.listByPath', 'asset.validateNaming', 'editor.selectedAssets'],
-  openTabs: [],
+type ToolCatalog = {
+  projects: ToolProject[]
+  stages: ToolStage[]
+  categories: ToolCategory[]
+  defaultPreferences: ToolPreferenceState
 }
+
+const CATALOG = toolCatalog as ToolCatalog
+
+export const TOOL_PROJECTS = CATALOG.projects
+export const TOOL_STAGES = CATALOG.stages
+export const TOOL_CATEGORIES = CATALOG.categories
+export const DEFAULT_TOOL_PREFERENCES = CATALOG.defaultPreferences
 
 function isToolProjectId(value: unknown): value is ToolProjectId {
   return TOOL_PROJECTS.some((project) => project.id === value)

@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { ResultRenderer } from './ResultRenderer'
 
 describe('ResultRenderer', () => {
@@ -13,6 +13,25 @@ describe('ResultRenderer', () => {
 
     expect(screen.getByText('assetName')).toBeInTheDocument()
     expect(screen.getByText('SM_Chair')).toBeInTheDocument()
+  })
+
+  it('copies asset paths from asset table actions', () => {
+    const writeText = vi.fn()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+
+    render(
+      <ResultRenderer
+        result={{ assets: [{ assetName: 'SM_Chair', objectPath: '/Game/SM_Chair' }] }}
+        resultType="assetTable"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy path' }))
+
+    expect(writeText).toHaveBeenCalledWith('/Game/SM_Chair')
   })
 
   it('renders change sets from protocol envelopes', () => {
