@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import json
 import pathlib
 import sys
@@ -9,6 +10,7 @@ import unittest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "Python" / "unreal_editor_webui_registry.py"
+BRIDGE_ENTRY_PATH = REPO_ROOT / "Python" / "unreal_editor_webui_bridge_entry.py"
 
 
 def make_unreal_stub():
@@ -47,6 +49,16 @@ def load_registry():
     sys.modules["unreal_editor_webui_registry"] = module
     spec.loader.exec_module(module)
     return module, unreal
+
+
+def load_bridge_entry():
+    registry, unreal = load_registry()
+    spec = importlib.util.spec_from_file_location("unreal_editor_webui_bridge_entry", BRIDGE_ENTRY_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules["unreal_editor_webui_bridge_entry"] = module
+    spec.loader.exec_module(module)
+    return module, registry, unreal
 
 
 def request(command, payload=None, request_id="req-1"):
@@ -506,6 +518,44 @@ class RegistryTests(unittest.TestCase):
         self.assertNotIn("traceback", response["error"])
         self.assertEqual(len(self.unreal.error_logs), 1)
         self.assertIn("RuntimeError: boom", self.unreal.error_logs[0])
+
+
+class BridgeEntryTests(unittest.TestCase):
+    def setUp(self):
+        self.entry, self.registry, self.unreal = load_bridge_entry()
+
+    def test_dispatch_inspects_command_metadata(self):
+        response = parse_response(self.entry.dispatch("inspect_command", request("system.ping")))
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["command"], "system.ping")
+        self.assertEqual(response["result"]["permission"], "read")
+
+    def test_dispatch_executes_command_with_permission_policy(self):
+        response = parse_response(
+            self.entry.dispatch(
+                "execute_command",
+                request("editor.log", {"message": "from entry"}),
+                json.dumps({"allowedCommand": "editor.log", "allowedPermission": "write"}),
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["logged"], "from entry")
+        self.assertEqual(self.unreal.logs, ["from entry"])
+
+    def test_unreal_dispatch_wrapper_repr_is_raw_json(self):
+        response_repr = repr(
+            self.entry.dispatch_for_unreal(
+                base64.b64encode(b"inspect_command").decode("ascii"),
+                base64.b64encode(request("system.ping").encode("utf-8")).decode("ascii"),
+                "",
+            )
+        )
+
+        response = parse_response(response_repr)
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["command"], "system.ping")
 
 
 if __name__ == "__main__":
