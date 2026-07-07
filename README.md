@@ -109,6 +109,11 @@ Use the helper scripts for release packages so the React frontend is always rebu
 See `docs/validation.md` for the latest local validation status.
 See `docs/tool-framework.md` for the tool rack manifest, prototype policy, and UE CI runner notes.
 
+## Architecture And Integration Docs
+
+- `docs/architecture.md`: full Web UI -> `SWebBrowser` -> C++ bridge -> Python registry -> UE API architecture, including task event pushback.
+- `docs/integration-guide.md`: external Web app bridge contract, request/response envelopes, task APIs, error codes, and trusted-origin requirements.
+
 ## JavaScript Command Example
 
 Inside the embedded browser, Unreal exposes bound `UObject` functions in lowercase:
