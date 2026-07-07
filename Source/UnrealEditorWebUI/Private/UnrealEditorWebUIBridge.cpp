@@ -269,6 +269,51 @@ void UUnrealEditorWebUIBridge::ResetPrivilegedCommandApprovals()
     PrivilegedCommandApprovals.Reset();
 }
 
+#if WITH_DEV_AUTOMATION_TESTS
+FString UUnrealEditorWebUIBridge::TestOnlyCreateTask(
+    const FString& RequestJson,
+    const FString& Status,
+    const FString& ExecutionThread,
+    const FString& CancellationMode,
+    const FString& TimeoutPolicy,
+    const FDateTime& CreatedAt,
+    int32 Progress,
+    int32 CooperativeTotalSteps)
+{
+    const FString TaskId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
+
+    FScopeLock Lock(&TasksCriticalSection);
+    FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
+    Task.RequestJson = RequestJson;
+    Task.Status = Status;
+    Task.ExecutionThread = ExecutionThread;
+    Task.CancellationMode = CancellationMode;
+    Task.TimeoutPolicy = TimeoutPolicy;
+    Task.Progress = Progress;
+    Task.CooperativeStep = 0;
+    Task.CooperativeTotalSteps = CooperativeTotalSteps;
+    Task.CreatedAt = CreatedAt;
+    Task.UpdatedAt = CreatedAt;
+    ApplyTaskLifecycleForStatusLocked(Task);
+    return TaskId;
+}
+
+bool UUnrealEditorWebUIBridge::TestOnlyTickCooperativeTasks(float DeltaTime)
+{
+    return TickCooperativeTasks(DeltaTime);
+}
+
+void UUnrealEditorWebUIBridge::TestOnlyGrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission)
+{
+    GrantPrivilegedCommandApproval(CommandName, Permission);
+}
+
+bool UUnrealEditorWebUIBridge::TestOnlyHasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const
+{
+    return HasPrivilegedCommandApproval(CommandName, Permission);
+}
+#endif
+
 FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
 {
     const FString RequestId = ExtractRequestId(RequestJson);

@@ -62,6 +62,21 @@ public:
     UFUNCTION()
     FString SetWebUISettings(const FString& SettingsJson);
 
+#if WITH_DEV_AUTOMATION_TESTS
+    FString TestOnlyCreateTask(
+        const FString& RequestJson,
+        const FString& Status,
+        const FString& ExecutionThread,
+        const FString& CancellationMode,
+        const FString& TimeoutPolicy,
+        const FDateTime& CreatedAt,
+        int32 Progress = 0,
+        int32 CooperativeTotalSteps = 0);
+    bool TestOnlyTickCooperativeTasks(float DeltaTime);
+    void TestOnlyGrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission);
+    bool TestOnlyHasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const;
+#endif
+
 private:
     void RunTask(const FString TaskId, const FString RequestJson);
     void UpdateTaskStatus(

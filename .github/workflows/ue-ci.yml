@@ -73,7 +73,7 @@ jobs:
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation.log"
-          & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.Settings.URLAllowlist; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
 
       - name: Run native settings smoke
         shell: pwsh
