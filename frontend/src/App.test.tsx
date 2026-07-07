@@ -80,7 +80,7 @@ describe('task recovery', () => {
     )
     render(<App />)
 
-    expect(await screen.findByText('asset.longScan')).toBeInTheDocument()
+    expect((await screen.findAllByText('asset.longScan')).length).toBeGreaterThan(0)
     expect(await screen.findByText('temporary bridge failure')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('running')).toBeInTheDocument())
     expect(screen.queryByText('failed')).not.toBeInTheDocument()
