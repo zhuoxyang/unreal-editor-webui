@@ -59,3 +59,5 @@ Runner prerequisites:
 
 Once the runner is online, make the UE workflow a required pull-request check for changes under
 `Source/`, `Python/`, `Web/`, `frontend/`, `scripts/`, and the plugin descriptor.
+
+See `docs/ue-ci-runner.md` for the runner setup script, branch protection checklist, and artifact policy.

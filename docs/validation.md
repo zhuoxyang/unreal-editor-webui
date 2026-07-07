@@ -23,13 +23,14 @@ CI coverage added in `.github/workflows/ci.yml`:
 - Node 22 frontend install/build/lint/test and packaged frontend entry-point validation.
 - Python 3.11 descriptor, syntax, registry unit tests, and whitespace validation.
 
-UE CI coverage is defined in `.github/workflows/ue-ci.yml` for a Windows self-hosted runner:
+UE CI coverage is defined in `.github/workflows/ue-ci.yml`:
 
+- A hosted `UE config validation (hosted)` job validates descriptor/module wiring and script syntax on every matching PR.
 - Runner labels: `self-hosted`, `windows`, `ue-5.5`.
 - Runner environment variable: `UE_ROOT=C:\Program Files\Epic Games\UE_5.5`.
 - Required software: Unreal Engine 5.5, Visual Studio 2022 C++ toolchain, Windows SDK, Node.js/npm, Git, PowerShell.
-- The job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the `UnrealEditorWebUI.Settings.URLAllowlist` automation test, and runs `scripts/validate-settings-smoke.py`.
-- Failed UE runs upload AutomationTool/editor logs; successful runs upload the packaged plugin artifact.
+- The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the `UnrealEditorWebUI.` automation test filter, and runs `scripts/validate-settings-smoke.py`.
+- UE logs and packaged plugin artifacts upload with `if: always()` so failed runs keep diagnostics when files exist.
 - Keep self-hosted runner user Python startup scripts clean or isolated. A global `Documents/UnrealEngine/Python/init_unreal.py` can pollute settings-smoke commandlet exit status.
 
 Historical UE validation:

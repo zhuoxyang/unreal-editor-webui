@@ -25,9 +25,65 @@ on:
       - "scripts/**"
       - "UnrealEditorWebUI.uplugin"
 
+concurrency:
+  group: ue-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  ue-config-validation:
+    name: UE config validation (hosted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate plugin descriptor and module wiring
+        shell: python
+        run: |
+          import json
+          import pathlib
+
+          root = pathlib.Path.cwd()
+          descriptor = json.loads((root / "UnrealEditorWebUI.uplugin").read_text(encoding="utf-8-sig"))
+          modules = {module.get("Name"): module for module in descriptor.get("Modules", [])}
+          plugins = {plugin.get("Name"): plugin for plugin in descriptor.get("Plugins", [])}
+
+          assert modules.get("UnrealEditorWebUI", {}).get("Type") == "Editor", "UnrealEditorWebUI module must be Editor type"
+          assert plugins.get("PythonScriptPlugin", {}).get("Enabled") is True, "PythonScriptPlugin must be enabled"
+          assert plugins.get("WebBrowserWidget", {}).get("Enabled") is True, "WebBrowserWidget must be enabled"
+          assert (root / "Source/UnrealEditorWebUI/UnrealEditorWebUI.Build.cs").is_file(), "Build.cs missing"
+          assert (root / "Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp").is_file(), "Bridge source missing"
+          assert (root / "Python/unreal_editor_webui_bridge_entry.py").is_file(), "Python bridge entry missing"
+          assert (root / "Python/unreal_editor_webui_registry.py").is_file(), "Python registry missing"
+
+      - name: Validate packaging scripts
+        shell: bash
+        run: |
+          bash -n scripts/package-plugin.sh
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $Scripts = @(
+            "scripts/package-plugin.ps1",
+            "scripts/create-host-project.ps1",
+            "scripts/setup-ue-runner.ps1"
+          )
+          foreach ($Script in $Scripts) {
+            $Tokens = $null
+            $Errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path -LiteralPath $Script).Path, [ref]$Tokens, [ref]$Errors) | Out-Null
+            if ($Errors.Count -gt 0) {
+              $Errors | Format-List | Out-String | Write-Error
+              exit 1
+            }
+          }
+
   buildplugin-and-automation:
     name: UE 5.5 BuildPlugin and automation
+    needs: ue-config-validation
     runs-on: [self-hosted, windows, ue-5.5]
     timeout-minutes: 90
     env:
@@ -82,6 +138,17 @@ jobs:
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke.log"
           & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
 
+      - name: Collect AutomationTool logs
+        shell: pwsh
+        if: always()
+        run: |
+          $Source = Join-Path $env:APPDATA "Unreal Engine/AutomationTool/Logs"
+          $Destination = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-AutomationToolLogs"
+          if (Test-Path -LiteralPath $Source -PathType Container) {
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+            Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+          }
+
       - name: Upload UE logs
         uses: actions/upload-artifact@v6
         if: always()
@@ -90,12 +157,15 @@ jobs:
           path: |
             ${{ runner.temp }}/UnrealEditorWebUI-*.log
             ${{ runner.temp }}/UnrealEditorWebUI-Package/HostProject/Saved/Logs/**
+            ${{ runner.temp }}/UnrealEditorWebUI-AutomationToolLogs/**
           if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload packaged plugin
         uses: actions/upload-artifact@v6
-        if: success()
+        if: always()
         with:
           name: UnrealEditorWebUI-Package-UE55
           path: ${{ runner.temp }}/UnrealEditorWebUI-Package
-          if-no-files-found: error
+          if-no-files-found: ignore
+          retention-days: 14

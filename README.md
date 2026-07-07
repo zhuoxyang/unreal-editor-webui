@@ -108,6 +108,7 @@ Use the helper scripts for release packages so the React frontend is always rebu
 
 See `docs/validation.md` for the latest local validation status.
 See `docs/tool-framework.md` for the tool rack manifest, prototype policy, and UE CI runner notes.
+See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
 
 ## Architecture And Integration Docs
 
