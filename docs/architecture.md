@@ -53,7 +53,7 @@ window.addEventListener("unreal-editor-webui", (event) => {
 });
 ```
 
-The React app also polls `gettask(taskId)` as a recovery path, so task state survives page reloads and dropped events.
+The React app treats these events as the real-time update path. It uses one low-frequency `listtasks()` reconciliation request—paused while the page is hidden—to recover after reloads or dropped events without issuing one poll per active task.
 
 ## Trust Boundary
 

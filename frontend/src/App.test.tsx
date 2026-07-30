@@ -73,15 +73,23 @@ describe('task recovery', () => {
     expect(screen.getAllByText('asset.scan').length).toBeGreaterThan(0)
   })
 
-  it('keeps a running task non-terminal after a transient polling error', async () => {
+  it('keeps an event-created running task non-terminal after a reconciliation error', async () => {
     installBridge(
-      [{ taskId: 'task-2', command: 'asset.longScan', payload: {}, status: 'running', progress: 20 }],
-      { gettask: vi.fn(async () => bridgeError('temporary bridge failure')) },
+      [],
+      { listtasks: vi.fn(async () => bridgeError('temporary bridge failure')) },
     )
     render(<App />)
 
-    expect((await screen.findAllByText('asset.longScan')).length).toBeGreaterThan(0)
-    expect(await screen.findByText('temporary bridge failure')).toBeInTheDocument()
+    fireEvent(window, new CustomEvent('unreal-editor-webui', {
+      detail: {
+        type: 'task.status',
+        taskId: 'task-2',
+        status: 'running',
+        progress: 20,
+      },
+    }))
+
+    expect(await screen.findByText(/temporary bridge failure/)).toBeInTheDocument()
     await waitFor(() => expect(screen.getByText('running')).toBeInTheDocument())
     expect(screen.queryByText('failed')).not.toBeInTheDocument()
   })
