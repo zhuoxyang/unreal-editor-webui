@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import math
 import pkgutil
 import traceback
 from typing import Any, Callable
@@ -16,6 +17,8 @@ COMMAND_LOAD_ERRORS: list[dict[str, str]] = []
 METADATA_VERSION = 1
 SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
+SUPPORTED_EXECUTION_THREADS = {"editor_game_thread", "editor_tick"}
+SUPPORTED_CANCELLATION_MODES = {"queued_only", "cooperative"}
 DEFAULT_PERMISSION_POLICY = {
     "allowedCommand": "",
     "allowedPermission": "",
@@ -45,6 +48,9 @@ def command(
 
     normalized_name = name.strip() if isinstance(name, str) else ""
     normalized_permission = permission.lower().strip() if isinstance(permission, str) else ""
+    normalized_execution_thread = execution_thread.lower().strip() if isinstance(execution_thread, str) else ""
+    normalized_cancellation_mode = cancellation_mode.lower().strip() if isinstance(cancellation_mode, str) else ""
+    normalized_timeout_policy = timeout_policy.lower().strip() if isinstance(timeout_policy, str) else ""
     normalized_schema = schema or {"type": "object", "properties": {}}
 
     if not normalized_name:
@@ -56,6 +62,12 @@ def command(
         )
     if normalized_name in COMMANDS:
         raise ValueError(f'Command "{normalized_name}" is already registered.')
+    _validate_execution_metadata(
+        normalized_name,
+        normalized_execution_thread,
+        normalized_cancellation_mode,
+        normalized_timeout_policy,
+    )
     _validate_command_schema(normalized_name, normalized_schema)
 
     def decorator(handler: CommandHandler) -> CommandHandler:
@@ -76,14 +88,63 @@ def command(
             "resultType": result_type,
             "warnings": warnings or [],
             "execution": {
-                "thread": execution_thread,
-                "cancellationMode": cancellation_mode,
-                "timeoutPolicy": timeout_policy,
+                "thread": normalized_execution_thread,
+                "cancellationMode": normalized_cancellation_mode,
+                "timeoutPolicy": normalized_timeout_policy,
             },
         }
         return handler
 
     return decorator
+
+
+def _validate_execution_metadata(
+    command_name: str,
+    execution_thread: str,
+    cancellation_mode: str,
+    timeout_policy: str,
+) -> None:
+    if execution_thread not in SUPPORTED_EXECUTION_THREADS:
+        raise ValueError(
+            f'Command "{command_name}" uses unsupported execution thread "{execution_thread}". '
+            f"Expected one of: {sorted(SUPPORTED_EXECUTION_THREADS)}"
+        )
+    if cancellation_mode not in SUPPORTED_CANCELLATION_MODES:
+        raise ValueError(
+            f'Command "{command_name}" uses unsupported cancellation mode "{cancellation_mode}". '
+            f"Expected one of: {sorted(SUPPORTED_CANCELLATION_MODES)}"
+        )
+
+    if timeout_policy != "none" and not timeout_policy.startswith("seconds:"):
+        raise ValueError(
+            f'Command "{command_name}" uses unsupported timeout policy "{timeout_policy}". '
+            'Expected "none" or "seconds:<positive number>".'
+        )
+
+    if timeout_policy != "none":
+        try:
+            seconds = float(timeout_policy.removeprefix("seconds:"))
+        except ValueError as exc:
+            raise ValueError(
+                f'Command "{command_name}" uses invalid timeout policy "{timeout_policy}".'
+            ) from exc
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError(
+                f'Command "{command_name}" timeout seconds must be a finite positive number.'
+            )
+
+    if execution_thread == "editor_game_thread" and cancellation_mode != "queued_only":
+        raise ValueError(
+            f'Command "{command_name}" must use queued_only cancellation on editor_game_thread.'
+        )
+    if execution_thread == "editor_game_thread" and timeout_policy != "none":
+        raise ValueError(
+            f'Command "{command_name}" must use timeout policy none on editor_game_thread.'
+        )
+    if execution_thread == "editor_tick" and cancellation_mode != "cooperative":
+        raise ValueError(
+            f'Command "{command_name}" must use cooperative cancellation on editor_tick.'
+        )
 
 
 def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> None:

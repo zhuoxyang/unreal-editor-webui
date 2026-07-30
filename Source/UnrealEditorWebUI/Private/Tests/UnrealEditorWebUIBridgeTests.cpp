@@ -17,6 +17,20 @@ namespace
             Steps);
     }
 
+    FString MakePreflightJson(
+        const FString& ExecutionThread = TEXT("editor_game_thread"),
+        const FString& CancellationMode = TEXT("queued_only"),
+        const FString& TimeoutPolicy = TEXT("none"))
+    {
+        return FString::Printf(
+            TEXT("{\"id\":\"req-test\",\"ok\":true,\"result\":{")
+            TEXT("\"command\":\"system.ping\",\"permission\":\"read\",")
+            TEXT("\"execution\":{\"thread\":\"%s\",\"cancellationMode\":\"%s\",\"timeoutPolicy\":\"%s\"}}}"),
+            *ExecutionThread,
+            *CancellationMode,
+            *TimeoutPolicy);
+    }
+
     TSharedPtr<FJsonObject> ParseJsonObject(const FString& Json)
     {
         TSharedPtr<FJsonObject> Object;
@@ -68,6 +82,75 @@ namespace
         Result->TryGetStringField(TEXT("status"), Status);
         return Status;
     }
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIBridgePreflightValidationTest,
+    "UnrealEditorWebUI.Bridge.PreflightValidation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIBridgePreflightValidationTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    const TSharedPtr<FJsonObject> DefaultResult = ParseResultObject(
+        Bridge->TestOnlyValidatePreflightResponse(TEXT("req-test"), MakePreflightJson()));
+    TestTrue(TEXT("Default execution metadata is accepted"), DefaultResult.IsValid());
+    if (DefaultResult.IsValid())
+    {
+        TestEqual(
+            TEXT("Default execution thread is normalized"),
+            DefaultResult->GetStringField(TEXT("thread")),
+            FString(TEXT("editor_game_thread")));
+    }
+
+    const TSharedPtr<FJsonObject> CooperativeResult = ParseResultObject(
+        Bridge->TestOnlyValidatePreflightResponse(
+            TEXT("req-test"),
+            MakePreflightJson(TEXT("EDITOR_TICK"), TEXT("COOPERATIVE"), TEXT("SECONDS:10"))));
+    TestTrue(TEXT("Cooperative execution metadata is accepted"), CooperativeResult.IsValid());
+    if (CooperativeResult.IsValid())
+    {
+        TestEqual(
+            TEXT("Cooperative timeout is normalized"),
+            CooperativeResult->GetStringField(TEXT("timeoutPolicy")),
+            FString(TEXT("seconds:10")));
+    }
+
+    const TArray<TPair<FString, FString>> InvalidPreflights = {
+        {TEXT("non-JSON response"), TEXT("not json")},
+        {TEXT("missing ok"), TEXT("{\"id\":\"req-test\"}")},
+        {TEXT("wrong ok type"), TEXT("{\"id\":\"req-test\",\"ok\":\"true\"}")},
+        {TEXT("missing error envelope"), TEXT("{\"id\":\"req-test\",\"ok\":false}")},
+        {TEXT("missing result"), TEXT("{\"id\":\"req-test\",\"ok\":true}")},
+        {TEXT("wrong result type"), TEXT("{\"id\":\"req-test\",\"ok\":true,\"result\":[]}")},
+        {TEXT("missing execution"), TEXT("{\"id\":\"req-test\",\"ok\":true,\"result\":{\"command\":\"system.ping\",\"permission\":\"read\"}}")},
+        {TEXT("unknown thread"), MakePreflightJson(TEXT("background"), TEXT("queued_only"), TEXT("none"))},
+        {TEXT("unknown cancellation"), MakePreflightJson(TEXT("editor_tick"), TEXT("interrupt"), TEXT("none"))},
+        {TEXT("incompatible game-thread cancellation"), MakePreflightJson(TEXT("editor_game_thread"), TEXT("cooperative"), TEXT("none"))},
+        {TEXT("incompatible game-thread timeout"), MakePreflightJson(TEXT("editor_game_thread"), TEXT("queued_only"), TEXT("seconds:10"))},
+        {TEXT("zero timeout"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:0"))},
+        {TEXT("negative timeout"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:-1"))},
+        {TEXT("non-finite timeout"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:nan"))},
+        {TEXT("trailing timeout text"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:10junk"))},
+    };
+
+    for (const TPair<FString, FString>& TestCase : InvalidPreflights)
+    {
+        TestEqual(
+            *FString::Printf(TEXT("%s fails closed"), *TestCase.Key),
+            GetResponseErrorCode(Bridge->TestOnlyValidatePreflightResponse(TEXT("req-test"), TestCase.Value)),
+            FString(TEXT("invalid_preflight")));
+    }
+
+    const FString RegistryError = TEXT(
+        "{\"id\":\"req-test\",\"ok\":false,\"error\":{\"code\":\"unknown_command\",\"message\":\"Unknown command\"}}");
+    TestEqual(
+        TEXT("Valid registry error is preserved"),
+        GetResponseErrorCode(Bridge->TestOnlyValidatePreflightResponse(TEXT("req-test"), RegistryError)),
+        FString(TEXT("unknown_command")));
+    return true;
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(

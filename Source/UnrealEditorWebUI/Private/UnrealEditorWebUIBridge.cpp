@@ -7,6 +7,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Base64.h"
 #include "Misc/Guid.h"
+#include "Misc/LexFromString.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
@@ -251,6 +252,164 @@ namespace
         Policy->SetStringField(TEXT("allowedPermission"), Permission.ToLower());
         return WriteJsonObject(Policy);
     }
+
+    struct FCommandPreflight
+    {
+        bool bSuccess = false;
+        FString ResponseJson;
+        FString CommandName;
+        FString Permission;
+        FString ExecutionThread;
+        FString CancellationMode;
+        FString TimeoutPolicy;
+    };
+
+    bool IsSupportedTimeoutPolicy(const FString& TimeoutPolicy)
+    {
+        const FString Normalized = TimeoutPolicy.ToLower();
+        if (Normalized == TEXT("none"))
+        {
+            return true;
+        }
+        if (!Normalized.StartsWith(TEXT("seconds:")))
+        {
+            return false;
+        }
+
+        const FString SecondsText = Normalized.Mid(8);
+        double Seconds = 0.0;
+        return !SecondsText.IsEmpty()
+            && LexTryParseString(Seconds, *SecondsText)
+            && FMath::IsFinite(Seconds)
+            && Seconds > 0.0;
+    }
+
+    bool IsSupportedExecutionMetadata(
+        const FString& ExecutionThread,
+        const FString& CancellationMode,
+        const FString& TimeoutPolicy)
+    {
+        const FString NormalizedThread = ExecutionThread.ToLower();
+        const FString NormalizedCancellation = CancellationMode.ToLower();
+        const FString NormalizedTimeout = TimeoutPolicy.ToLower();
+
+        if (!IsSupportedTimeoutPolicy(NormalizedTimeout))
+        {
+            return false;
+        }
+        if (NormalizedThread == TEXT("editor_game_thread"))
+        {
+            return NormalizedCancellation == TEXT("queued_only")
+                && NormalizedTimeout == TEXT("none");
+        }
+        if (NormalizedThread == TEXT("editor_tick"))
+        {
+            return NormalizedCancellation == TEXT("cooperative");
+        }
+        return false;
+    }
+
+    FCommandPreflight ParseCommandPreflight(
+        const FString& RequestId,
+        const FString& PreflightJson)
+    {
+        FCommandPreflight Parsed;
+
+        TSharedPtr<FJsonObject> Preflight;
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(PreflightJson);
+        if (!FJsonSerializer::Deserialize(Reader, Preflight) || !Preflight.IsValid())
+        {
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight did not return a JSON object."));
+            return Parsed;
+        }
+
+        bool bPreflightOk = false;
+        if (!Preflight->TryGetBoolField(TEXT("ok"), bPreflightOk))
+        {
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight response is missing a boolean ok field."));
+            return Parsed;
+        }
+
+        if (!bPreflightOk)
+        {
+            const TSharedPtr<FJsonObject>* ErrorObject = nullptr;
+            FString ErrorCode;
+            FString ErrorMessage;
+            if (Preflight->TryGetObjectField(TEXT("error"), ErrorObject)
+                && ErrorObject != nullptr
+                && ErrorObject->IsValid()
+                && (*ErrorObject)->TryGetStringField(TEXT("code"), ErrorCode)
+                && !ErrorCode.IsEmpty()
+                && (*ErrorObject)->TryGetStringField(TEXT("message"), ErrorMessage)
+                && !ErrorMessage.IsEmpty())
+            {
+                Parsed.ResponseJson = PreflightJson;
+                return Parsed;
+            }
+
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight returned an invalid error envelope."));
+            return Parsed;
+        }
+
+        const TSharedPtr<FJsonObject>* ResultObject = nullptr;
+        if (!Preflight->TryGetObjectField(TEXT("result"), ResultObject)
+            || ResultObject == nullptr
+            || !ResultObject->IsValid())
+        {
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight did not return a result object."));
+            return Parsed;
+        }
+
+        if (!(*ResultObject)->TryGetStringField(TEXT("command"), Parsed.CommandName)
+            || Parsed.CommandName.IsEmpty()
+            || !(*ResultObject)->TryGetStringField(TEXT("permission"), Parsed.Permission)
+            || !IsSupportedPermission(Parsed.Permission))
+        {
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight returned invalid command permission metadata."));
+            return Parsed;
+        }
+
+        const TSharedPtr<FJsonObject>* ExecutionObject = nullptr;
+        if (!(*ResultObject)->TryGetObjectField(TEXT("execution"), ExecutionObject)
+            || ExecutionObject == nullptr
+            || !ExecutionObject->IsValid()
+            || !(*ExecutionObject)->TryGetStringField(TEXT("thread"), Parsed.ExecutionThread)
+            || !(*ExecutionObject)->TryGetStringField(TEXT("cancellationMode"), Parsed.CancellationMode)
+            || !(*ExecutionObject)->TryGetStringField(TEXT("timeoutPolicy"), Parsed.TimeoutPolicy)
+            || !IsSupportedExecutionMetadata(
+                Parsed.ExecutionThread,
+                Parsed.CancellationMode,
+                Parsed.TimeoutPolicy))
+        {
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight returned unsupported execution metadata."));
+            return Parsed;
+        }
+
+        Parsed.Permission = Parsed.Permission.ToLower();
+        Parsed.ExecutionThread = Parsed.ExecutionThread.ToLower();
+        Parsed.CancellationMode = Parsed.CancellationMode.ToLower();
+        Parsed.TimeoutPolicy = Parsed.TimeoutPolicy.ToLower();
+        Parsed.bSuccess = true;
+        return Parsed;
+    }
 }
 
 void UUnrealEditorWebUIBridge::PostMessage(const FString& Payload)
@@ -312,6 +471,25 @@ bool UUnrealEditorWebUIBridge::TestOnlyHasPrivilegedCommandApproval(const FStrin
 {
     return HasPrivilegedCommandApproval(CommandName, Permission);
 }
+
+FString UUnrealEditorWebUIBridge::TestOnlyValidatePreflightResponse(
+    const FString& RequestId,
+    const FString& PreflightJson) const
+{
+    const FCommandPreflight Preflight = ParseCommandPreflight(RequestId, PreflightJson);
+    if (!Preflight.bSuccess)
+    {
+        return Preflight.ResponseJson;
+    }
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetStringField(TEXT("command"), Preflight.CommandName);
+    Result->SetStringField(TEXT("permission"), Preflight.Permission);
+    Result->SetStringField(TEXT("thread"), Preflight.ExecutionThread);
+    Result->SetStringField(TEXT("cancellationMode"), Preflight.CancellationMode);
+    Result->SetStringField(TEXT("timeoutPolicy"), Preflight.TimeoutPolicy);
+    return MakeSuccessResponse(RequestId, Result);
+}
 #endif
 
 FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
@@ -323,53 +501,39 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
         return MakeErrorResponse(RequestId, TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
     }
 
-    const FString PreflightJson = ExecuteRegistryFunction(RequestJson, TEXT("inspect_command"));
-    const TSharedRef<FJsonObject> Preflight = ParseJsonObjectOrEmpty(PreflightJson);
-
-    bool bPreflightOk = false;
-    if (!Preflight->TryGetBoolField(TEXT("ok"), bPreflightOk) || !bPreflightOk)
+    const FCommandPreflight Preflight = ParseCommandPreflight(
+        RequestId,
+        ExecuteRegistryFunction(RequestJson, TEXT("inspect_command")));
+    if (!Preflight.bSuccess)
     {
-        return PreflightJson;
+        return Preflight.ResponseJson;
     }
 
-    const TSharedPtr<FJsonValue> ResultValue = Preflight->TryGetField(TEXT("result"));
-    const TSharedPtr<FJsonObject> ResultObject = ResultValue.IsValid() ? ResultValue->AsObject() : nullptr;
-    if (!ResultObject.IsValid())
+    if (IsPrivilegedPermission(Preflight.Permission)
+        && (!CanReusePrivilegedApproval(Preflight.Permission)
+            || !HasPrivilegedCommandApproval(Preflight.CommandName, Preflight.Permission)))
     {
-        return MakeErrorResponse(RequestId, TEXT("invalid_preflight"), TEXT("Command preflight did not return a result object."));
-    }
-
-    FString CommandName;
-    FString Permission;
-    ResultObject->TryGetStringField(TEXT("command"), CommandName);
-    ResultObject->TryGetStringField(TEXT("permission"), Permission);
-
-    if (CommandName.IsEmpty() || !IsSupportedPermission(Permission))
-    {
-        return MakeErrorResponse(
-            RequestId,
-            TEXT("invalid_preflight"),
-            TEXT("Command preflight returned invalid command permission metadata."));
-    }
-
-    if (IsPrivilegedPermission(Permission)
-        && (!CanReusePrivilegedApproval(Permission) || !HasPrivilegedCommandApproval(CommandName, Permission)))
-    {
-        if (!ConfirmPrivilegedCommand(CommandName, Permission))
+        if (!ConfirmPrivilegedCommand(Preflight.CommandName, Preflight.Permission))
         {
             return MakeErrorResponse(
                 RequestId,
                 TEXT("permission_denied"),
-                FString::Printf(TEXT("User declined %s command: %s"), *Permission, *CommandName));
+                FString::Printf(
+                    TEXT("User declined %s command: %s"),
+                    *Preflight.Permission,
+                    *Preflight.CommandName));
         }
 
-        if (CanReusePrivilegedApproval(Permission))
+        if (CanReusePrivilegedApproval(Preflight.Permission))
         {
-            GrantPrivilegedCommandApproval(CommandName, Permission);
+            GrantPrivilegedCommandApproval(Preflight.CommandName, Preflight.Permission);
         }
     }
 
-    return ExecuteRegistryFunction(RequestJson, TEXT("execute_command"), MakePermissionPolicyJson(CommandName, Permission));
+    return ExecuteRegistryFunction(
+        RequestJson,
+        TEXT("execute_command"),
+        MakePermissionPolicyJson(Preflight.CommandName, Preflight.Permission));
 }
 
 FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
@@ -431,28 +595,12 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         return MakeErrorResponse(FString(), TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
     }
 
-    const FString PreflightJson = ExecuteRegistryFunction(RequestJson, TEXT("inspect_command"));
-    const TSharedRef<FJsonObject> Preflight = ParseJsonObjectOrEmpty(PreflightJson);
-
-    bool bPreflightOk = false;
-    if (!Preflight->TryGetBoolField(TEXT("ok"), bPreflightOk) || !bPreflightOk)
+    const FCommandPreflight Preflight = ParseCommandPreflight(
+        ExtractRequestId(RequestJson),
+        ExecuteRegistryFunction(RequestJson, TEXT("inspect_command")));
+    if (!Preflight.bSuccess)
     {
-        return PreflightJson;
-    }
-
-    FString ExecutionThread;
-    FString CancellationMode;
-    FString TimeoutPolicy;
-    const TSharedPtr<FJsonObject> PreflightResult = Preflight->GetObjectField(TEXT("result"));
-    if (PreflightResult.IsValid())
-    {
-        const TSharedPtr<FJsonObject>* ExecutionObject = nullptr;
-        if (PreflightResult->TryGetObjectField(TEXT("execution"), ExecutionObject) && ExecutionObject != nullptr && ExecutionObject->IsValid())
-        {
-            (*ExecutionObject)->TryGetStringField(TEXT("thread"), ExecutionThread);
-            (*ExecutionObject)->TryGetStringField(TEXT("cancellationMode"), CancellationMode);
-            (*ExecutionObject)->TryGetStringField(TEXT("timeoutPolicy"), TimeoutPolicy);
-        }
+        return Preflight.ResponseJson;
     }
 
     const FString TaskId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
@@ -473,9 +621,9 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
         Task.RequestJson = RequestJson;
         Task.Status = TEXT("queued");
-        Task.ExecutionThread = ExecutionThread;
-        Task.CancellationMode = CancellationMode;
-        Task.TimeoutPolicy = TimeoutPolicy;
+        Task.ExecutionThread = Preflight.ExecutionThread;
+        Task.CancellationMode = Preflight.CancellationMode;
+        Task.TimeoutPolicy = Preflight.TimeoutPolicy;
         Task.Progress = 0;
         Task.CreatedAt = Now;
         Task.UpdatedAt = Now;
@@ -484,7 +632,7 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
     }
     BroadcastTaskEvent(TaskId, TEXT("queued"), FString(), 0, TEXT("Task queued."));
 
-    if (IsCooperativeExecutionThread(ExecutionThread))
+    if (IsCooperativeExecutionThread(Preflight.ExecutionThread))
     {
         StartCooperativeTask(TaskId, RequestJson);
     }

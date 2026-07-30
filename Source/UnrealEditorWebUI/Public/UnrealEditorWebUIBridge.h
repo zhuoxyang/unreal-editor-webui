@@ -75,6 +75,9 @@ public:
     bool TestOnlyTickCooperativeTasks(float DeltaTime);
     void TestOnlyGrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission);
     bool TestOnlyHasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const;
+    FString TestOnlyValidatePreflightResponse(
+        const FString& RequestId,
+        const FString& PreflightJson) const;
 #endif
 
 private:

@@ -162,6 +162,42 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported permission"):
             self.registry.command("test.permissionTypo", permission="wrtie")
 
+    def test_unknown_execution_metadata_is_rejected_during_registration(self):
+        with self.assertRaisesRegex(ValueError, "unsupported execution thread"):
+            self.registry.command("test.threadTypo", execution_thread="background")
+
+        with self.assertRaisesRegex(ValueError, "unsupported cancellation mode"):
+            self.registry.command("test.cancellationTypo", cancellation_mode="interrupt")
+
+        with self.assertRaisesRegex(ValueError, "invalid timeout policy"):
+            self.registry.command("test.timeoutTypo", timeout_policy="seconds:later")
+
+    def test_incompatible_execution_metadata_is_rejected_during_registration(self):
+        with self.assertRaisesRegex(ValueError, "queued_only cancellation"):
+            self.registry.command(
+                "test.gameThreadCooperative",
+                execution_thread="editor_game_thread",
+                cancellation_mode="cooperative",
+            )
+
+        with self.assertRaisesRegex(ValueError, "cooperative cancellation"):
+            self.registry.command(
+                "test.tickQueued",
+                execution_thread="editor_tick",
+                cancellation_mode="queued_only",
+            )
+
+        with self.assertRaisesRegex(ValueError, "timeout policy none"):
+            self.registry.command("test.gameThreadTimeout", timeout_policy="seconds:10")
+
+        with self.assertRaisesRegex(ValueError, "finite positive number"):
+            self.registry.command(
+                "test.negativeTimeout",
+                execution_thread="editor_tick",
+                cancellation_mode="cooperative",
+                timeout_policy="seconds:-1",
+            )
+
     def test_tampered_unknown_permission_fails_closed(self):
         self.registry.COMMAND_METADATA["editor.log"]["permission"] = "wrtie"
         response = parse_response(
