@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createRequestId } from '../bridge'
 import {
-  loadStoredRecentExecutions,
+  cloneExecutionPayload,
+  loadStoredRecentExecutionsState,
   MAX_RECENT_EXECUTIONS,
   saveStoredRecentExecutions,
   type ExecutionMode,
@@ -10,20 +11,27 @@ import {
 import type { CommandMetadata } from '../types/command'
 
 export function useRecentExecutions() {
-  const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(loadStoredRecentExecutions)
+  const [initialLoad] = useState(loadStoredRecentExecutionsState)
+  const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(initialLoad.value)
+  const hasUserChangedRef = useRef(false)
 
   useEffect(() => {
+    if (!initialLoad.needsRewrite && !hasUserChangedRef.current) {
+      return
+    }
     saveStoredRecentExecutions(recentExecutions)
-  }, [recentExecutions])
+  }, [initialLoad.needsRewrite, recentExecutions])
 
   function recordRecentExecution(command: CommandMetadata, payload: Record<string, unknown>, mode: ExecutionMode) {
+    hasUserChangedRef.current = true
+    const payloadSnapshot = cloneExecutionPayload(payload)
     setRecentExecutions((items) => {
-      const payloadKey = JSON.stringify(payload)
+      const payloadKey = JSON.stringify(payloadSnapshot)
       const nextItem: RecentExecution = {
         id: createRequestId(),
         command: command.name,
         mode,
-        payload,
+        payload: payloadSnapshot,
         ranAt: new Date().toISOString(),
       }
 
