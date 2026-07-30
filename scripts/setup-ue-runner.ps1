@@ -34,6 +34,11 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "npm is required on the runner PATH."
 }
 
+& node (Join-Path $PSScriptRoot "validate-node-version.mjs")
+if ($LASTEXITCODE -ne 0) {
+    throw "The runner Node.js version does not satisfy frontend/package.json."
+}
+
 New-Item -ItemType Directory -Path $RunnerRoot -Force | Out-Null
 $RunnerRootPath = (Resolve-Path -LiteralPath $RunnerRoot).Path
 

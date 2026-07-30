@@ -30,6 +30,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  fast-checks:
+    name: Frontend and Python checks (hosted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Validate Node.js version
+        run: node scripts/validate-node-version.mjs
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Test Python command registry
+        run: python -m unittest discover -s tests -v
+
   ue-config-validation:
     name: UE config validation (hosted)
     runs-on: ubuntu-latest
@@ -83,7 +121,7 @@ jobs:
 
   buildplugin-and-automation:
     name: UE 5.5 BuildPlugin and automation
-    needs: ue-config-validation
+    needs: [fast-checks, ue-config-validation]
     runs-on: [self-hosted, windows, ue-5.5]
     timeout-minutes: 90
     env:
@@ -100,7 +138,8 @@ jobs:
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) { throw "RunUAT not found: $RunUAT" }
           if (-not (Test-Path -LiteralPath $EditorCmd -PathType Leaf)) { throw "UnrealEditor-Cmd not found: $EditorCmd" }
-          node --version
+          node scripts/validate-node-version.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Unsupported Node.js version on self-hosted runner." }
           npm --version
 
       - name: Build packaged plugin
@@ -130,6 +169,9 @@ jobs:
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation.log"
           & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unreal automation tests failed with exit code $LASTEXITCODE. See $LogPath"
+          }
 
       - name: Run native settings smoke
         shell: pwsh
@@ -137,6 +179,9 @@ jobs:
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke.log"
           & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native settings smoke failed with exit code $LASTEXITCODE. See $LogPath"
+          }
 
       - name: Collect AutomationTool logs
         shell: pwsh

@@ -26,6 +26,11 @@ try {
         throw "npm is required to build the React frontend before packaging."
     }
 
+    & node (Join-Path $PSScriptRoot "validate-node-version.mjs")
+    if ($LASTEXITCODE -ne 0) {
+        throw "The installed Node.js version does not satisfy frontend/package.json."
+    }
+
     Push-Location $FrontendDir
     try {
         & npm ci

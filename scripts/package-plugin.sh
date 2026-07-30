@@ -29,6 +29,8 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+node "$ROOT_DIR/scripts/validate-node-version.mjs"
+
 cleanup() {
   rm -rf "$STAGING_DIR"
 }
