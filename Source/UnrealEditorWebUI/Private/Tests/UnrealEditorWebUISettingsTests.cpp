@@ -56,6 +56,46 @@ bool FUnrealEditorWebUISettingsURLTest::RunTest(const FString& Parameters)
         TEXT("Encoded parent traversal is rejected"),
         UnrealEditorWebUISettings::IsBridgeURLAllowed(EncodedTraversalURL, Error));
 
+    TestTrue(
+        TEXT("Runtime navigation within the configured origin is allowed"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(
+            TEXT("http://127.0.0.1:5173/tools?tab=assets#result"),
+            TEXT("http://127.0.0.1:5173/"),
+            Error));
+    TestTrue(
+        TEXT("An omitted default port matches the configured Web origin"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(
+            TEXT("http://localhost/tools"),
+            TEXT("http://localhost:80/"),
+            Error));
+    TestFalse(
+        TEXT("A different loopback port cannot inherit the bridge"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(
+            TEXT("http://127.0.0.1:5174/"),
+            TEXT("http://127.0.0.1:5173/"),
+            Error));
+    TestFalse(
+        TEXT("A different loopback hostname cannot inherit the bridge"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(
+            TEXT("http://localhost:5173/"),
+            TEXT("http://127.0.0.1:5173/"),
+            Error));
+    TestFalse(
+        TEXT("Packaged content cannot navigate into a loopback bridge scope"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(
+            TEXT("http://127.0.0.1:5173/"),
+            MakeFileURL(FPaths::Combine(WebDir, TEXT("index.html"))),
+            Error));
+    TestFalse(
+        TEXT("Malformed loopback ports are rejected"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowed(TEXT("http://127.0.0.1:not-a-port"), Error));
+    TestFalse(
+        TEXT("URL user info cannot disguise a loopback authority"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowed(TEXT("http://attacker@127.0.0.1:5173"), Error));
+    TestFalse(
+        TEXT("Whitespace is rejected inside a loopback authority"),
+        UnrealEditorWebUISettings::IsBridgeURLAllowed(TEXT("http://127.0.0.1 :5173"), Error));
+
     return true;
 }
 

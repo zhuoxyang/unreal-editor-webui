@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import copy
 import importlib
+import inspect
 import json
 import math
 import pkgutil
 import traceback
+from dataclasses import dataclass
+from types import GeneratorType
 from typing import Any, Callable
 
 import unreal
@@ -14,15 +17,118 @@ CommandHandler = Callable[[dict[str, Any]], Any]
 COMMANDS: dict[str, CommandHandler] = {}
 COMMAND_METADATA: dict[str, dict[str, Any]] = {}
 COMMAND_LOAD_ERRORS: list[dict[str, str]] = []
+COOPERATIVE_JOBS: dict[str, "CooperativeJob"] = {}
 METADATA_VERSION = 1
 SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 SUPPORTED_EXECUTION_THREADS = {"editor_game_thread", "editor_tick"}
 SUPPORTED_CANCELLATION_MODES = {"queued_only", "cooperative"}
+MAX_REQUEST_BYTES = 256 * 1024
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_JSON_DEPTH = 32
+MAX_JSON_NODES = 10_000
+MAX_COOPERATIVE_JOBS = 64
 DEFAULT_PERMISSION_POLICY = {
     "allowedCommand": "",
     "allowedPermission": "",
 }
+
+
+class CommandExecutionError(RuntimeError):
+    """A command failure that can be returned as a stable, structured envelope."""
+
+    def __init__(self, code: str, message: str, *, details: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.details = details
+
+
+class ProtocolValidationError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass
+class CooperativeJob:
+    request_id: str | None
+    command_name: str
+    iterator: GeneratorType
+
+
+def _validate_raw_json_nesting(document: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in document:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise ProtocolValidationError(
+                    "json_too_complex",
+                    f"JSON nesting exceeds the maximum depth of {MAX_JSON_DEPTH}.",
+                )
+        elif character in "]}":
+            depth = max(0, depth - 1)
+
+
+def _validate_json_nodes(value: Any) -> None:
+    nodes = 0
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        nodes += 1
+        if nodes > MAX_JSON_NODES:
+            raise ProtocolValidationError(
+                "json_too_complex",
+                f"JSON contains more than {MAX_JSON_NODES} nodes.",
+            )
+        if isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+
+
+def parse_json_document(document: str, *, max_bytes: int = MAX_REQUEST_BYTES) -> Any:
+    if not isinstance(document, str):
+        raise ProtocolValidationError("invalid_json", "JSON document must be a string.")
+    if len(document.encode("utf-8")) > max_bytes:
+        raise ProtocolValidationError(
+            "request_too_large",
+            f"JSON request exceeds the maximum size of {max_bytes} bytes.",
+        )
+
+    _validate_raw_json_nesting(document)
+    try:
+        value = json.loads(document)
+    except RecursionError as exc:
+        raise ProtocolValidationError(
+            "json_too_complex",
+            f"JSON nesting exceeds the maximum depth of {MAX_JSON_DEPTH}.",
+        ) from exc
+    _validate_json_nodes(value)
+    return value
+
+
+def _validated_request_id(request: dict[str, Any]) -> str | None:
+    request_id = request.get("id")
+    if request_id is not None and not isinstance(request_id, str):
+        raise ProtocolValidationError(
+            "invalid_request",
+            "Request id must be a string or null.",
+        )
+    return request_id
 
 
 def command(
@@ -184,14 +290,46 @@ def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> 
             )
 
 
-def _success(request_id: str | None, result: Any) -> str:
+def _serialize_response(request_id: str | None, envelope: dict[str, Any]) -> str:
+    try:
+        response = json.dumps(envelope, ensure_ascii=False)
+    except (RecursionError, TypeError, ValueError):
+        response = json.dumps(
+            {
+                "id": request_id,
+                "ok": False,
+                "error": {
+                    "code": "invalid_handler_result",
+                    "message": "Command result could not be serialized as JSON.",
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    if len(response.encode("utf-8")) <= MAX_RESPONSE_BYTES:
+        return response
+
     return json.dumps(
+        {
+            "id": request_id,
+            "ok": False,
+            "error": {
+                "code": "response_too_large",
+                "message": f"Command response exceeds the maximum size of {MAX_RESPONSE_BYTES} bytes.",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def _success(request_id: str | None, result: Any) -> str:
+    return _serialize_response(
+        request_id,
         {
             "id": request_id,
             "ok": True,
             "result": result,
         },
-        ensure_ascii=False,
     )
 
 
@@ -202,13 +340,13 @@ def _error(request_id: str | None, code: str, message: str, **extra: Any) -> str
     }
     error.update(extra)
 
-    return json.dumps(
+    return _serialize_response(
+        request_id,
         {
             "id": request_id,
             "ok": False,
             "error": error,
         },
-        ensure_ascii=False,
     )
 
 
@@ -505,11 +643,11 @@ def inspect_command(request_json: str) -> str:
     request_id = None
 
     try:
-        request = json.loads(request_json)
+        request = parse_json_document(request_json)
         if not isinstance(request, dict):
             return _error(None, "invalid_request", "Request must be a JSON object.")
 
-        request_id = request.get("id")
+        request_id = _validated_request_id(request)
         command_name = request.get("command")
         payload = request.get("payload", {})
 
@@ -536,6 +674,8 @@ def inspect_command(request_json: str) -> str:
             },
         )
 
+    except ProtocolValidationError as exc:
+        return _error(request_id, exc.code, str(exc))
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
     except Exception as exc:
@@ -551,11 +691,11 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
     request_id = None
 
     try:
-        request = json.loads(request_json)
+        request = parse_json_document(request_json)
         if not isinstance(request, dict):
             return _error(None, "invalid_request", "Request must be a JSON object.")
 
-        request_id = request.get("id")
+        request_id = _validated_request_id(request)
         command_name = request.get("command")
         payload = request.get("payload", {})
 
@@ -581,10 +721,24 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
         if payload_error is not None:
             return payload_error
 
+        execution = metadata.get("execution", {})
+        if isinstance(execution, dict) and execution.get("thread") == "editor_tick":
+            return _error(
+                request_id,
+                "task_required",
+                f'Command "{command_name}" must be started as a cooperative task.',
+            )
+
         return _success(request_id, handler(normalized_payload))
 
+    except ProtocolValidationError as exc:
+        return _error(request_id, exc.code, str(exc))
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
+    except CommandExecutionError as exc:
+        _log_exception("Unreal Editor WebUI command execution failed.")
+        extra = {"details": exc.details} if exc.details is not None else {}
+        return _error(request_id, exc.code, str(exc), **extra)
     except Exception as exc:
         _log_exception("Unreal Editor WebUI command handler failed.")
         return _error(
@@ -592,6 +746,244 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
             "handler_exception",
             str(exc),
         )
+
+
+def _close_cooperative_job(job: CooperativeJob) -> None:
+    try:
+        job.iterator.close()
+    except Exception:
+        _log_exception(
+            f'Unreal Editor WebUI cooperative command "{job.command_name}" cleanup failed.'
+        )
+
+
+def start_cooperative_command(
+    request_json: str,
+    permission_policy: dict[str, Any] | None,
+    task_id: str,
+) -> str:
+    """Create, but do not advance, a generator-backed editor-tick command."""
+
+    request_id = None
+    try:
+        request = parse_json_document(request_json)
+        if not isinstance(request, dict):
+            return _error(None, "invalid_request", "Request must be a JSON object.")
+
+        request_id = _validated_request_id(request)
+        command_name = request.get("command")
+        payload = request.get("payload", {})
+        if not isinstance(command_name, str) or not command_name:
+            return _error(request_id, "invalid_command", "Command must be a non-empty string.")
+        if not isinstance(task_id, str) or not task_id:
+            return _error(request_id, "invalid_task_id", "Task id must be a non-empty string.")
+        if task_id in COOPERATIVE_JOBS:
+            return _error(request_id, "task_exists", f"Cooperative task already exists: {task_id}")
+        if len(COOPERATIVE_JOBS) >= MAX_COOPERATIVE_JOBS:
+            return _error(
+                request_id,
+                "too_many_tasks",
+                f"Too many active cooperative tasks. Limit: {MAX_COOPERATIVE_JOBS}.",
+            )
+
+        handler = COMMANDS.get(command_name)
+        metadata = COMMAND_METADATA.get(command_name)
+        if handler is None or metadata is None:
+            return _error(request_id, "unknown_command", f"Unknown command: {command_name}")
+
+        execution = metadata.get("execution", {})
+        if not isinstance(execution, dict) or execution.get("thread") != "editor_tick":
+            return _error(
+                request_id,
+                "invalid_execution_mode",
+                f'Command "{command_name}" is not an editor-tick cooperative command.',
+            )
+
+        permission = str(metadata.get("permission", "read"))
+        policy = _permission_policy(permission_policy)
+        if not _permission_allowed(command_name, permission, policy):
+            return _error(
+                request_id,
+                "permission_denied",
+                f'Command "{command_name}" requires {permission} permission.',
+            )
+
+        schema = metadata.get("schema", {})
+        normalized_payload, payload_error = _prepare_command_payload(
+            request_id, command_name, payload, schema
+        )
+        if payload_error is not None:
+            return payload_error
+
+        iterator = handler(normalized_payload)
+        if not inspect.isgenerator(iterator):
+            return _error(
+                request_id,
+                "invalid_cooperative_handler",
+                f'Cooperative command "{command_name}" must return a generator.',
+            )
+
+        COOPERATIVE_JOBS[task_id] = CooperativeJob(
+            request_id=request_id,
+            command_name=command_name,
+            iterator=iterator,
+        )
+        return _success(
+            request_id,
+            {
+                "taskId": task_id,
+                "status": "running",
+                "progress": 0,
+                "log": f'Cooperative command "{command_name}" started.',
+            },
+        )
+    except ProtocolValidationError as exc:
+        return _error(request_id, exc.code, str(exc))
+    except json.JSONDecodeError as exc:
+        return _error(request_id, "invalid_json", str(exc))
+    except CommandExecutionError as exc:
+        _log_exception("Unreal Editor WebUI cooperative command start failed.")
+        extra = {"details": exc.details} if exc.details is not None else {}
+        return _error(request_id, exc.code, str(exc), **extra)
+    except Exception as exc:
+        _log_exception("Unreal Editor WebUI cooperative command start failed.")
+        return _error(request_id, "handler_exception", str(exc))
+
+
+def step_cooperative_command(control_json: str) -> str:
+    """Advance or cancel one generator-backed task and return a lifecycle update."""
+
+    request_id = None
+    task_id = ""
+    try:
+        control = parse_json_document(control_json)
+        if not isinstance(control, dict):
+            return _error(None, "invalid_request", "Cooperative control must be a JSON object.")
+
+        request_id = _validated_request_id(control)
+        task_id = control.get("taskId", "")
+        cancel_requested = control.get("cancelRequested", False)
+        if not isinstance(task_id, str) or not task_id:
+            return _error(request_id, "invalid_task_id", "Task id must be a non-empty string.")
+        if not isinstance(cancel_requested, bool):
+            return _error(request_id, "invalid_request", "cancelRequested must be a boolean.")
+
+        job = COOPERATIVE_JOBS.get(task_id)
+        if job is None:
+            return _error(request_id, "task_not_found", f"Cooperative task not found: {task_id}")
+
+        if cancel_requested:
+            COOPERATIVE_JOBS.pop(task_id, None)
+            _close_cooperative_job(job)
+            return _success(
+                job.request_id,
+                {
+                    "taskId": task_id,
+                    "status": "cancelled",
+                    "progress": 100,
+                    "log": "Cooperative command cancelled and cleaned up.",
+                },
+            )
+
+        try:
+            update = next(job.iterator)
+        except StopIteration as completed:
+            COOPERATIVE_JOBS.pop(task_id, None)
+            return _success(
+                job.request_id,
+                {
+                    "taskId": task_id,
+                    "status": "completed",
+                    "progress": 100,
+                    "log": "Cooperative command completed.",
+                    "commandResponse": {
+                        "id": job.request_id,
+                        "ok": True,
+                        "result": completed.value,
+                    },
+                },
+            )
+        except CommandExecutionError as exc:
+            COOPERATIVE_JOBS.pop(task_id, None)
+            _close_cooperative_job(job)
+            _log_exception("Unreal Editor WebUI cooperative command failed.")
+            extra = {"details": exc.details} if exc.details is not None else {}
+            return _error(job.request_id, exc.code, str(exc), **extra)
+        except Exception as exc:
+            COOPERATIVE_JOBS.pop(task_id, None)
+            _close_cooperative_job(job)
+            _log_exception("Unreal Editor WebUI cooperative command failed.")
+            return _error(job.request_id, "handler_exception", str(exc))
+
+        if not isinstance(update, dict):
+            COOPERATIVE_JOBS.pop(task_id, None)
+            _close_cooperative_job(job)
+            return _error(
+                job.request_id,
+                "invalid_cooperative_update",
+                "Cooperative commands must yield JSON objects.",
+            )
+
+        progress = update.get("progress")
+        log = update.get("log", "")
+        if (
+            not isinstance(progress, int)
+            or isinstance(progress, bool)
+            or progress < 0
+            or progress >= 100
+            or not isinstance(log, str)
+        ):
+            COOPERATIVE_JOBS.pop(task_id, None)
+            _close_cooperative_job(job)
+            return _error(
+                job.request_id,
+                "invalid_cooperative_update",
+                "Cooperative updates require integer progress from 0 to 99 and a string log.",
+            )
+
+        return _success(
+            job.request_id,
+            {
+                "taskId": task_id,
+                "status": "running",
+                "progress": progress,
+                "log": log,
+            },
+        )
+    except ProtocolValidationError as exc:
+        return _error(request_id, exc.code, str(exc))
+    except json.JSONDecodeError as exc:
+        return _error(request_id, "invalid_json", str(exc))
+    except Exception as exc:
+        job = COOPERATIVE_JOBS.pop(task_id, None) if task_id else None
+        if job is not None:
+            _close_cooperative_job(job)
+        _log_exception("Unreal Editor WebUI cooperative command dispatch failed.")
+        return _error(request_id, "handler_exception", str(exc))
+
+
+def cancel_all_cooperative_commands(control_json: str = "{}") -> str:
+    """Close every active generator, for example when its browser session ends."""
+
+    request_id = None
+    try:
+        control = parse_json_document(control_json)
+        if not isinstance(control, dict):
+            return _error(None, "invalid_request", "Cooperative control must be a JSON object.")
+        request_id = _validated_request_id(control)
+
+        jobs = list(COOPERATIVE_JOBS.values())
+        COOPERATIVE_JOBS.clear()
+        for job in jobs:
+            _close_cooperative_job(job)
+        return _success(request_id, {"cancelled": len(jobs)})
+    except ProtocolValidationError as exc:
+        return _error(request_id, exc.code, str(exc))
+    except json.JSONDecodeError as exc:
+        return _error(request_id, "invalid_json", str(exc))
+    except Exception as exc:
+        _log_exception("Unreal Editor WebUI cooperative cleanup failed.")
+        return _error(request_id, "handler_exception", str(exc))
 
 
 load_command_modules()

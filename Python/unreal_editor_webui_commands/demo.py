@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from typing import Any
 
 from unreal_editor_webui_registry import command
@@ -48,8 +49,16 @@ def demo_run(payload: dict[str, Any]) -> dict[str, str]:
     tags=["demo", "task", "cooperative"],
     order=20,
 )
-def long_run_demo(payload: dict[str, Any]) -> dict[str, Any]:
+def long_run_demo(payload: dict[str, Any]) -> Generator[dict[str, Any], None, dict[str, Any]]:
+    steps = int(payload.get("steps", 10))
+    for step in range(1, steps):
+        yield {
+            "progress": max(1, min(99, round((step / steps) * 100))),
+            "log": f"Cooperative demo step {step}/{steps}.",
+        }
+
     return {
-        "message": "Use startcommand for cooperative progress; executecommand validates the payload only.",
-        "steps": int(payload.get("steps", 10)),
+        "mode": "cooperative",
+        "steps": steps,
+        "message": "Cooperative demo task completed without blocking the editor.",
     }

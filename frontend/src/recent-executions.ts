@@ -1,5 +1,6 @@
 import {
   isRecord,
+  namespacedStorageKey,
   storedEnvelope,
   type StorageLoadResult,
 } from './storage'
@@ -59,9 +60,16 @@ export function normalizeRecentExecutions(value: unknown): RecentExecution[] {
   return normalized
 }
 
-export function loadStoredRecentExecutionsState(): StorageLoadResult<RecentExecution[]> {
+export function recentExecutionsStorageKey(storageNamespace?: string) {
+  return namespacedStorageKey(RECENT_EXECUTIONS_STORAGE_KEY, storageNamespace)
+}
+
+export function loadStoredRecentExecutionsState(storageNamespace?: string | null): StorageLoadResult<RecentExecution[]> {
+  if (storageNamespace === null) {
+    return { value: [], needsRewrite: false, source: 'missing' }
+  }
   try {
-    const stored = globalThis.localStorage?.getItem(RECENT_EXECUTIONS_STORAGE_KEY)
+    const stored = globalThis.localStorage?.getItem(recentExecutionsStorageKey(storageNamespace))
     if (!stored) {
       return { value: [], needsRewrite: false, source: 'missing' }
     }
@@ -96,17 +104,31 @@ export function loadStoredRecentExecutionsState(): StorageLoadResult<RecentExecu
   }
 }
 
-export function loadStoredRecentExecutions(): RecentExecution[] {
-  return loadStoredRecentExecutionsState().value
+export function loadStoredRecentExecutions(storageNamespace?: string | null): RecentExecution[] {
+  return loadStoredRecentExecutionsState(storageNamespace).value
 }
 
-export function saveStoredRecentExecutions(recentExecutions: RecentExecution[]) {
+export function saveStoredRecentExecutions(recentExecutions: RecentExecution[], storageNamespace?: string | null) {
+  if (storageNamespace === null) {
+    return
+  }
   try {
     const normalized = normalizeRecentExecutions(recentExecutions)
     globalThis.localStorage?.setItem(
-      RECENT_EXECUTIONS_STORAGE_KEY,
+      recentExecutionsStorageKey(storageNamespace),
       JSON.stringify(storedEnvelope(RECENT_EXECUTIONS_SCHEMA_VERSION, normalized)),
     )
+  } catch {
+    // Local storage is optional in embedded browser contexts.
+  }
+}
+
+export function clearStoredRecentExecutions(storageNamespace?: string | null) {
+  if (storageNamespace === null) {
+    return
+  }
+  try {
+    globalThis.localStorage?.removeItem(recentExecutionsStorageKey(storageNamespace))
   } catch {
     // Local storage is optional in embedded browser contexts.
   }

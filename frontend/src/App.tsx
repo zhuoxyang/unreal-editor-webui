@@ -11,6 +11,7 @@ import { useCommandPayloads } from './hooks/useCommandPayloads'
 import { useCommandRunner } from './hooks/useCommandRunner'
 import { useCommands } from './hooks/useCommands'
 import { useRecentExecutions } from './hooks/useRecentExecutions'
+import { useProjectContext } from './hooks/useProjectContext'
 import { useTasks } from './hooks/useTasks'
 import { useToolPreferences } from './hooks/useToolPreferences'
 import { useToolWorkspace } from './hooks/useToolWorkspace'
@@ -29,8 +30,11 @@ function App() {
   }, [])
 
   const { bridgeReady, callBridge, callBridgeQuiet } = useEditorBridge(log)
-  const { commands } = useCommands({ bridgeReady, callBridgeQuiet, log })
-  const { recentExecutions, recordRecentExecution } = useRecentExecutions()
+  const { projectContext, projectContextReady } = useProjectContext({ bridgeReady, callBridgeQuiet, log })
+  const { commands, commandsError, commandsStatus, retryCommands } = useCommands({ bridgeReady, callBridgeQuiet, log })
+  const { clearRecentExecutions, recentExecutions, recordRecentExecution } = useRecentExecutions(
+    projectContext.storageNamespace,
+  )
   const {
     buildPayload,
     clearPayloadDraft,
@@ -43,21 +47,24 @@ function App() {
     closeWorkspaceCommand,
     favoriteCommands,
     openWorkspaceCommand,
+    resetToolPreferences,
     toggleFavoriteCommand,
     toolPreferences,
     updateToolCategory,
     updateToolProject,
     updateToolStage,
     workspaceTabs,
-  } = useToolPreferences()
+  } = useToolPreferences(projectContext.storageNamespace)
   const {
     cancelTask,
     eventLines,
+    loadTaskDetails,
     mergeTaskResult,
     removeTask,
     taskList,
   } = useTasks({ bridgeReady, callBridge, callBridgeQuiet, log })
   const {
+    commandInvocations,
     commandResults,
     runCommandFromMetadata,
     startTaskFromMetadata,
@@ -98,12 +105,24 @@ function App() {
 
   function renderCommandResult(commandName: string) {
     const result = commandResults[commandName]
+    const invocation = commandInvocations[commandName]
     if (!hasCommandResult(commandResults, commandName)) {
       return null
     }
 
     const command = commands.find((item) => item.name === commandName)
-    return <ResultRenderer commandName={commandName} result={result} resultType={command?.resultType} />
+    return (
+      <>
+        {invocation?.stale ? (
+          <p className="stale-result-message" role="status">
+            {invocation.status === 'pending'
+              ? 'A new invocation is in progress; showing the previous successful result.'
+              : 'Showing the previous successful result. The latest invocation did not replace it.'}
+          </p>
+        ) : null}
+        <ResultRenderer commandName={commandName} result={result} resultType={command?.resultType} />
+      </>
+    )
   }
 
   return (
@@ -113,12 +132,15 @@ function App() {
       <section className="tool-shell-layout">
         <ToolRackPanel
           categories={TOOL_CATEGORIES}
+          commandsError={commandsError}
+          commandsStatus={commandsStatus}
           categoryId={toolPreferences.categoryId}
           commands={filteredCommands}
           favoriteCommands={visibleFavoriteCommands}
           onCategoryChange={updateToolCategory}
           onOpenCommand={openCommandWorkspace}
           onProjectChange={updateToolProject}
+          onRetryCommands={() => void retryCommands()}
           onSearchChange={setCommandSearch}
           onStageChange={updateToolStage}
           projectId={toolPreferences.projectId}
@@ -172,6 +194,7 @@ function App() {
           onRun={(command) => void runCommandFromMetadata(command)}
           onStartTask={(command) => void startTaskFromMetadata(command)}
           onToggleFavorite={toggleFavoriteCommand}
+          invocation={selectedCommand ? commandInvocations[selectedCommand.name] : undefined}
           recentExecutions={recentExecutions}
           selectedCommand={selectedCommand}
         />
@@ -186,7 +209,15 @@ function App() {
         log={log}
         logLines={logLines}
         onCancelTask={(taskId) => void cancelTask(taskId)}
+        onClearLocalData={() => {
+          clearRecentExecutions()
+          resetToolPreferences()
+        }}
         onRemoveTask={(taskId) => void removeTask(taskId)}
+        onLoadTaskDetails={loadTaskDetails}
+        persistenceEnabled={projectContext.persistenceEnabled}
+        projectContextReady={projectContextReady}
+        projectName={projectContext.projectName}
         taskList={taskList}
       />
     </main>

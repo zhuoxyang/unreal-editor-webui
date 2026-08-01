@@ -41,3 +41,9 @@ export type WebUISettings = {
   resolvedUrl: string
 }
 
+export type ProjectContext = {
+  protocolVersion: 1
+  projectName: string
+  storageNamespace: string
+}
+

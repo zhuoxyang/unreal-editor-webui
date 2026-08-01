@@ -1,4 +1,5 @@
 import type { ChangeEvent } from 'react'
+import type { CommandsLoadStatus } from '../hooks/useCommands'
 import type { ToolCategory, ToolCategoryId, ToolProject, ToolProjectId, ToolStage, ToolStageId } from '../tool-manifest'
 
 export type ToolRackCommand = {
@@ -22,11 +23,14 @@ type ToolRackPanelProps = {
   categoryId: ToolCategoryId
   search: string
   shownCount: number
+  commandsError: string
+  commandsStatus: CommandsLoadStatus
   onProjectChange: (projectId: ToolProjectId) => void
   onStageChange: (stageId: ToolStageId) => void
   onCategoryChange: (categoryId: ToolCategoryId) => void
   onSearchChange: (value: string) => void
   onOpenCommand: (commandName: string) => void
+  onRetryCommands: () => void
 }
 
 function toolIcon(command: ToolRackCommand) {
@@ -71,11 +75,14 @@ export function ToolRackPanel({
   categoryId,
   search,
   shownCount,
+  commandsError,
+  commandsStatus,
   onProjectChange,
   onStageChange,
   onCategoryChange,
   onSearchChange,
   onOpenCommand,
+  onRetryCommands,
 }: ToolRackPanelProps) {
   return (
     <aside className="panel tool-rack-panel lightbox-rack">
@@ -164,6 +171,15 @@ export function ToolRackPanel({
 
         <div className="tool-rack-section">
           <h3>Tools</h3>
+          {commandsStatus === 'loading' && commands.length === 0 ? (
+            <p className="muted" role="status">Loading tools…</p>
+          ) : null}
+          {commandsStatus === 'error' ? (
+            <div className="inline-error" role="alert">
+              <p>{commandsError}</p>
+              <button type="button" onClick={onRetryCommands}>Retry loading tools</button>
+            </div>
+          ) : null}
           {commands.length > 0 ? (
             commands.map((command) => (
               <ToolButton
@@ -173,9 +189,9 @@ export function ToolRackPanel({
                 onOpen={onOpenCommand}
               />
             ))
-          ) : (
+          ) : commandsStatus !== 'loading' && commandsStatus !== 'error' ? (
             <p className="muted">No tools match the current filters.</p>
-          )}
+          ) : null}
         </div>
       </div>
     </aside>

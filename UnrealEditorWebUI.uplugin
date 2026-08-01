@@ -3,7 +3,7 @@
   "Version": 1,
   "VersionName": "0.1.0",
   "FriendlyName": "Unreal Editor WebUI",
-  "Description": "Build Unreal Engine 5.5+ editor Web UI tools with WebBrowser/SWebBrowser, Python automation, and C++ extension hooks.",
+  "Description": "Build Unreal Engine 5.5 editor Web UI tools with WebBrowser/SWebBrowser, Python automation, and C++ extension hooks.",
   "Category": "Editor",
   "CreatedBy": "zhuoxyang",
   "CanContainContent": true,

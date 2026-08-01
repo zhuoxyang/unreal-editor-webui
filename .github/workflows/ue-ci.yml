@@ -2,16 +2,12 @@ name: UE CI
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".github/workflows/ue-ci.yml"
-      - "Config/**"
-      - "Python/**"
-      - "Source/**"
-      - "Web/**"
-      - "frontend/**"
-      - "scripts/**"
-      - "UnrealEditorWebUI.uplugin"
+    inputs:
+      run_trusted_ue_validation:
+        description: Run UE validation on the protected self-hosted runner
+        required: true
+        default: false
+        type: boolean
   push:
     branches:
       - main
@@ -25,6 +21,9 @@ on:
       - "scripts/**"
       - "UnrealEditorWebUI.uplugin"
 
+permissions:
+  contents: read
+
 concurrency:
   group: ue-ci-${{ github.ref }}
   cancel-in-progress: true
@@ -37,10 +36,12 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: ".nvmrc"
           cache: npm
@@ -75,7 +76,9 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Validate plugin descriptor and module wiring
         shell: python
@@ -122,14 +125,21 @@ jobs:
   buildplugin-and-automation:
     name: UE 5.5 BuildPlugin and automation
     needs: [fast-checks, ue-config-validation]
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
     runs-on: [self-hosted, windows, ue-5.5]
     timeout-minutes: 90
+    environment:
+      name: ue-self-hosted
     env:
       UE_ROOT: C:\Program Files\Epic Games\UE_5.5
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Validate runner prerequisites
         shell: pwsh
@@ -173,6 +183,25 @@ jobs:
             throw "Unreal automation tests failed with exit code $LASTEXITCODE. See $LogPath"
           }
 
+      - name: Run packaged bridge smoke
+        shell: pwsh
+        run: |
+          $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke.log"
+          $ResultPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke.json"
+          $env:UNREAL_WEBUI_PACKAGED_SMOKE_RESULT = $ResultPath
+          & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Packaged bridge smoke failed with exit code $LASTEXITCODE. See $LogPath"
+          }
+          if (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf)) {
+            throw "Packaged bridge smoke did not write its structured result: $ResultPath"
+          }
+          $SmokeResult = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
+          if ($SmokeResult.ok -ne $true) {
+            throw "Packaged bridge smoke result did not report success."
+          }
+
       - name: Run native settings smoke
         shell: pwsh
         run: |
@@ -195,22 +224,23 @@ jobs:
           }
 
       - name: Upload UE logs
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: unreal-editor-webui-ue-logs
           path: |
             ${{ runner.temp }}/UnrealEditorWebUI-*.log
-            ${{ runner.temp }}/UnrealEditorWebUI-Package/HostProject/Saved/Logs/**
+            ${{ runner.temp }}/UnrealEditorWebUI-*.json
+            ${{ runner.temp }}/UnrealEditorWebUI-HostProject/Saved/Logs/**
             ${{ runner.temp }}/UnrealEditorWebUI-AutomationToolLogs/**
           if-no-files-found: ignore
           retention-days: 14
 
       - name: Upload packaged plugin
-        uses: actions/upload-artifact@v6
-        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: success()
         with:
           name: UnrealEditorWebUI-Package-UE55
           path: ${{ runner.temp }}/UnrealEditorWebUI-Package
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14

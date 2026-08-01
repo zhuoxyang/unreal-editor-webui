@@ -50,15 +50,28 @@ namespace
         return !OutAuthority.IsEmpty();
     }
 
-    bool IsLoopbackAuthority(FString Authority)
+    bool TryNormalizeLoopbackAuthority(
+        FString Authority,
+        const FString& Scheme,
+        FString& OutAuthority)
     {
+        for (const TCHAR Character : Authority)
+        {
+            if (FChar::IsWhitespace(Character))
+            {
+                return false;
+            }
+        }
+
         int32 UserInfoSeparator = INDEX_NONE;
         if (Authority.FindLastChar(TEXT('@'), UserInfoSeparator))
         {
-            Authority = Authority.Mid(UserInfoSeparator + 1);
+            return false;
         }
 
         FString Host;
+        FString Port;
+        bool bHasExplicitPort = false;
         if (Authority.StartsWith(TEXT("[")))
         {
             int32 ClosingBracket = INDEX_NONE;
@@ -68,18 +81,71 @@ namespace
             }
 
             Host = Authority.Mid(1, ClosingBracket - 1);
+            const FString PortSuffix = Authority.Mid(ClosingBracket + 1);
+            if (!PortSuffix.IsEmpty())
+            {
+                if (!PortSuffix.StartsWith(TEXT(":")))
+                {
+                    return false;
+                }
+                bHasExplicitPort = true;
+                Port = PortSuffix.Mid(1);
+            }
         }
         else
         {
             int32 PortSeparator = INDEX_NONE;
-            Host = Authority.FindChar(TEXT(':'), PortSeparator)
-                ? Authority.Left(PortSeparator)
-                : Authority;
+            if (Authority.FindChar(TEXT(':'), PortSeparator))
+            {
+                bHasExplicitPort = true;
+                Host = Authority.Left(PortSeparator);
+                Port = Authority.Mid(PortSeparator + 1);
+                if (Port.Contains(TEXT(":")))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                Host = Authority;
+            }
         }
 
         Host.TrimStartAndEndInline();
         Host = Host.ToLower();
-        return Host == TEXT("localhost") || Host == TEXT("127.0.0.1") || Host == TEXT("::1");
+        if (Host != TEXT("localhost") && Host != TEXT("127.0.0.1") && Host != TEXT("::1"))
+        {
+            return false;
+        }
+
+        if (bHasExplicitPort && Port.IsEmpty())
+        {
+            return false;
+        }
+
+        int32 PortNumber = Scheme == TEXT("https") ? 443 : 80;
+        if (!Port.IsEmpty())
+        {
+            for (const TCHAR Character : Port)
+            {
+                if (!FChar::IsDigit(Character))
+                {
+                    return false;
+                }
+            }
+
+            PortNumber = FCString::Atoi(*Port);
+            if (PortNumber <= 0 || PortNumber > 65535)
+            {
+                return false;
+            }
+        }
+
+        const FString CanonicalHost = Host == TEXT("::1")
+            ? TEXT("[::1]")
+            : Host;
+        OutAuthority = FString::Printf(TEXT("%s:%d"), *CanonicalHost, PortNumber);
+        return true;
     }
 
     bool IsPackagedWebFileURL(const FString& Url)
@@ -162,10 +228,48 @@ namespace
 
         if (Scheme == TEXT("http") || Scheme == TEXT("https"))
         {
-            return IsLoopbackAuthority(Authority);
+            FString NormalizedAuthority;
+            return TryNormalizeLoopbackAuthority(Authority, Scheme, NormalizedAuthority);
         }
 
         return false;
+    }
+
+    bool GetBridgeSecurityScope(const FString& Url, FString& OutScope)
+    {
+        FString Trimmed = Url;
+        Trimmed.TrimStartAndEndInline();
+        const FString LowerUrl = Trimmed.ToLower();
+
+        if (Trimmed.IsEmpty() || LowerUrl == TEXT("about:blank"))
+        {
+            OutScope = TEXT("about:blank");
+            return true;
+        }
+
+        if (LowerUrl.StartsWith(TEXT("file://")))
+        {
+            if (!IsPackagedWebFileURL(Trimmed))
+            {
+                return false;
+            }
+
+            OutScope = TEXT("packaged-web");
+            return true;
+        }
+
+        FString Scheme;
+        FString Authority;
+        FString NormalizedAuthority;
+        if (!ExtractUrlSchemeAndAuthority(Trimmed, Scheme, Authority)
+            || (Scheme != TEXT("http") && Scheme != TEXT("https"))
+            || !TryNormalizeLoopbackAuthority(Authority, Scheme, NormalizedAuthority))
+        {
+            return false;
+        }
+
+        OutScope = FString::Printf(TEXT("%s://%s"), *Scheme, *NormalizedAuthority);
+        return true;
     }
 
     bool ValidateStartupURL(const FString& FieldName, FString& InOutUrl, FString& OutError)
@@ -465,5 +569,36 @@ namespace UnrealEditorWebUISettings
     {
         FString URLCopy = URL;
         return ValidateStartupURL(TEXT("URL"), URLCopy, OutError);
+    }
+
+    bool IsBridgeURLAllowedForStartupScope(
+        const FString& URL,
+        const FString& StartupURL,
+        FString& OutError)
+    {
+        FString CandidateScope;
+        if (!GetBridgeSecurityScope(URL, CandidateScope))
+        {
+            OutError = TEXT("URL is not an allowed packaged Web file or loopback http(s) URL.");
+            return false;
+        }
+
+        FString TrustedScope;
+        if (!GetBridgeSecurityScope(StartupURL, TrustedScope))
+        {
+            OutError = TEXT("The configured startup URL does not define a valid bridge security scope.");
+            return false;
+        }
+
+        if (!CandidateScope.Equals(TrustedScope, ESearchCase::CaseSensitive))
+        {
+            OutError = FString::Printf(
+                TEXT("URL scope '%s' does not match the configured startup scope '%s'."),
+                *CandidateScope,
+                *TrustedScope);
+            return false;
+        }
+
+        return true;
     }
 }

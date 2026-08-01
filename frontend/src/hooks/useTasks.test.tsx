@@ -264,7 +264,7 @@ describe('useTasks', () => {
       .mockImplementationOnce(async () => staleSnapshot.promise) as BridgeCaller
     const { result } = renderHook(() => useTasks({
       bridgeReady: true,
-      callBridge: bridgeCaller({ removetask: { removed: true } }),
+      callBridge: bridgeCaller({ removetask: { taskId: 'task-remove', removed: true } }),
       callBridgeQuiet,
       log: vi.fn(),
     }))
@@ -307,7 +307,7 @@ describe('useTasks', () => {
     })
     const { result, unmount } = renderHook(() => useTasks({
       bridgeReady: true,
-      callBridge: bridgeCaller({ removetask: { removed: false } }),
+      callBridge: bridgeCaller({ removetask: { taskId: 'task-not-removed', removed: false } }),
       callBridgeQuiet,
       log,
     }))
@@ -520,7 +520,47 @@ describe('useTasks', () => {
     expect(result.current.taskRecords['task-valid'].status).toBe('completed')
     expect(result.current.taskRecords['task-invalid']).toBeUndefined()
     expect(log).toHaveBeenCalledWith(
-      'Unable to reconcile tasks: Task reconciliation response contains an invalid task record.',
+      expect.stringContaining('Unable to reconcile tasks: Invalid bridge response from listtasks'),
     )
+  })
+
+  it('loads full task details only after an explicit request and only once', async () => {
+    const callBridgeQuiet = bridgeCaller({
+      listtasks: {
+        tasks: [{ taskId: 'task-detail', command: 'asset.scan', status: 'completed', progress: 100 }],
+      },
+      gettask: {
+        taskId: 'task-detail',
+        command: 'asset.scan',
+        payload: { path: '/Game' },
+        status: 'completed',
+        progress: 100,
+        logs: ['complete'],
+        responseJson: JSON.stringify({ id: null, ok: true, result: { count: 1 } }),
+      },
+    })
+    const { result } = renderHook(() => useTasks({
+      bridgeReady: true,
+      callBridge: bridgeCaller({}),
+      callBridgeQuiet,
+      log: vi.fn(),
+    }))
+
+    await waitFor(() => expect(result.current.taskRecords['task-detail']).toBeDefined())
+    expect(callBridgeQuiet).not.toHaveBeenCalledWith('gettask', 'task-detail')
+
+    await act(async () => {
+      expect(await result.current.loadTaskDetails('task-detail')).toBe(true)
+    })
+    expect(result.current.taskRecords['task-detail']).toMatchObject({
+      logs: ['complete'],
+      payload: { path: '/Game' },
+    })
+
+    await act(async () => {
+      expect(await result.current.loadTaskDetails('task-detail')).toBe(true)
+    })
+    expect(callBridgeQuiet).toHaveBeenCalledWith('gettask', 'task-detail')
+    expect(callBridgeQuiet).toHaveBeenCalledTimes(2)
   })
 })

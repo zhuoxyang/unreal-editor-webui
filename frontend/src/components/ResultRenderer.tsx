@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { JsonResultView } from './JsonResultView'
 import { downloadText, resultToJson, resultToMarkdownSummary, rowsToCsv } from '../result-export'
 
@@ -35,6 +36,9 @@ type ResultRendererProps = {
   commandName?: string
   resultType?: string
 }
+
+const TABLE_PAGE_SIZE = 50
+const MAX_TABLE_COLUMNS = 32
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -89,6 +93,48 @@ function exportRowsForView(result: unknown, view: string) {
   return []
 }
 
+function useTablePage<T>(rows: T[]) {
+  const pageCount = Math.max(1, Math.ceil(rows.length / TABLE_PAGE_SIZE))
+  const [requestedPage, setRequestedPage] = useState(0)
+  const page = Math.min(requestedPage, pageCount - 1)
+  const start = page * TABLE_PAGE_SIZE
+  return {
+    page,
+    pageCount,
+    rows: rows.slice(start, start + TABLE_PAGE_SIZE),
+    setPage: setRequestedPage,
+    start,
+  }
+}
+
+function TablePagination({
+  page,
+  pageCount,
+  rowCount,
+  setPage,
+  start,
+}: {
+  page: number
+  pageCount: number
+  rowCount: number
+  setPage: (page: number) => void
+  start: number
+}) {
+  if (pageCount <= 1) {
+    return null
+  }
+
+  const end = Math.min(start + TABLE_PAGE_SIZE, rowCount)
+  return (
+    <div className="table-pagination" aria-label="Result pages">
+      <span>Rows {start + 1}–{end} of {rowCount}</span>
+      <button type="button" onClick={() => setPage(page - 1)} disabled={page === 0}>Previous</button>
+      <span>Page {page + 1} of {pageCount}</span>
+      <button type="button" onClick={() => setPage(page + 1)} disabled={page + 1 >= pageCount}>Next</button>
+    </div>
+  )
+}
+
 function ResultActions({ result, view, commandName }: { result: unknown; view: string; commandName?: string }) {
   const rows = exportRowsForView(result, view)
   const basename = commandName || 'tool-result'
@@ -119,13 +165,14 @@ function ResultActions({ result, view, commandName }: { result: unknown; view: s
 
 function AssetTableView({ result }: { result: unknown }) {
   const envelope = toEnvelope(result)
-  const assets = Array.isArray(envelope.assets) ? envelope.assets : []
+  const assets = Array.isArray(envelope.assets) ? envelope.assets.filter(isRecord) : []
+  const pagination = useTablePage(assets)
+  const columns = Array.from(new Set(pagination.rows.flatMap((asset) => Object.keys(asset)))).slice(0, MAX_TABLE_COLUMNS)
 
   if (assets.length === 0) {
     return <JsonResultView result={result} />
   }
 
-  const columns = Array.from(new Set(assets.flatMap((asset) => (isRecord(asset) ? Object.keys(asset) : []))))
   const hasCopyableAssets = assets.some((asset) => assetCopyPath(asset) !== null)
 
   return (
@@ -143,13 +190,13 @@ function AssetTableView({ result }: { result: unknown }) {
           </tr>
         </thead>
         <tbody>
-          {assets.map((asset, index) => {
+          {pagination.rows.map((asset, index) => {
             const copyPath = assetCopyPath(asset)
 
             return (
-              <tr key={isRecord(asset) ? String(asset.objectPath || asset.path || asset.assetName || index) : index}>
+              <tr key={String(asset.objectPath || asset.path || asset.assetName || pagination.start + index)}>
                 {columns.map((column) => (
-                  <td key={column}>{formatCell(isRecord(asset) ? asset[column] : '')}</td>
+                  <td key={column}>{formatCell(asset[column])}</td>
                 ))}
                 {hasCopyableAssets ? (
                   <td>
@@ -171,13 +218,15 @@ function AssetTableView({ result }: { result: unknown }) {
           })}
         </tbody>
       </table>
+      <TablePagination {...pagination} rowCount={assets.length} />
     </div>
   )
 }
 
 function IssueTableView({ result }: { result: unknown }) {
   const envelope = toEnvelope(result)
-  const issues = Array.isArray(envelope.issues) ? envelope.issues : []
+  const issues = Array.isArray(envelope.issues) ? envelope.issues.filter(isRecord) as IssueRow[] : []
+  const pagination = useTablePage(issues)
 
   if (issues.length === 0) {
     return <JsonResultView result={result} />
@@ -197,8 +246,8 @@ function IssueTableView({ result }: { result: unknown }) {
           </tr>
         </thead>
         <tbody>
-          {issues.map((issue, index) => (
-            <tr key={`${issue.assetPath || 'issue'}-${issue.propertyPath || index}`}>
+          {pagination.rows.map((issue, index) => (
+            <tr key={`${issue.assetPath || 'issue'}-${issue.propertyPath || pagination.start + index}`}>
               <td>{formatCell(issue.severity)}</td>
               <td>{formatCell(issue.assetPath)}</td>
               <td>{formatCell(issue.propertyPath)}</td>
@@ -208,13 +257,15 @@ function IssueTableView({ result }: { result: unknown }) {
           ))}
         </tbody>
       </table>
+      <TablePagination {...pagination} rowCount={issues.length} />
     </div>
   )
 }
 
 function ChangeSetView({ result }: { result: unknown }) {
   const envelope = toEnvelope(result)
-  const changes = Array.isArray(envelope.changeSet) ? envelope.changeSet : []
+  const changes = Array.isArray(envelope.changeSet) ? envelope.changeSet.filter(isRecord) as ChangeOperation[] : []
+  const pagination = useTablePage(changes)
 
   if (changes.length === 0) {
     return <JsonResultView result={result} />
@@ -237,8 +288,8 @@ function ChangeSetView({ result }: { result: unknown }) {
           </tr>
         </thead>
         <tbody>
-          {changes.map((change, index) => (
-            <tr key={`${change.assetPath || 'change'}-${index}`}>
+          {pagination.rows.map((change, index) => (
+            <tr key={`${change.assetPath || 'change'}-${pagination.start + index}`}>
               <td>{formatCell(change.status)}</td>
               <td>{formatCell(change.action)}</td>
               <td>{formatCell(change.assetPath)}</td>
@@ -249,6 +300,7 @@ function ChangeSetView({ result }: { result: unknown }) {
           ))}
         </tbody>
       </table>
+      <TablePagination {...pagination} rowCount={changes.length} />
     </div>
   )
 }

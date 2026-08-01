@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BridgeCallError,
   BridgeProtocolError,
+  formatBridgeError,
   parseBridgeResponse,
   useEditorBridge,
 } from './bridge'
@@ -111,11 +112,45 @@ describe('useEditorBridge', () => {
       requestId: 'req-1',
     })
     expect(log).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('error id=req-1 code=invalid_payload'))
 
     await expect(result.current.callBridgeQuiet('startcommand', '{}')).rejects.toMatchObject({
       name: 'BridgeProtocolError',
       methodName: 'startcommand',
     })
     expect(log).toHaveBeenCalledOnce()
+  })
+
+  it('logs bounded response metadata instead of serializing successful payloads', async () => {
+    const secret = 'do-not-copy-this-result'.repeat(100)
+    window.ue = {
+      editorwebui: {
+        executecommand: vi.fn(async () => JSON.stringify({ id: 'req-2', ok: true, result: { secret } })),
+        startcommand: vi.fn(),
+        gettask: vi.fn(),
+        listtasks: vi.fn(),
+        removetask: vi.fn(),
+        canceltask: vi.fn(),
+        getwebuisettings: vi.fn(),
+        setwebuisettings: vi.fn(),
+      },
+    }
+    const log = vi.fn()
+    const { result } = renderHook(() => useEditorBridge(log))
+
+    await act(async () => {
+      await result.current.callBridge('executecommand', '{}')
+    })
+
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^executecommand -> ok id=req-2 result=object\(1: secret\) chars=\d+$/))
+    expect(log.mock.calls[0][0]).not.toContain(secret)
+  })
+})
+
+describe('formatBridgeError', () => {
+  it('includes structured error context for user-visible failures', () => {
+    expect(formatBridgeError(new BridgeCallError('executecommand', 'invalid_payload', 'Payload failed.', ['name is required'], 'req-3'))).toBe(
+      '[invalid_payload] Payload failed. — name is required (request req-3)',
+    )
   })
 })

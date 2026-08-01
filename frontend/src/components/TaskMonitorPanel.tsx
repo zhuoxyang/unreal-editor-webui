@@ -8,9 +8,10 @@ type TaskMonitorPanelProps = {
   tasks: TaskRecord[]
   onCancel: (taskId: string) => void
   onRemove: (taskId: string) => void
+  onLoadDetails: (taskId: string) => Promise<boolean>
 }
 
-export function TaskMonitorPanel({ bridgeReady, commands, onCancel, onRemove, tasks }: TaskMonitorPanelProps) {
+export function TaskMonitorPanel({ bridgeReady, commands, onCancel, onLoadDetails, onRemove, tasks }: TaskMonitorPanelProps) {
   return (
     <div className="panel task-panel">
       <h2>Task Monitor</h2>
@@ -21,6 +22,7 @@ export function TaskMonitorPanel({ bridgeReady, commands, onCancel, onRemove, ta
               bridgeReady={bridgeReady}
               key={task.taskId}
               onCancel={onCancel}
+              onLoadDetails={onLoadDetails}
               onRemove={onRemove}
               resultType={commands.find((command) => command.name === task.command)?.resultType}
               task={task}

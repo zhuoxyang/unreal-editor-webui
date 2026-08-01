@@ -8,6 +8,7 @@ import {
   MAX_RECENT_EXECUTIONS,
   RECENT_EXECUTIONS_SCHEMA_VERSION,
   RECENT_EXECUTIONS_STORAGE_KEY,
+  recentExecutionsStorageKey,
   saveStoredRecentExecutions,
   type RecentExecution,
 } from './recent-executions'
@@ -20,6 +21,7 @@ import {
   saveToolPreferences,
   TOOL_PREFERENCES_SCHEMA_VERSION,
   TOOL_PREFERENCES_STORAGE_KEY,
+  toolPreferencesStorageKey,
   type ToolPreferenceState,
 } from './tool-manifest'
 import type { CommandMetadata } from './types/command'
@@ -76,6 +78,15 @@ describe('recent execution storage', () => {
       needsRewrite: false,
       value: [execution(0)],
     })
+  })
+
+  it('does not migrate global history into a project namespace', () => {
+    saveStoredRecentExecutions([execution(0)])
+    expect(loadStoredRecentExecutionsState('project-a')).toMatchObject({
+      source: 'missing',
+      value: [],
+    })
+    expect(window.localStorage.getItem(recentExecutionsStorageKey('project-a'))).toBeNull()
   })
 
   it('distinguishes malformed current data from a future schema', () => {
@@ -199,9 +210,55 @@ describe('tool preference storage', () => {
     )
     expect(loadToolPreferencesState().source).toBe('unsupported')
   })
+
+  it('does not migrate global preferences into a project namespace', () => {
+    saveToolPreferences({
+      ...DEFAULT_TOOL_PREFERENCES,
+      favorites: ['global.favorite'],
+      openTabs: [],
+    })
+    expect(loadToolPreferencesState('project-a').value.favorites).not.toContain('global.favorite')
+    expect(window.localStorage.getItem(toolPreferencesStorageKey('project-a'))).toBeNull()
+  })
 })
 
 describe('persistence hooks', () => {
+  it('keeps unresolved state in memory and loads a verified namespace without leaking it', async () => {
+    saveStoredRecentExecutions([execution(0)], 'project-a')
+    const storedRecent = window.localStorage.getItem(recentExecutionsStorageKey('project-a'))
+    const recent = renderHook(
+      ({ storageNamespace }: { storageNamespace: string | null }) => useRecentExecutions(storageNamespace),
+      { initialProps: { storageNamespace: null as string | null } },
+    )
+
+    act(() => recent.result.current.recordRecentExecution(TEST_COMMAND, { path: '/Unsaved' }, 'run'))
+    expect(recent.result.current.recentExecutions[0].payload).toEqual({ path: '/Unsaved' })
+    expect(window.localStorage.getItem(recentExecutionsStorageKey('project-a'))).toBe(storedRecent)
+
+    recent.rerender({ storageNamespace: 'project-a' })
+    await waitFor(() => expect(recent.result.current.recentExecutions).toEqual([execution(0)]))
+    expect(window.localStorage.getItem(recentExecutionsStorageKey('project-a'))).toBe(storedRecent)
+
+    const persistedPreferences: ToolPreferenceState = {
+      projectId: 'neon',
+      stageId: 'art',
+      categoryId: 'favorites',
+      favorites: ['persisted.favorite'],
+      openTabs: ['persisted.tab'],
+    }
+    saveToolPreferences(persistedPreferences, 'project-a')
+    const storedPreferences = window.localStorage.getItem(toolPreferencesStorageKey('project-a'))
+    const preferences = renderHook(
+      ({ storageNamespace }: { storageNamespace: string | null }) => useToolPreferences(storageNamespace),
+      { initialProps: { storageNamespace: null as string | null } },
+    )
+    act(() => preferences.result.current.toggleFavoriteCommand('memory.only'))
+
+    preferences.rerender({ storageNamespace: 'project-a' })
+    await waitFor(() => expect(preferences.result.current.favoriteCommands).toEqual(['persisted.favorite']))
+    expect(window.localStorage.getItem(toolPreferencesStorageKey('project-a'))).toBe(storedPreferences)
+  })
+
   it('migrates legacy values after mounting', async () => {
     window.localStorage.setItem(RECENT_EXECUTIONS_STORAGE_KEY, JSON.stringify([execution(0)]))
     renderHook(() => useRecentExecutions())

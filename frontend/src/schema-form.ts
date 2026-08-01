@@ -18,6 +18,10 @@ export function decodeEnumOption(serialized: string): SchemaScalar {
 }
 
 export function parseNumericDraft(value: string | number | boolean, integer: boolean, fieldLabel: string) {
+  if (typeof value === 'string' && value.trim() === '') {
+    throw new Error(`${fieldLabel} is required`)
+  }
+
   const numericValue = Number(value)
   if (!Number.isFinite(numericValue)) {
     throw new Error(`${fieldLabel} must be a finite number`)
@@ -27,6 +31,34 @@ export function parseNumericDraft(value: string | number | boolean, integer: boo
   }
 
   return numericValue
+}
+
+export type NumericConstraints = {
+  minimum?: number
+  maximum?: number
+  exclusiveMinimum?: number
+  exclusiveMaximum?: number
+}
+
+export function validateNumericConstraints(
+  value: number,
+  constraints: NumericConstraints,
+  fieldLabel: string,
+) {
+  if (typeof constraints.minimum === 'number' && value < constraints.minimum) {
+    throw new Error(`${fieldLabel} must be greater than or equal to ${constraints.minimum}`)
+  }
+  if (typeof constraints.maximum === 'number' && value > constraints.maximum) {
+    throw new Error(`${fieldLabel} must be less than or equal to ${constraints.maximum}`)
+  }
+  if (typeof constraints.exclusiveMinimum === 'number' && value <= constraints.exclusiveMinimum) {
+    throw new Error(`${fieldLabel} must be greater than ${constraints.exclusiveMinimum}`)
+  }
+  if (typeof constraints.exclusiveMaximum === 'number' && value >= constraints.exclusiveMaximum) {
+    throw new Error(`${fieldLabel} must be less than ${constraints.exclusiveMaximum}`)
+  }
+
+  return value
 }
 
 export function hasCommandResult(results: Record<string, unknown>, commandName: string) {

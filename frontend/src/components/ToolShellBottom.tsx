@@ -16,6 +16,11 @@ type ToolShellBottomProps = {
   taskList: TaskRecord[]
   onCancelTask: (taskId: string) => void
   onRemoveTask: (taskId: string) => void
+  onLoadTaskDetails: (taskId: string) => Promise<boolean>
+  onClearLocalData: () => void
+  persistenceEnabled: boolean
+  projectContextReady: boolean
+  projectName: string
 }
 
 export function ToolShellBottom({
@@ -28,6 +33,11 @@ export function ToolShellBottom({
   logLines,
   onCancelTask,
   onRemoveTask,
+  onLoadTaskDetails,
+  onClearLocalData,
+  persistenceEnabled,
+  projectContextReady,
+  projectName,
   taskList,
 }: ToolShellBottomProps) {
   return (
@@ -36,6 +46,7 @@ export function ToolShellBottom({
         bridgeReady={bridgeReady}
         commands={commands}
         onCancel={onCancelTask}
+        onLoadDetails={onLoadTaskDetails}
         onRemove={onRemoveTask}
         tasks={taskList}
       />
@@ -51,6 +62,10 @@ export function ToolShellBottom({
         callBridge={callBridge}
         callBridgeQuiet={callBridgeQuiet}
         log={log}
+        onClearLocalData={onClearLocalData}
+        persistenceEnabled={persistenceEnabled}
+        projectContextReady={projectContextReady}
+        projectName={projectName}
       />
 
       <MessageLogPanel

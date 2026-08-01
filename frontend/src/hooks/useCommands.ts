@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
-import { createRequestId } from '../bridge'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createRequestId, formatBridgeError } from '../bridge'
 import type { BridgeCaller } from '../bridge'
+import { decodeCommandsResult } from '../bridge-decoders'
 import type { CommandMetadata } from '../types/command'
+
+export type CommandsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 type UseCommandsOptions = {
   bridgeReady: boolean
@@ -11,14 +14,23 @@ type UseCommandsOptions = {
 
 export function useCommands({ bridgeReady, callBridgeQuiet, log }: UseCommandsOptions) {
   const [commands, setCommands] = useState<CommandMetadata[]>([])
+  const [status, setStatus] = useState<CommandsLoadStatus>('idle')
+  const [error, setError] = useState('')
+  const requestSequenceRef = useRef(0)
+  const loadingRef = useRef(false)
 
-  useEffect(() => {
-    if (!bridgeReady) {
+  const loadCommands = useCallback(async () => {
+    if (!bridgeReady || loadingRef.current) {
       return
     }
 
-    const timeoutId = window.setTimeout(() => {
-      void callBridgeQuiet<{ commands: CommandMetadata[] }>(
+    loadingRef.current = true
+    requestSequenceRef.current += 1
+    const requestSequence = requestSequenceRef.current
+    setStatus('loading')
+    setError('')
+    try {
+      const result = await callBridgeQuiet<unknown>(
         'executecommand',
         JSON.stringify({
           id: createRequestId(),
@@ -26,13 +38,41 @@ export function useCommands({ bridgeReady, callBridgeQuiet, log }: UseCommandsOp
           payload: {},
         }),
       )
-        .then((result) => setCommands(Array.isArray(result.commands) ? result.commands : []))
-        .catch((error) => log(error instanceof Error ? error.message : String(error)))
-    }, 0)
-
-    return () => window.clearTimeout(timeoutId)
+      const decoded = decodeCommandsResult(result)
+      if (requestSequenceRef.current === requestSequence) {
+        setCommands(decoded.commands)
+        setStatus('ready')
+      }
+    } catch (caught) {
+      if (requestSequenceRef.current === requestSequence) {
+        const message = formatBridgeError(caught)
+        setError(message)
+        setStatus('error')
+        log(message)
+      }
+    } finally {
+      if (requestSequenceRef.current === requestSequence) {
+        loadingRef.current = false
+      }
+    }
   }, [bridgeReady, callBridgeQuiet, log])
 
-  return { commands, setCommands }
-}
+  useEffect(() => {
+    if (!bridgeReady) {
+      return
+    }
 
+    const timeoutId = window.setTimeout(() => {
+      void loadCommands()
+    }, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [bridgeReady, loadCommands])
+
+  return {
+    commands,
+    commandsError: error,
+    commandsStatus: bridgeReady ? status : 'idle',
+    retryCommands: loadCommands,
+    setCommands,
+  }
+}

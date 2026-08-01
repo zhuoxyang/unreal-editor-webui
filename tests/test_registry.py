@@ -40,7 +40,13 @@ def load_registry():
         sys.path.insert(0, python_dir)
 
     for module_name in list(sys.modules):
-        if module_name == "unreal_editor_webui_registry" or module_name.startswith("unreal_editor_webui_commands"):
+        if (
+            module_name in {
+                "unreal_editor_webui_registry",
+                "unreal_editor_webui_write",
+            }
+            or module_name.startswith("unreal_editor_webui_commands")
+        ):
             del sys.modules[module_name]
 
     spec = importlib.util.spec_from_file_location("unreal_editor_webui_registry", REGISTRY_PATH)
@@ -478,6 +484,71 @@ class RegistryTests(unittest.TestCase):
             ],
         )
 
+    def test_batch_rename_all_failures_return_error_envelope(self):
+        class EditorAssetLibrary:
+            @staticmethod
+            def rename_asset(source, target):
+                return False
+
+        self.unreal.EditorAssetLibrary = EditorAssetLibrary
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.renameBatch",
+                    {
+                        "assetPaths": ["/Game/Props/SM_OldChair"],
+                        "search": "Old",
+                        "replace": "New",
+                        "dryRun": False,
+                    },
+                ),
+                {
+                    "allowedCommand": "asset.renameBatch",
+                    "allowedPermission": "write",
+                },
+            )
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "batch_failed")
+        self.assertEqual(response["error"]["details"]["summary"]["status"], "failed")
+        self.assertEqual(response["error"]["details"]["summary"]["failed"], 1)
+
+    def test_batch_rename_save_failure_is_changed_unsaved_partial(self):
+        class EditorAssetLibrary:
+            @staticmethod
+            def rename_asset(source, target):
+                return True
+
+            @staticmethod
+            def save_asset(asset_path, only_if_is_dirty=False):
+                return False
+
+        self.unreal.EditorAssetLibrary = EditorAssetLibrary
+        response = parse_response(
+            self.registry.execute_command(
+                request(
+                    "asset.renameBatch",
+                    {
+                        "assetPaths": ["/Game/Props/SM_OldChair"],
+                        "search": "Old",
+                        "replace": "New",
+                        "dryRun": False,
+                        "save": True,
+                    },
+                ),
+                {
+                    "allowedCommand": "asset.renameBatch",
+                    "allowedPermission": "write",
+                },
+            )
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["summary"]["status"], "partial")
+        self.assertEqual(response["result"]["summary"]["changedUnsaved"], 1)
+        self.assertEqual(response["result"]["changeSet"][0]["status"], "changed_unsaved")
+
     def test_asset_naming_validation_returns_issue_table(self):
         response = parse_response(
             self.registry.execute_command(
@@ -541,6 +612,163 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(response["result"]["execution"]["timeoutPolicy"], "seconds:10")
         self.assertEqual(response["result"]["normalizedPayload"]["steps"], 3)
 
+    def test_cooperative_command_requires_task_protocol(self):
+        response = parse_response(
+            self.registry.execute_command(request("demo.longRun", {"steps": 2}))
+        )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["code"], "task_required")
+
+    def test_cooperative_generator_runs_real_handler_to_completion(self):
+        started = parse_response(
+            self.registry.start_cooperative_command(
+                request("demo.longRun", {"steps": 3}), {}, "task-real-handler"
+            )
+        )
+        first = parse_response(
+            self.registry.step_cooperative_command(
+                json.dumps({"taskId": "task-real-handler"})
+            )
+        )
+        second = parse_response(
+            self.registry.step_cooperative_command(
+                json.dumps({"taskId": "task-real-handler"})
+            )
+        )
+        completed = parse_response(
+            self.registry.step_cooperative_command(
+                json.dumps({"taskId": "task-real-handler"})
+            )
+        )
+
+        self.assertTrue(started["ok"])
+        self.assertEqual(first["result"]["progress"], 33)
+        self.assertEqual(second["result"]["progress"], 67)
+        self.assertEqual(completed["result"]["status"], "completed")
+        self.assertEqual(
+            completed["result"]["commandResponse"]["result"]["steps"], 3
+        )
+        self.assertNotIn("task-real-handler", self.registry.COOPERATIVE_JOBS)
+
+    def test_cooperative_cancellation_closes_and_removes_generator(self):
+        cleanup = []
+
+        @self.registry.command(
+            "test.cooperativeCleanup",
+            execution_thread="editor_tick",
+            cancellation_mode="cooperative",
+        )
+        def cooperative_cleanup(payload):
+            try:
+                while True:
+                    yield {"progress": 1, "log": "working"}
+            finally:
+                cleanup.append("closed")
+
+        self.assertTrue(
+            parse_response(
+                self.registry.start_cooperative_command(
+                    request("test.cooperativeCleanup"), {}, "task-cancel"
+                )
+            )["ok"]
+        )
+        self.registry.step_cooperative_command(json.dumps({"taskId": "task-cancel"}))
+        cancelled = parse_response(
+            self.registry.step_cooperative_command(
+                json.dumps({"taskId": "task-cancel", "cancelRequested": True})
+            )
+        )
+
+        self.assertTrue(cancelled["ok"])
+        self.assertEqual(cancelled["result"]["status"], "cancelled")
+        self.assertEqual(cleanup, ["closed"])
+        self.assertNotIn("task-cancel", self.registry.COOPERATIVE_JOBS)
+
+    def test_cooperative_jobs_reject_duplicates_and_enforce_limit(self):
+        original_limit = self.registry.MAX_COOPERATIVE_JOBS
+        self.registry.MAX_COOPERATIVE_JOBS = 1
+        try:
+            first = parse_response(
+                self.registry.start_cooperative_command(
+                    request("demo.longRun", {"steps": 2}), {}, "task-one"
+                )
+            )
+            duplicate = parse_response(
+                self.registry.start_cooperative_command(
+                    request("demo.longRun", {"steps": 2}), {}, "task-one"
+                )
+            )
+            over_limit = parse_response(
+                self.registry.start_cooperative_command(
+                    request("demo.longRun", {"steps": 2}), {}, "task-two"
+                )
+            )
+            cleaned = parse_response(
+                self.registry.cancel_all_cooperative_commands(
+                    json.dumps({"id": "cleanup"})
+                )
+            )
+        finally:
+            self.registry.MAX_COOPERATIVE_JOBS = original_limit
+            self.registry.cancel_all_cooperative_commands()
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(duplicate["error"]["code"], "task_exists")
+        self.assertEqual(over_limit["error"]["code"], "too_many_tasks")
+        self.assertEqual(cleaned["result"]["cancelled"], 1)
+        self.assertEqual(self.registry.COOPERATIVE_JOBS, {})
+
+    def test_request_id_must_be_string_or_null(self):
+        invalid_id_request = json.dumps(
+            {"id": {"nested": True}, "command": "system.ping", "payload": {}}
+        )
+
+        inspected = parse_response(self.registry.inspect_command(invalid_id_request))
+        executed = parse_response(self.registry.execute_command(invalid_id_request))
+
+        self.assertEqual(inspected["error"]["code"], "invalid_request")
+        self.assertEqual(executed["error"]["code"], "invalid_request")
+
+    def test_request_complexity_and_response_size_are_bounded(self):
+        oversized = request("editor.log", {"message": "x" * (257 * 1024)})
+        too_large = parse_response(self.registry.inspect_command(oversized))
+        too_deep = parse_response(
+            self.registry.inspect_command(
+                '{"id":"deep","command":"missing","payload":'
+                + ("[" * 33)
+                + "0"
+                + ("]" * 33)
+                + "}"
+            )
+        )
+        too_many_nodes = parse_response(
+            self.registry.inspect_command(
+                json.dumps(
+                    {
+                        "id": "nodes",
+                        "command": "missing",
+                        "payload": [0] * 10_001,
+                    }
+                )
+            )
+        )
+
+        @self.registry.command("test.largeResponse")
+        def large_response(payload):
+            return {"value": "x" * (4 * 1024 * 1024)}
+
+        response_too_large = parse_response(
+            self.registry.execute_command(request("test.largeResponse"))
+        )
+
+        self.assertEqual(too_large["error"]["code"], "request_too_large")
+        self.assertEqual(too_deep["error"]["code"], "json_too_complex")
+        self.assertEqual(too_many_nodes["error"]["code"], "json_too_complex")
+        self.assertEqual(
+            response_too_large["error"]["code"], "response_too_large"
+        )
+
     def test_handler_exception_hides_traceback_from_response(self):
         @self.registry.command("test.raise")
         def raise_error(payload):
@@ -592,6 +820,31 @@ class BridgeEntryTests(unittest.TestCase):
         response = parse_response(response_repr)
         self.assertTrue(response["ok"])
         self.assertEqual(response["result"]["command"], "system.ping")
+
+    def test_dispatch_runs_and_cleans_up_cooperative_job(self):
+        started = parse_response(
+            self.entry.dispatch(
+                "start_cooperative_command",
+                request("demo.longRun", {"steps": 1}),
+                json.dumps(
+                    {
+                        "allowedCommand": "demo.longRun",
+                        "allowedPermission": "read",
+                        "taskId": "entry-task",
+                    }
+                ),
+            )
+        )
+        completed = parse_response(
+            self.entry.dispatch(
+                "step_cooperative_command",
+                json.dumps({"id": "req-1", "taskId": "entry-task"}),
+            )
+        )
+
+        self.assertTrue(started["ok"])
+        self.assertEqual(completed["result"]["status"], "completed")
+        self.assertNotIn("entry-task", self.registry.COOPERATIVE_JOBS)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ Unreal exposes `UObject` methods in lowercase. The current bridge methods are:
 - `canceltask(taskId)`
 - `getwebuisettings()`
 - `setwebuisettings(settingsJson)`
+- `getprojectcontext()`
 
 ## Request Envelope
 
@@ -134,6 +135,13 @@ async function getTask(taskId) {
 const latest = await getTask(task.taskId);
 ```
 
+Use `listtasks()` only for reconciliation. Its entries deliberately omit request payloads, logs, and `responseJson`; fetch those fields with `gettask(taskId)` only when detail is needed:
+
+```js
+const summaryResponse = JSON.parse(await getBridge().listtasks());
+const summaries = summaryResponse.result.tasks;
+```
+
 Subscribe to pushed task events for low-latency updates:
 
 ```js
@@ -154,6 +162,8 @@ await getBridge().removetask(task.taskId);
 ```
 
 Use `canceltask(taskId)` for queued work or cooperative tasks. Running game-thread Python commands are reported as non-cancellable because interrupting Unreal Editor Python execution is unsafe.
+
+Tasks are scoped to the creating top-level document. Reloading or replacing the document rotates the bridge session, cancels queued/cooperative work, and makes earlier task identifiers unavailable to the new page.
 
 ## Discover Commands
 
@@ -182,8 +192,9 @@ Common codes:
 - `python_execution_failed`: the Python dispatch expression could not run.
 - `handler_exception`: a command handler raised an exception.
 - `task_not_found`, `task_not_finished`, `task_not_cancellable`: task lifecycle errors.
+- `request_too_large`, `response_too_large`, `json_too_complex`, `too_many_tasks`: resource limits.
 
-Show the `message` to users, and log the full response envelope for debugging. Handler tracebacks are written to Unreal logs, not returned to the browser.
+Show the bounded `message` to users and log request ids/error metadata rather than complete successful payloads. Handler tracebacks are written to Unreal logs, not returned to the browser.
 
 ## Settings From JavaScript
 
@@ -201,4 +212,21 @@ await getBridge().setwebuisettings(JSON.stringify({
 ```
 
 `setwebuisettings` is a privileged write path and requires native confirmation.
+
+## Project-Scoped Browser Storage
+
+Call `getprojectcontext()` before persisting browser preferences or command history:
+
+```js
+const contextResponse = JSON.parse(await getBridge().getprojectcontext());
+const { protocolVersion, projectName, storageNamespace } = contextResponse.result;
+```
+
+Require `protocolVersion === 1`. `storageNamespace` is a stable, non-sensitive hash for the current project. If the method is missing, fails, or returns an unsupported envelope, keep state in memory and do not fall back to a global local-storage key.
+
+Legacy global preference and history keys are deliberately not migrated automatically because the bridge cannot prove which Unreal project owns them. The project-scoped runtime leaves those keys quarantined and reads and writes only the namespace returned by the current document session.
+
+## Resource Limits
+
+Keep command requests below 256 KiB UTF-8 and direct responses below 4 MiB UTF-8. Stored task responses have a stricter 1.5 MiB UTF-8 limit so the final escaped task-detail envelope remains bounded; terminal events contain summaries and never embed `responseJson`. JSON nesting is limited to 32 levels and 10,000 nodes. Native settings input is limited to 64 Ki characters, task identifiers to 128 characters, retained task count to 64, and cooperative jobs to 64. Clients should treat `request_too_large`, `response_too_large`, `json_too_complex`, and `too_many_tasks` as stable operational errors.
 

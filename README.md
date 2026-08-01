@@ -1,6 +1,6 @@
 # unreal-editor-webui
 
-Build Unreal Engine 5.5+ editor Web UI tools with WebBrowser/SWebBrowser, Python automation, and C++ extension hooks.
+Build Unreal Engine 5.5 editor Web UI tools with WebBrowser/SWebBrowser, Python automation, and C++ extension hooks.
 
 ## What This Is
 
@@ -13,6 +13,8 @@ Build Unreal Engine 5.5+ editor Web UI tools with WebBrowser/SWebBrowser, Python
 
 This project targets editor tooling, not packaged runtime/game UI.
 
+The current automated build and release target is Unreal Engine 5.5 on Windows. Historical smoke results for other engine versions or platforms are not a maintained compatibility guarantee; revalidate and document another target before distributing it as supported.
+
 ## Current Features
 
 - Adds a `Window > Unreal Editor WebUI` menu entry.
@@ -20,15 +22,15 @@ This project targets editor tooling, not packaged runtime/game UI.
 - Loads `Web/dist/index.html` when a frontend build exists, otherwise falls back to `Web/index.html`.
 - Supports local static Web UI and configurable dev server startup URLs.
 - Exposes Web UI startup configuration in `Project Settings > Plugins > Unreal Editor WebUI`.
-- Restricts bridge-capable startup and navigation URLs to packaged `Web/` files, `about:blank`, or loopback `http(s)` hosts.
+- Restricts bridge-capable navigation to the exact configured loopback scheme/host/port or packaged `Web/` files.
 - Exposes synchronous and task-style bridge methods to JavaScript.
 - Tracks task progress, logs, cancellation state, execution thread, timeout policy, and bounded cleanup for task-style commands.
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
-- Shows active/completed task records in a persistent React task panel with progress, logs, cancellation, and cleanup controls.
+- Shows active/completed task records in a React task panel with summary reconciliation, lazy detail loading, cancellation, and cleanup controls.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Exposes command metadata through `system.commands`.
 - Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
-- Supports command search, permission filtering, schema defaults, recent payload reuse, and editable startup settings in the React console.
+- Supports command search, permission filtering, schema defaults, project-scoped recent payload reuse, and editable startup settings in the React console.
 - Requires confirmation before running `write` or `destructive` commands, including a native editor confirmation in the bridge path.
 - Shows command-specific result views for starter asset commands.
 - Includes starter commands:
@@ -48,19 +50,27 @@ This project targets editor tooling, not packaged runtime/game UI.
 ## Install In A UE Project
 
 1. Copy or clone this repository into your project's `Plugins/UnrealEditorWebUI` directory.
-2. Enable these UE plugins if they are not already enabled:
+2. Build the complete React UI before opening the plugin:
+
+   ```sh
+   cd frontend
+   npm ci
+   npm run build
+   ```
+
+   Verify that `Web/dist/index.html` now exists. The tracked `Web/index.html` is a minimal diagnostic fallback, not the complete React tool UI.
+3. Enable these UE plugins if they are not already enabled:
    - `WebBrowserWidget`
    - `PythonScriptPlugin`
-3. Regenerate project files.
-4. Build the editor target.
-5. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
+4. Regenerate project files.
+5. Build the Unreal Engine 5.5 editor target.
+6. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
 
 ## Frontend Development
 
 The React app lives in `frontend/`.
 
-Use Node.js 22.13 or newer, or Node.js 20.19 or newer. The repository includes
-an `.nvmrc` pinned to Node.js 22.13.0 for local development.
+Use Node.js 22.13.x (recommended), Node.js 20 from 20.19 onward, or Node.js 24 and newer. Node.js 21 and 23 are not accepted by the repository engine policy. The repository includes an `.nvmrc` pinned to Node.js 22.13.0 for local development.
 
 ```sh
 cd frontend
@@ -84,7 +94,7 @@ cd frontend
 npm run build
 ```
 
-The build output is written to `Web/dist`. If that folder is missing, the plugin falls back to `Web/index.html`.
+The build output is written to `Web/dist`. If that folder is missing, the plugin falls back to the minimal diagnostic page at `Web/index.html`; this fallback does not provide the complete React tool UI.
 
 ## Package The Plugin
 
@@ -92,7 +102,7 @@ Use the repository scripts when packaging. They install the locked frontend depe
 
 ```sh
 bash scripts/package-plugin.sh \
-  "/Users/Shared/Epic Games/UE_5.7/Engine/Build/BatchFiles/RunUAT.sh" \
+  "/path/to/UE_5.5/Engine/Build/BatchFiles/RunUAT.sh" \
   /tmp/UnrealEditorWebUI-Package
 ```
 
@@ -100,7 +110,7 @@ On Windows, use the PowerShell script with `RunUAT.bat`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
-  "C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\RunUAT.bat" `
+  "C:\Program Files\Epic Games\UE_5.5\Engine\Build\BatchFiles\RunUAT.bat" `
   "$env:TEMP\UnrealEditorWebUI-Package"
 ```
 
@@ -109,6 +119,7 @@ Use the helper scripts for release packages so the React frontend is always rebu
 See `docs/validation.md` for the latest local validation status.
 See `docs/tool-framework.md` for the tool rack manifest, prototype policy, and UE CI runner notes.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
+See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums, SBOMs, and release boundaries.
 
 ## Architecture And Integration Docs
 
@@ -158,11 +169,11 @@ const task = JSON.parse(await window.ue.editorwebui.gettask(taskId));
 await window.ue.editorwebui.removetask(taskId);
 ```
 
-Use `canceltask(taskId)` for queued work that should not run. `listtasks()` returns retained task records so the React panel can recover after a page reload. Task records expose `cancellable`, `cancellationMode`, `executionThread`, `timeoutPolicy`, and `message` so clients can show whether cancellation is currently available instead of guessing from status alone. The React console applies pushed `task.status` events immediately and uses a single low-frequency `listtasks()` reconciliation request to recover from reloads or dropped events; bridge traffic therefore stays bounded as the number of active tasks grows. `removetask(taskId)` only removes terminal tasks.
+Use `canceltask(taskId)` for queued work or a running cooperative task. `listtasks()` returns lifecycle summaries only; request payloads, log arrays, and `responseJson` are available through `gettask(taskId)` when the UI explicitly opens task details. The React console applies pushed `task.status` events immediately and uses a single low-frequency summary reconciliation request to recover from reloads or dropped events. `removetask(taskId)` only removes terminal tasks.
 
-The current built-in Python command registry is marked as `execution.thread = "editor_game_thread"` with `cancellationMode = "queued_only"` and `timeoutPolicy = "none"`. This is intentional because the starter commands call Unreal Editor APIs that are not safe to invoke from arbitrary background threads. Queued tasks can be cancelled before execution. Once a task enters the running state, the bridge marks it non-cancellable and reports why.
+Most built-in commands use `execution.thread = "editor_game_thread"`, `cancellationMode = "queued_only"`, and `timeoutPolicy = "none"` because Unreal Editor Python APIs are not safe to invoke from arbitrary background threads. Queued tasks can be cancelled before execution, while a running game-thread handler cannot be interrupted safely. `demo.longRun` demonstrates the real registry-owned cooperative protocol with `execution.thread = "editor_tick"`, cancellation checks, progress/log updates, cleanup, and a bounded timeout.
 
-For future long-running workflows, keep the WebUI bridge as the lifecycle/control plane and move only the safe work unit off the editor thread: use an external process, an editor-safe UE async task that marshals Unreal API access back to the game thread, or a cooperative job that periodically persists progress and checks cancellation. Commands that remain editor-thread-bound should stay explicit in metadata and keep handlers short.
+For additional long-running workflows, keep the WebUI bridge as the lifecycle/control plane and implement small generator steps that yield progress without blocking an editor tick. Use an external process or an editor-safe UE async task for CPU-heavy work, and marshal Unreal API access back to the game thread. Commands that remain editor-thread-bound should stay explicit in metadata and keep handlers short.
 
 Task status changes are also pushed into the browser as DOM events:
 
@@ -172,7 +183,7 @@ window.addEventListener("unreal-editor-webui", (event) => {
 });
 ```
 
-The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, `failed`, `cancelled`, and `timed_out`. Task payloads can include `progress` from 0 to 100, a short `log` line, lifecycle fields, and the final `responseJson`. Cancellation is best-effort and only stops queued tasks; running Python commands cannot be interrupted by the current game-thread task runner.
+The current event type is `task.status`, with statuses such as `queued`, `running`, `completed`, `failed`, `cancelled`, and `timed_out`. Events contain bounded lifecycle updates; clients fetch final detail through `gettask()`. Cancellation is immediate for queued work, cooperative at the next step for `editor_tick` handlers, and unavailable once an editor-game-thread Python handler is running.
 
 ## Web UI Startup Settings
 
@@ -187,7 +198,7 @@ DevServerURL=http://localhost:5173
 StartupURL=
 ```
 
-If `bUseDevServer` is false and `StartupURL` is empty, the panel loads the packaged `Web/index.html`.
+If `bUseDevServer` is false and `StartupURL` is empty, the panel loads `Web/dist/index.html` when present and otherwise uses the minimal `Web/index.html` diagnostic fallback.
 
 For safety, `DevServerURL` and `StartupURL` only accept empty values, `about:blank`, packaged `file://` URLs under the plugin `Web/` directory, or loopback `http(s)` URLs such as `http://localhost:5173`, `http://127.0.0.1:5173`, or `http://[::1]:5173`. Invalid Project Settings edits show a native warning and are reverted to the last saved value before persistence. Remote URLs are rejected by `setwebuisettings`, ignored when resolving the startup URL, and blocked or redirected if the embedded browser navigates to them.
 
@@ -223,7 +234,7 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
-The registry validates a small JSON-schema-like subset before dispatching. Supported schema features include `required`, `additionalProperties`, `enum`, string `minLength`/`maxLength`, numeric `minimum`/`maximum`, arrays with `items`/`minItems`/`maxItems`, nested object schemas, defaults, and `xDryRun` boolean field markers. Defaults are applied before the handler runs. `write` and `destructive` commands require bridge-supplied exact command capability after native confirmation, so command permissions are not only frontend labels. Confirmed `write` commands are remembered for the current WebUI tab session; `destructive` commands still require confirmation every time. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
+The registry validates a small JSON-schema-like subset before dispatching. Supported schema features include `required`, `additionalProperties`, `enum`, string `minLength`/`maxLength`, numeric `minimum`/`maximum`, arrays with `items`/`minItems`/`maxItems`, nested object schemas, defaults, and `xDryRun` boolean field markers. Defaults are applied before the handler runs. `write` and `destructive` commands require a bridge-supplied exact-command capability after native confirmation, so command permissions are not only frontend labels. Every real privileged invocation receives a fresh, payload-specific confirmation; approvals are never cached or reusable, and a dry run cannot authorize a later write. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
 The React frontend reads this metadata from `system.commands` and generates forms for supported field types:
 
@@ -247,4 +258,5 @@ The frontend renders those asset results as tables instead of raw JSON, while ot
 ## Roadmap
 
 - Add more command-specific result views and production editor workflows.
-- Add tests or a sample host UE project.
+- Add GUI-capable CEF automation for the JavaScript binding and task-event hops.
+- Select and add the repository's distribution license before publishing a release.

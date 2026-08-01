@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import type { BridgeResponse } from './types/bridge'
 
-export type { BridgeResponse, TaskResult, TaskStatus, WebUISettings } from './types/bridge'
+export type { BridgeResponse, ProjectContext, TaskResult, TaskStatus, WebUISettings } from './types/bridge'
 
 declare global {
   interface Window {
@@ -15,6 +15,7 @@ declare global {
         canceltask(taskId: string): Promise<string>
         getwebuisettings(): Promise<string>
         setwebuisettings(settingsJson: string): Promise<string>
+        getprojectcontext?(): Promise<string>
       }
     }
   }
@@ -25,6 +26,7 @@ export type BridgeMethodName = keyof EditorWebUIBridge
 export type BridgeCaller = <T>(methodName: BridgeMethodName, ...args: string[]) => Promise<T>
 
 const MAX_RESPONSE_PREVIEW_LENGTH = 200
+const MAX_ERROR_DETAIL_LENGTH = 160
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -35,6 +37,22 @@ function responsePreview(responseJson: string) {
   return compact.length <= MAX_RESPONSE_PREVIEW_LENGTH
     ? compact
     : `${compact.slice(0, MAX_RESPONSE_PREVIEW_LENGTH)}…`
+}
+
+function resultSummary(result: unknown) {
+  if (result === null) return 'null'
+  if (Array.isArray(result)) return `array(${result.length})`
+  if (isRecord(result)) {
+    const keys = Object.keys(result)
+    const visibleKeys = keys.slice(0, 6).join(',')
+    return `object(${keys.length}${visibleKeys ? `: ${visibleKeys}${keys.length > 6 ? ',…' : ''}` : ''})`
+  }
+  if (typeof result === 'string') return `string(${result.length})`
+  return typeof result
+}
+
+function boundedErrorDetail(value: string) {
+  return value.length <= MAX_ERROR_DETAIL_LENGTH ? value : `${value.slice(0, MAX_ERROR_DETAIL_LENGTH)}…`
 }
 
 export class BridgeProtocolError extends Error {
@@ -73,6 +91,15 @@ export class BridgeCallError extends Error {
     this.details = details
     this.requestId = requestId
   }
+}
+
+export function formatBridgeError(error: unknown) {
+  if (error instanceof BridgeCallError) {
+    const details = error.details?.slice(0, 3).map(boundedErrorDetail).join('; ')
+    const request = error.requestId ? ` (request ${error.requestId})` : ''
+    return `[${error.code}] ${error.message}${details ? ` — ${details}` : ''}${request}`
+  }
+  return error instanceof Error ? error.message : String(error)
 }
 
 export function parseBridgeResponse<T>(
@@ -160,8 +187,14 @@ export function useEditorBridge(log?: (message: string) => void) {
     const method = bridge[methodName] as (...methodArgs: string[]) => Promise<unknown>
     const rawResponse = await method.apply(bridge, args)
     const response = parseBridgeResponse<T>(methodName, rawResponse)
+    const responseLength = typeof rawResponse === 'string' ? rawResponse.length : 0
     if (shouldLog) {
-      log?.(`${methodName} -> ${JSON.stringify(response, null, 2)}`)
+      const id = response.id || '-'
+      log?.(
+        response.ok
+          ? `${methodName} -> ok id=${id} result=${resultSummary(response.result)} chars=${responseLength}`
+          : `${methodName} -> error id=${id} code=${response.error.code} chars=${responseLength}`,
+      )
     }
 
     if (!response.ok) {

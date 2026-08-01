@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import { toolPreferencesStorageKey } from './tool-manifest'
 
 function bridgeResponse(result: unknown) {
   return JSON.stringify({ id: null, ok: true, result })
@@ -43,7 +44,7 @@ function installBridge(tasks: unknown[], overrides: Partial<NonNullable<NonNulla
       startcommand: vi.fn(async () => bridgeResponse({})),
       gettask: vi.fn(async () => bridgeResponse({})),
       listtasks: vi.fn(async () => bridgeResponse({ tasks })),
-      removetask: vi.fn(async () => bridgeResponse({ removed: true })),
+      removetask: vi.fn(async (taskId: string) => bridgeResponse({ taskId, removed: true })),
       canceltask: vi.fn(async () => bridgeResponse({})),
       getwebuisettings: vi.fn(async () => bridgeResponse({})),
       setwebuisettings: vi.fn(async () => bridgeResponse({})),
@@ -69,7 +70,7 @@ describe('task recovery', () => {
     expect(await screen.findByText('asset.scan')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
 
-    expect(await screen.findByText('backend refused removal')).toBeInTheDocument()
+    expect((await screen.findAllByText(/backend refused removal/)).length).toBeGreaterThan(0)
     expect(screen.getAllByText('asset.scan').length).toBeGreaterThan(0)
   })
 
@@ -97,17 +98,27 @@ describe('task recovery', () => {
 
 describe('tool preferences', () => {
   it('restores project and open tabs from local storage', async () => {
+    const storageNamespace = 'test-project'
     window.localStorage.setItem(
-      'unreal-editor-webui.toolPreferences',
+      toolPreferencesStorageKey(storageNamespace),
       JSON.stringify({
+        schemaVersion: 1,
+        data: {
         projectId: 'neon',
         stageId: 'art',
         categoryId: 'all',
         favorites: ['asset.scan'],
         openTabs: ['asset.longScan'],
+        },
       }),
     )
-    installBridge([])
+    installBridge([], {
+      getprojectcontext: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        projectName: 'Test Project',
+        storageNamespace,
+      })),
+    })
 
     render(<App />)
 

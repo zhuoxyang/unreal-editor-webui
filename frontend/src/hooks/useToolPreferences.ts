@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type SetStateAction } from 'react'
 import {
+  clearToolPreferences,
   loadToolPreferencesState,
   MAX_FAVORITE_COMMANDS,
   MAX_OPEN_TABS,
@@ -10,23 +11,50 @@ import {
   type ToolStageId,
 } from '../tool-manifest'
 
-export function useToolPreferences() {
-  const [initialLoad] = useState(loadToolPreferencesState)
+export function useToolPreferences(storageNamespace?: string | null) {
+  const [initialLoad] = useState(() => loadToolPreferencesState(storageNamespace))
   const [toolPreferences, setToolPreferences] = useState(initialLoad.value)
-  const [workspaceTabs, setWorkspaceTabs] = useState<string[]>(toolPreferences.openTabs)
-  const [favoriteCommands, setFavoriteCommands] = useState<string[]>(toolPreferences.favorites)
+  const [workspaceTabs, setWorkspaceTabs] = useState<string[]>(initialLoad.value.openTabs)
+  const [favoriteCommands, setFavoriteCommands] = useState<string[]>(initialLoad.value.favorites)
   const hasUserChangedRef = useRef(false)
+  const hasMountedRef = useRef(false)
+  const suppressNextSaveRef = useRef(false)
 
   useEffect(() => {
-    if (!initialLoad.needsRewrite && !hasUserChangedRef.current) {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true
+      if (initialLoad.needsRewrite) {
+        saveToolPreferences(initialLoad.value, storageNamespace)
+      }
+      return
+    }
+
+    const loaded = loadToolPreferencesState(storageNamespace)
+    hasUserChangedRef.current = false
+    suppressNextSaveRef.current = true
+    setToolPreferences(loaded.value)
+    setWorkspaceTabs(loaded.value.openTabs)
+    setFavoriteCommands(loaded.value.favorites)
+    if (loaded.needsRewrite) {
+      saveToolPreferences(loaded.value, storageNamespace)
+    }
+  }, [initialLoad, storageNamespace])
+
+  useEffect(() => {
+    if (suppressNextSaveRef.current) {
+      suppressNextSaveRef.current = false
+      return
+    }
+    if (!hasUserChangedRef.current) {
       return
     }
     saveToolPreferences({
       ...toolPreferences,
       favorites: favoriteCommands,
       openTabs: workspaceTabs,
-    })
-  }, [favoriteCommands, initialLoad.needsRewrite, toolPreferences, workspaceTabs])
+    }, storageNamespace)
+    hasUserChangedRef.current = false
+  }, [favoriteCommands, storageNamespace, toolPreferences, workspaceTabs])
 
   function replaceWorkspaceTabs(value: SetStateAction<string[]>) {
     hasUserChangedRef.current = true
@@ -91,10 +119,20 @@ export function useToolPreferences() {
     }))
   }
 
+  function resetToolPreferences() {
+    clearToolPreferences(storageNamespace)
+    const defaults = loadToolPreferencesState(storageNamespace).value
+    hasUserChangedRef.current = true
+    setToolPreferences(defaults)
+    setFavoriteCommands(defaults.favorites)
+    setWorkspaceTabs(defaults.openTabs)
+  }
+
   return {
     closeWorkspaceCommand,
     favoriteCommands,
     openWorkspaceCommand,
+    resetToolPreferences,
     setFavoriteCommands: replaceFavoriteCommands,
     setWorkspaceTabs: replaceWorkspaceTabs,
     toggleFavoriteCommand,
@@ -105,4 +143,3 @@ export function useToolPreferences() {
     workspaceTabs,
   }
 }
-

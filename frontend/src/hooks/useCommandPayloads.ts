@@ -6,7 +6,7 @@ import {
   type DraftValue,
   type SchemaProperty,
 } from '../types/command'
-import { isSchemaScalar, parseNumericDraft } from '../schema-form'
+import { isSchemaScalar, parseNumericDraft, validateNumericConstraints } from '../schema-form'
 
 export function formatSchemaDefault(value: unknown) {
   if (value === undefined) {
@@ -150,11 +150,16 @@ export function useCommandPayloads() {
       }
 
       if (propertyHasType(property, 'number') || propertyHasType(property, 'integer')) {
-        if (rawValue === '' && !required.has(fieldName)) {
+        if (typeof rawValue === 'string' && rawValue.trim() === '') {
+          if (required.has(fieldName)) {
+            throw new Error(`${command.name}.${fieldName} is required`)
+          }
           continue
         }
 
-        payload[fieldName] = parseNumericDraft(rawValue, propertyHasType(property, 'integer'), `${command.name}.${fieldName}`)
+        const fieldLabel = `${command.name}.${fieldName}`
+        const numericValue = parseNumericDraft(rawValue, propertyHasType(property, 'integer'), fieldLabel)
+        payload[fieldName] = validateNumericConstraints(numericValue, property, fieldLabel)
         continue
       }
 

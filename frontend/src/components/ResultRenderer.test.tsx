@@ -55,4 +55,22 @@ describe('ResultRenderer', () => {
 
     expect(screen.getByText(/"value": false/)).toBeInTheDocument()
   })
+
+  it('bounds large tables and pages through results', () => {
+    const assets = Array.from({ length: 120 }, (_, index) => ({ assetName: `Asset-${index}` }))
+    render(<ResultRenderer result={{ assets }} resultType="assetTable" />)
+
+    expect(screen.getByText('Asset-0')).toBeInTheDocument()
+    expect(screen.queryByText('Asset-50')).not.toBeInTheDocument()
+    expect(screen.getByText('Rows 1–50 of 120')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByText('Asset-50')).toBeInTheDocument()
+    expect(screen.queryByText('Asset-0')).not.toBeInTheDocument()
+  })
+
+  it('truncates oversized JSON previews', () => {
+    render(<ResultRenderer result={{ value: 'x'.repeat(110_000) }} resultType="json" />)
+    expect(screen.getByText(/JSON preview truncated/)).toBeInTheDocument()
+  })
 })

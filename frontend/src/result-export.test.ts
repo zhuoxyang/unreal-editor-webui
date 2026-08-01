@@ -12,6 +12,19 @@ describe('result export helpers', () => {
     )
   })
 
+  it('neutralizes spreadsheet formulas while preserving numeric values', () => {
+    expect(rowsToCsv([{
+      formula: '=HYPERLINK("https://example.invalid")',
+      spaced: '  +SUM(1,1)',
+      tabPrefixed: '\tRUN',
+      carriageReturnPrefixed: '\rRUN',
+      negativeNumber: -5,
+    }])).toBe(
+      '"formula","spaced","tabPrefixed","carriageReturnPrefixed","negativeNumber"\n' +
+      '"\'=HYPERLINK(""https://example.invalid"")","\'  +SUM(1,1)","\'\tRUN","\'\rRUN","-5"',
+    )
+  })
+
   it('exports markdown summaries for issues and changes', () => {
     const markdown = resultToMarkdownSummary({
       summary: { issues: 1 },

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createRequestId } from '../bridge'
 import {
+  clearStoredRecentExecutions,
   cloneExecutionPayload,
   loadStoredRecentExecutionsState,
   MAX_RECENT_EXECUTIONS,
@@ -10,17 +11,42 @@ import {
 } from '../recent-executions'
 import type { CommandMetadata } from '../types/command'
 
-export function useRecentExecutions() {
-  const [initialLoad] = useState(loadStoredRecentExecutionsState)
+export function useRecentExecutions(storageNamespace?: string | null) {
+  const [initialLoad] = useState(() => loadStoredRecentExecutionsState(storageNamespace))
   const [recentExecutions, setRecentExecutions] = useState<RecentExecution[]>(initialLoad.value)
   const hasUserChangedRef = useRef(false)
+  const hasMountedRef = useRef(false)
+  const suppressNextSaveRef = useRef(false)
 
   useEffect(() => {
-    if (!initialLoad.needsRewrite && !hasUserChangedRef.current) {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true
+      if (initialLoad.needsRewrite) {
+        saveStoredRecentExecutions(initialLoad.value, storageNamespace)
+      }
       return
     }
-    saveStoredRecentExecutions(recentExecutions)
-  }, [initialLoad.needsRewrite, recentExecutions])
+
+    const loaded = loadStoredRecentExecutionsState(storageNamespace)
+    hasUserChangedRef.current = false
+    suppressNextSaveRef.current = true
+    setRecentExecutions(loaded.value)
+    if (loaded.needsRewrite) {
+      saveStoredRecentExecutions(loaded.value, storageNamespace)
+    }
+  }, [initialLoad, storageNamespace])
+
+  useEffect(() => {
+    if (suppressNextSaveRef.current) {
+      suppressNextSaveRef.current = false
+      return
+    }
+    if (!hasUserChangedRef.current) {
+      return
+    }
+    saveStoredRecentExecutions(recentExecutions, storageNamespace)
+    hasUserChangedRef.current = false
+  }, [recentExecutions, storageNamespace])
 
   function recordRecentExecution(command: CommandMetadata, payload: Record<string, unknown>, mode: ExecutionMode) {
     hasUserChangedRef.current = true
@@ -42,6 +68,11 @@ export function useRecentExecutions() {
     })
   }
 
-  return { recentExecutions, recordRecentExecution }
-}
+  function clearRecentExecutions() {
+    clearStoredRecentExecutions(storageNamespace)
+    hasUserChangedRef.current = true
+    setRecentExecutions([])
+  }
 
+  return { clearRecentExecutions, recentExecutions, recordRecentExecution }
+}

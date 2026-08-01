@@ -5,6 +5,12 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Token,
 
+    [ValidatePattern("^\d+\.\d+\.\d+$")]
+    [string]$RunnerVersion = "2.336.0",
+
+    [ValidatePattern("^[0-9a-fA-F]{64}$")]
+    [string]$RunnerSha256 = "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162",
+
     [string]$RunnerRoot = "C:\actions-runner-unreal-editor-webui",
 
     [string]$RunnerName = "$env:COMPUTERNAME-ue-5.5",
@@ -42,20 +48,51 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Path $RunnerRoot -Force | Out-Null
 $RunnerRootPath = (Resolve-Path -LiteralPath $RunnerRoot).Path
 
-$LatestRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/actions/runner/releases/latest"
-$Asset = $LatestRelease.assets |
-    Where-Object { $_.name -like "actions-runner-win-x64-*.zip" } |
-    Select-Object -First 1
+$ArchiveName = "actions-runner-win-x64-$RunnerVersion.zip"
+$ArchivePath = Join-Path $RunnerRootPath $ArchiveName
+$DownloadUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$ArchiveName"
+$ConfigPath = Join-Path $RunnerRootPath "config.cmd"
 
-if ($null -eq $Asset) {
-    throw "Could not find a Windows x64 GitHub Actions runner asset in the latest release."
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+    $ExistingEntries = @(Get-ChildItem -LiteralPath $RunnerRootPath -Force)
+    if ($ExistingEntries.Count -gt 0) {
+        throw "Runner root is not empty and does not contain config.cmd. Refusing to overlay a verified runner archive onto unknown files: $RunnerRootPath"
+    }
+
+    try {
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $ArchivePath
+
+        $ActualSha256 = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $ExpectedSha256 = $RunnerSha256.ToLowerInvariant()
+        if ($ActualSha256 -ne $ExpectedSha256) {
+            throw "GitHub Actions runner SHA-256 mismatch. Expected $ExpectedSha256, received $ActualSha256."
+        }
+
+        Expand-Archive -LiteralPath $ArchivePath -DestinationPath $RunnerRootPath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $ArchivePath -PathType Leaf) {
+            Remove-Item -LiteralPath $ArchivePath -Force
+        }
+    }
 }
 
-$ArchivePath = Join-Path $RunnerRootPath $Asset.name
-if (-not (Test-Path -LiteralPath (Join-Path $RunnerRootPath "config.cmd") -PathType Leaf)) {
-    Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $ArchivePath
-    Expand-Archive -LiteralPath $ArchivePath -DestinationPath $RunnerRootPath -Force
-    Remove-Item -LiteralPath $ArchivePath -Force
+$RunnerListener = Join-Path $RunnerRootPath "bin/Runner.Listener.exe"
+if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or
+    -not (Test-Path -LiteralPath $RunnerListener -PathType Leaf)) {
+    throw "The verified GitHub Actions runner archive did not contain the expected executables."
+}
+
+$VersionOutput = & $RunnerListener --version
+$VersionExitCode = $LASTEXITCODE
+if ($VersionExitCode -ne 0) {
+    throw "Could not read the installed GitHub Actions runner version (exit code $VersionExitCode)."
+}
+
+$InstalledVersionMatch = [regex]::Match(($VersionOutput -join "`n"), "\d+\.\d+\.\d+")
+if (-not $InstalledVersionMatch.Success -or $InstalledVersionMatch.Value -ne $RunnerVersion) {
+    $DetectedVersion = if ($InstalledVersionMatch.Success) { $InstalledVersionMatch.Value } else { "unknown" }
+    throw "Runner root contains version $DetectedVersion, but this setup requires $RunnerVersion. Use a clean runner root or perform a reviewed upgrade."
 }
 
 Push-Location $RunnerRootPath
@@ -89,4 +126,4 @@ finally {
     Pop-Location
 }
 
-Write-Output "Configured runner '$RunnerName' at $RunnerRootPath with labels: $Labels"
+Write-Output "Configured verified GitHub Actions runner v$RunnerVersion '$RunnerName' at $RunnerRootPath with labels: $Labels"

@@ -29,6 +29,8 @@ def _error(request_id: str | None, code: str, message: str) -> str:
 
 
 def _request_id_from_json(request_json: str) -> str | None:
+    if len(request_json.encode("utf-8")) > 256 * 1024:
+        return None
     try:
         request = json.loads(request_json)
     except Exception:
@@ -66,7 +68,14 @@ def dispatch(function_name: str, request_json: str, permission_policy_json: str 
     request_id = _request_id_from_json(request_json)
 
     try:
-        from unreal_editor_webui_registry import execute_command, inspect_command
+        from unreal_editor_webui_registry import (
+            cancel_all_cooperative_commands,
+            execute_command,
+            inspect_command,
+            parse_json_document,
+            start_cooperative_command,
+            step_cooperative_command,
+        )
 
         if function_name == "inspect_command":
             return inspect_command(request_json)
@@ -74,10 +83,25 @@ def dispatch(function_name: str, request_json: str, permission_policy_json: str 
         if function_name == "execute_command":
             permission_policy: dict[str, Any] = {}
             if permission_policy_json:
-                loaded_policy = json.loads(permission_policy_json)
+                loaded_policy = parse_json_document(permission_policy_json, max_bytes=16 * 1024)
                 if isinstance(loaded_policy, dict):
                     permission_policy = loaded_policy
             return execute_command(request_json, permission_policy)
+
+        if function_name == "start_cooperative_command":
+            permission_policy: dict[str, Any] = {}
+            if permission_policy_json:
+                loaded_policy = parse_json_document(permission_policy_json, max_bytes=16 * 1024)
+                if isinstance(loaded_policy, dict):
+                    permission_policy = loaded_policy
+            task_id = permission_policy.pop("taskId", "")
+            return start_cooperative_command(request_json, permission_policy, task_id)
+
+        if function_name == "step_cooperative_command":
+            return step_cooperative_command(request_json)
+
+        if function_name == "cancel_all_cooperative_commands":
+            return cancel_all_cooperative_commands(request_json)
 
         return _error(
             request_id,
@@ -86,6 +110,9 @@ def dispatch(function_name: str, request_json: str, permission_policy_json: str 
         )
 
     except Exception as exc:
+        error_code = getattr(exc, "code", None)
+        if isinstance(error_code, str):
+            return _error(request_id, error_code, str(exc))
         _log_exception("Unreal Editor WebUI Python bridge dispatch failed.")
         return _error(request_id, "python_exception", str(exc))
 

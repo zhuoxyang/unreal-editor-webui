@@ -25,6 +25,7 @@ namespace
         return FString::Printf(
             TEXT("{\"id\":\"req-test\",\"ok\":true,\"result\":{")
             TEXT("\"command\":\"system.ping\",\"permission\":\"read\",")
+            TEXT("\"normalizedPayload\":{\"steps\":2},")
             TEXT("\"execution\":{\"thread\":\"%s\",\"cancellationMode\":\"%s\",\"timeoutPolicy\":\"%s\"}}}"),
             *ExecutionThread,
             *CancellationMode,
@@ -85,6 +86,55 @@ namespace
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIPackagedRegistryPingTest,
+    "UnrealEditorWebUI.Bridge.PackagedRegistryPing",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIPackagedRegistryPingTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    const FString ResponseJson = Bridge->ExecuteCommand(
+        TEXT("{\"id\":\"packaged-registry-smoke\",\"command\":\"system.ping\",")
+        TEXT("\"payload\":{\"source\":\"packaged-registry-smoke\"}}"));
+    const TSharedPtr<FJsonObject> Response = ParseJsonObject(ResponseJson);
+
+    TestTrue(TEXT("Packaged bridge ping returns a JSON object"), Response.IsValid());
+    if (!Response.IsValid())
+    {
+        return false;
+    }
+
+    bool bOk = false;
+    TestTrue(TEXT("Packaged bridge ping includes a boolean ok field"), Response->TryGetBoolField(TEXT("ok"), bOk));
+    TestTrue(*FString::Printf(TEXT("Packaged bridge ping succeeds: %s"), *ResponseJson), bOk);
+    TestEqual(
+        TEXT("Packaged bridge ping preserves the request id"),
+        Response->GetStringField(TEXT("id")),
+        FString(TEXT("packaged-registry-smoke")));
+
+    const TSharedPtr<FJsonObject> Result = ParseResultObject(ResponseJson);
+    TestTrue(TEXT("Packaged bridge ping includes a result object"), Result.IsValid());
+    if (Result.IsValid())
+    {
+        TestEqual(TEXT("Packaged Python registry responds with pong"), Result->GetStringField(TEXT("message")), FString(TEXT("pong")));
+
+        const TSharedPtr<FJsonObject>* Echo = nullptr;
+        TestTrue(TEXT("Packaged Python registry returns the request payload"), Result->TryGetObjectField(TEXT("echo"), Echo));
+        if (Echo != nullptr && Echo->IsValid())
+        {
+            TestEqual(
+                TEXT("Packaged Python registry round-trips the payload"),
+                (*Echo)->GetStringField(TEXT("source")),
+                FString(TEXT("packaged-registry-smoke")));
+        }
+    }
+
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUnrealEditorWebUIBridgePreflightValidationTest,
     "UnrealEditorWebUI.Bridge.PreflightValidation",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
@@ -103,6 +153,10 @@ bool FUnrealEditorWebUIBridgePreflightValidationTest::RunTest(const FString& Par
             TEXT("Default execution thread is normalized"),
             DefaultResult->GetStringField(TEXT("thread")),
             FString(TEXT("editor_game_thread")));
+        TestEqual(
+            TEXT("Normalized payload is retained for the native approval prompt"),
+            DefaultResult->GetStringField(TEXT("payloadSummary")),
+            FString(TEXT("{\"steps\":2}")));
     }
 
     const TSharedPtr<FJsonObject> CooperativeResult = ParseResultObject(
@@ -155,7 +209,7 @@ bool FUnrealEditorWebUIBridgePreflightValidationTest::RunTest(const FString& Par
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUnrealEditorWebUIBridgeCooperativeTaskTest,
-    "UnrealEditorWebUI.Bridge.CooperativeTaskCompletes",
+    "UnrealEditorWebUI.Bridge.CooperativeTaskRequiresPythonJob",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FUnrealEditorWebUIBridgeCooperativeTaskTest::RunTest(const FString& Parameters)
@@ -174,10 +228,10 @@ bool FUnrealEditorWebUIBridgeCooperativeTaskTest::RunTest(const FString& Paramet
         2);
 
     Bridge->TestOnlyTickCooperativeTasks(0.25f);
-    TestEqual(TEXT("Task remains running after first step"), GetTaskStatus(Bridge, TaskId), FString(TEXT("running")));
-
-    Bridge->TestOnlyTickCooperativeTasks(0.25f);
-    TestEqual(TEXT("Task completes after final cooperative step"), GetTaskStatus(Bridge, TaskId), FString(TEXT("completed")));
+    TestEqual(
+        TEXT("C++ does not synthesize cooperative completion without a Python job"),
+        GetTaskStatus(Bridge, TaskId),
+        FString(TEXT("failed")));
     return true;
 }
 
@@ -261,11 +315,11 @@ bool FUnrealEditorWebUIBridgeTimeoutAndRemovalTest::RunTest(const FString& Param
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
-    FUnrealEditorWebUIBridgeListTasksAndApprovalsTest,
-    "UnrealEditorWebUI.Bridge.ListTasksAndApprovalReset",
+    FUnrealEditorWebUIBridgeListTasksSummaryTest,
+    "UnrealEditorWebUI.Bridge.ListTasksSummary",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
-bool FUnrealEditorWebUIBridgeListTasksAndApprovalsTest::RunTest(const FString& Parameters)
+bool FUnrealEditorWebUIBridgeListTasksSummaryTest::RunTest(const FString& Parameters)
 {
     static_cast<void>(Parameters);
 
@@ -297,16 +351,132 @@ bool FUnrealEditorWebUIBridgeListTasksAndApprovalsTest::RunTest(const FString& P
     {
         TestEqual(TEXT("Newest task is listed first"), (*Tasks)[0]->AsObject()->GetStringField(TEXT("taskId")), NewerTaskId);
         TestEqual(TEXT("Older task is listed second"), (*Tasks)[1]->AsObject()->GetStringField(TEXT("taskId")), OlderTaskId);
+        TestFalse(TEXT("Task summaries omit request payloads"), (*Tasks)[0]->AsObject()->HasField(TEXT("payload")));
+        TestFalse(TEXT("Task summaries omit log arrays"), (*Tasks)[0]->AsObject()->HasField(TEXT("logs")));
+        TestFalse(TEXT("Task summaries omit full responses"), (*Tasks)[0]->AsObject()->HasField(TEXT("responseJson")));
     }
 
-    Bridge->TestOnlyGrantPrivilegedCommandApproval(TEXT("asset.renameBatch"), TEXT("write"));
+    const TSharedPtr<FJsonObject> Detail = ParseResultObject(Bridge->GetTask(NewerTaskId));
+    TestTrue(TEXT("GetTask returns task detail"), Detail.IsValid());
+    if (Detail.IsValid())
+    {
+        TestTrue(TEXT("Task detail includes payload"), Detail->HasField(TEXT("payload")));
+        TestTrue(TEXT("Task detail includes logs"), Detail->HasField(TEXT("logs")));
+    }
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIBridgeDocumentSessionTest,
+    "UnrealEditorWebUI.Bridge.DocumentSessionIsolation",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIBridgeDocumentSessionTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    Bridge->BeginDocumentSession(TEXT("http://localhost:5173"));
+    const FString OldTaskId = Bridge->TestOnlyCreateTask(
+        MakeRequestJson(TEXT("system.ping"), 1),
+        TEXT("running"),
+        TEXT("editor_game_thread"),
+        TEXT("queued_only"),
+        TEXT("none"),
+        FDateTime::UtcNow(),
+        10);
+
+    TestTrue(TEXT("Creating session can read its task"), ParseResultObject(Bridge->GetTask(OldTaskId)).IsValid());
+    Bridge->BeginDocumentSession(TEXT("http://localhost:5173"));
+    TestEqual(
+        TEXT("A reloaded document cannot read an earlier task"),
+        GetResponseErrorCode(Bridge->GetTask(OldTaskId)),
+        FString(TEXT("task_not_found")));
+    TestEqual(
+        TEXT("A reloaded document cannot cancel an earlier task"),
+        GetResponseErrorCode(Bridge->CancelTask(OldTaskId)),
+        FString(TEXT("task_not_found")));
+    TestEqual(
+        TEXT("Session rotation releases all old task-store capacity"),
+        Bridge->TestOnlyStoredTaskCount(),
+        0);
+
+    const TSharedPtr<FJsonObject> EmptyList = ParseResultObject(Bridge->ListTasks());
+    const TArray<TSharedPtr<FJsonValue>>* VisibleTasks = nullptr;
+    TestTrue(TEXT("Current session task list is valid"), EmptyList.IsValid() && EmptyList->TryGetArrayField(TEXT("tasks"), VisibleTasks));
+    TestEqual(TEXT("Earlier-session tasks are not listed"), VisibleTasks == nullptr ? -1 : VisibleTasks->Num(), 0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIBridgeResourceLimitsTest,
+    "UnrealEditorWebUI.Bridge.ResourceLimitsAndProjectContext",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIBridgeResourceLimitsTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    const FString Oversized = FString::ChrN(300 * 1024, TEXT('x'));
+    TestEqual(
+        TEXT("Oversized synchronous requests fail before Python execution"),
+        GetResponseErrorCode(Bridge->ExecuteCommand(Oversized)),
+        FString(TEXT("request_too_large")));
+    TestEqual(
+        TEXT("Oversized task requests fail before queuing"),
+        GetResponseErrorCode(Bridge->StartCommand(Oversized)),
+        FString(TEXT("request_too_large")));
+    TestEqual(
+        TEXT("Oversized settings fail before parsing"),
+        GetResponseErrorCode(Bridge->SetWebUISettings(Oversized)),
+        FString(TEXT("request_too_large")));
+
+    const TSharedPtr<FJsonObject> FirstContext = ParseResultObject(Bridge->GetProjectContext());
+    const TSharedPtr<FJsonObject> SecondContext = ParseResultObject(Bridge->GetProjectContext());
+    TestTrue(TEXT("Project context is available"), FirstContext.IsValid() && SecondContext.IsValid());
+    if (FirstContext.IsValid() && SecondContext.IsValid())
+    {
+        const FString Namespace = FirstContext->GetStringField(TEXT("storageNamespace"));
+        TestTrue(TEXT("Project namespace is a non-sensitive hash"), Namespace.StartsWith(TEXT("project-")) && Namespace.Len() == 32);
+        TestEqual(
+            TEXT("Project namespace is stable"),
+            Namespace,
+            SecondContext->GetStringField(TEXT("storageNamespace")));
+    }
+
+    const FString UnicodeNamespaceA = Bridge->TestOnlyBuildProjectStorageNamespace(TEXT("C:/项目/甲"));
+    const FString UnicodeNamespaceB = Bridge->TestOnlyBuildProjectStorageNamespace(TEXT("C:/项目/乙"));
     TestTrue(
-        TEXT("Approval is granted"),
-        Bridge->TestOnlyHasPrivilegedCommandApproval(TEXT("asset.renameBatch"), TEXT("write")));
-    Bridge->ResetPrivilegedCommandApprovals();
-    TestFalse(
-        TEXT("Approval reset clears write approval"),
-        Bridge->TestOnlyHasPrivilegedCommandApproval(TEXT("asset.renameBatch"), TEXT("write")));
+        TEXT("UTF-8 project identities remain distinct"),
+        UnicodeNamespaceA != UnicodeNamespaceB);
+    TestTrue(
+        TEXT("UTF-8 project namespace keeps the non-sensitive bounded format"),
+        UnicodeNamespaceA.StartsWith(TEXT("project-")) && UnicodeNamespaceA.Len() == 32);
+
+    const FString TaskId = Bridge->TestOnlyCreateTask(
+        MakeRequestJson(TEXT("system.ping"), 1),
+        TEXT("running"),
+        TEXT("editor_game_thread"),
+        TEXT("queued_only"),
+        TEXT("none"),
+        FDateTime::UtcNow(),
+        10);
+    Bridge->TestOnlyCompleteTaskWithResponse(
+        TaskId,
+        FString::ChrN(1600 * 1024, TEXT('x')));
+    const TSharedPtr<FJsonObject> BoundedTask = ParseResultObject(Bridge->GetTask(TaskId));
+    TestTrue(TEXT("Oversized task result is replaced with a bounded detail"), BoundedTask.IsValid());
+    if (BoundedTask.IsValid())
+    {
+        TestEqual(
+            TEXT("Oversized task result fails the task truthfully"),
+            BoundedTask->GetStringField(TEXT("status")),
+            FString(TEXT("failed")));
+        TestTrue(
+            TEXT("Bounded task detail preserves a structured size error"),
+            BoundedTask->GetStringField(TEXT("responseJson")).Contains(TEXT("response_too_large")));
+    }
     return true;
 }
 

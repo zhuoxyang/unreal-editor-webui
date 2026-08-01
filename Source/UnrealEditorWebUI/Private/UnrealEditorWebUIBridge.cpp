@@ -5,12 +5,14 @@
 #include "Dom/JsonObject.h"
 #include "IPythonScriptPlugin.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/App.h"
 #include "Misc/Base64.h"
 #include "Misc/Guid.h"
 #include "Misc/LexFromString.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
+#include "Misc/SecureHash.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "PythonScriptTypes.h"
 #include "Serialization/JsonReader.h"
@@ -23,6 +25,16 @@ namespace
 {
     constexpr int32 MaxStoredTasks = 64;
     constexpr int32 MaxTaskLogLines = 80;
+    constexpr int32 MaxTaskLogLineCharacters = 2048;
+    constexpr int32 MaxRequestJsonCharacters = 256 * 1024;
+    constexpr int32 MaxResponseJsonUtf8Bytes = 4 * 1024 * 1024;
+    constexpr int32 MaxTaskResponseJsonUtf8Bytes = 1536 * 1024;
+    constexpr int32 MaxTaskEventJsonUtf8Bytes = 64 * 1024;
+    constexpr int32 MaxPermissionPolicyCharacters = 16 * 1024;
+    constexpr int32 MaxSettingsJsonCharacters = 64 * 1024;
+    constexpr int32 MaxPostMessageCharacters = 16 * 1024;
+    constexpr int32 MaxTaskIdCharacters = 128;
+    constexpr int64 MaxRetainedTaskResponseCharacters = 16LL * 1024LL * 1024LL;
 
     FString WriteJsonObject(const TSharedRef<FJsonObject>& JsonObject)
     {
@@ -31,6 +43,20 @@ namespace
             TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Output);
         FJsonSerializer::Serialize(JsonObject, Writer);
         return Output;
+    }
+
+    int32 Utf8ByteLength(const FString& Value)
+    {
+        return FTCHARToUTF8(*Value).Length();
+    }
+
+    FString BuildProjectStorageNamespace(const FString& ProjectIdentity)
+    {
+        const FTCHARToUTF8 Utf8Identity(*ProjectIdentity);
+        const FString ProjectHash = FMD5::HashBytes(
+            reinterpret_cast<const uint8*>(Utf8Identity.Get()),
+            static_cast<uint64>(Utf8Identity.Length()));
+        return FString::Printf(TEXT("project-%s"), *ProjectHash.Left(24));
     }
 
     FString ExtractRequestId(const FString& RequestJson)
@@ -83,6 +109,22 @@ namespace
         return WriteJsonObject(Root);
     }
 
+    FString MakeBoundedSuccessResponse(
+        const FString& RequestId,
+        const TSharedRef<FJsonObject>& Result)
+    {
+        const FString Response = MakeSuccessResponse(RequestId, Result);
+        if (Utf8ByteLength(Response) <= MaxResponseJsonUtf8Bytes)
+        {
+            return Response;
+        }
+
+        return MakeErrorResponse(
+            RequestId,
+            TEXT("response_too_large"),
+            TEXT("Serialized bridge response exceeds the maximum size of 4 MiB UTF-8."));
+    }
+
     TSharedRef<FJsonObject> ParseJsonObjectOrEmpty(const FString& Json)
     {
         TSharedPtr<FJsonObject> Object;
@@ -129,7 +171,10 @@ namespace
             return;
         }
 
-        Task.Logs.Add(LogLine);
+        const FString BoundedLogLine = LogLine.Len() > MaxTaskLogLineCharacters
+            ? LogLine.Left(MaxTaskLogLineCharacters) + TEXT("...")
+            : LogLine;
+        Task.Logs.Add(BoundedLogLine);
         while (Task.Logs.Num() > MaxTaskLogLines)
         {
             Task.Logs.RemoveAt(0);
@@ -185,7 +230,10 @@ namespace
         }
     }
 
-    void WriteTaskResultFields(const TSharedRef<FJsonObject>& Result, const FString& TaskId, const FUnrealEditorWebUITask& Task)
+    void WriteTaskSummaryFields(
+        const TSharedRef<FJsonObject>& Result,
+        const FString& TaskId,
+        const FUnrealEditorWebUITask& Task)
     {
         Result->SetStringField(TEXT("taskId"), TaskId);
         Result->SetStringField(TEXT("status"), Task.Status);
@@ -198,12 +246,20 @@ namespace
         Result->SetStringField(TEXT("createdAt"), Task.CreatedAt.ToIso8601());
         Result->SetStringField(TEXT("updatedAt"), Task.UpdatedAt.ToIso8601());
 
-        const TSharedRef<FJsonObject> Request = ParseJsonObjectOrEmpty(Task.RequestJson);
-        FString CommandName;
-        if (Request->TryGetStringField(TEXT("command"), CommandName))
+        if (!Task.CommandName.IsEmpty())
         {
-            Result->SetStringField(TEXT("command"), CommandName);
+            Result->SetStringField(TEXT("command"), Task.CommandName);
         }
+    }
+
+    void WriteTaskResultFields(
+        const TSharedRef<FJsonObject>& Result,
+        const FString& TaskId,
+        const FUnrealEditorWebUITask& Task)
+    {
+        WriteTaskSummaryFields(Result, TaskId, Task);
+
+        const TSharedRef<FJsonObject> Request = ParseJsonObjectOrEmpty(Task.RequestJson);
         const TSharedPtr<FJsonValue> PayloadValue = Request->TryGetField(TEXT("payload"));
         if (PayloadValue.IsValid() && PayloadValue->Type == EJson::Object)
         {
@@ -235,22 +291,31 @@ namespace
         return Normalized == TEXT("read") || IsPrivilegedPermission(Normalized);
     }
 
-    FString MakePrivilegedCommandKey(const FString& CommandName, const FString& Permission)
-    {
-        return FString::Printf(TEXT("%s:%s"), *Permission.ToLower(), *CommandName);
-    }
-
-    bool CanReusePrivilegedApproval(const FString& Permission)
-    {
-        return Permission.ToLower() == TEXT("write");
-    }
-
-    FString MakePermissionPolicyJson(const FString& CommandName, const FString& Permission)
+    FString MakePermissionPolicyJson(
+        const FString& CommandName,
+        const FString& Permission,
+        const FString& TaskId = FString())
     {
         const TSharedRef<FJsonObject> Policy = MakeShared<FJsonObject>();
         Policy->SetStringField(TEXT("allowedCommand"), CommandName);
         Policy->SetStringField(TEXT("allowedPermission"), Permission.ToLower());
+        if (!TaskId.IsEmpty())
+        {
+            Policy->SetStringField(TEXT("taskId"), TaskId);
+        }
         return WriteJsonObject(Policy);
+    }
+
+    FString MakeCooperativeControlJson(
+        const FString& RequestId,
+        const FString& TaskId,
+        bool bCancelRequested)
+    {
+        const TSharedRef<FJsonObject> Control = MakeShared<FJsonObject>();
+        SetNullableId(Control, RequestId);
+        Control->SetStringField(TEXT("taskId"), TaskId);
+        Control->SetBoolField(TEXT("cancelRequested"), bCancelRequested);
+        return WriteJsonObject(Control);
     }
 
     struct FCommandPreflight
@@ -262,6 +327,7 @@ namespace
         FString ExecutionThread;
         FString CancellationMode;
         FString TimeoutPolicy;
+        FString PayloadSummary;
     };
 
     bool IsSupportedTimeoutPolicy(const FString& TimeoutPolicy)
@@ -384,6 +450,24 @@ namespace
             return Parsed;
         }
 
+        const TSharedPtr<FJsonObject>* NormalizedPayload = nullptr;
+        if (!(*ResultObject)->TryGetObjectField(TEXT("normalizedPayload"), NormalizedPayload)
+            || NormalizedPayload == nullptr
+            || !NormalizedPayload->IsValid())
+        {
+            Parsed.ResponseJson = MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_preflight"),
+                TEXT("Command preflight did not return a normalized payload object."));
+            return Parsed;
+        }
+        Parsed.PayloadSummary = WriteJsonObject(NormalizedPayload->ToSharedRef());
+        constexpr int32 MaxPayloadSummaryCharacters = 1200;
+        if (Parsed.PayloadSummary.Len() > MaxPayloadSummaryCharacters)
+        {
+            Parsed.PayloadSummary = Parsed.PayloadSummary.Left(MaxPayloadSummaryCharacters) + TEXT("...");
+        }
+
         const TSharedPtr<FJsonObject>* ExecutionObject = nullptr;
         if (!(*ResultObject)->TryGetObjectField(TEXT("execution"), ExecutionObject)
             || ExecutionObject == nullptr
@@ -414,6 +498,17 @@ namespace
 
 void UUnrealEditorWebUIBridge::PostMessage(const FString& Payload)
 {
+    if (Payload.Len() > MaxPostMessageCharacters)
+    {
+        UE_LOG(
+            LogUnrealEditorWebUIBridge,
+            Warning,
+            TEXT("Discarded oversized WebUI message (%d characters; limit %d)."),
+            Payload.Len(),
+            MaxPostMessageCharacters);
+        return;
+    }
+
     UE_LOG(LogUnrealEditorWebUIBridge, Log, TEXT("WebUI message: %s"), *Payload);
 }
 
@@ -422,10 +517,42 @@ void UUnrealEditorWebUIBridge::SetEventDispatcher(TFunction<void(const FString&)
     EventDispatcher = MoveTemp(InEventDispatcher);
 }
 
+void UUnrealEditorWebUIBridge::BeginDocumentSession(const FString& SecurityScope)
+{
+    static_cast<void>(SecurityScope);
+    bool bHadCooperativeTasks = false;
+
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        CurrentDocumentSessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
+
+        for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+        {
+            if (Pair.Value.Status == TEXT("running")
+                && IsCooperativeExecutionThread(Pair.Value.ExecutionThread))
+            {
+                bHadCooperativeTasks = true;
+            }
+        }
+
+        // No task capability crosses a top-level document boundary. Removing
+        // every old record also prevents an invisible session from filling the
+        // bounded task store and blocking the replacement document.
+        Tasks.Empty();
+    }
+
+    if (bHadCooperativeTasks)
+    {
+        CancelAllCooperativeCommands();
+        StopCooperativeTickerIfIdle();
+    }
+
+    ResetPrivilegedCommandApprovals();
+}
+
 void UUnrealEditorWebUIBridge::ResetPrivilegedCommandApprovals()
 {
-    FScopeLock Lock(&PrivilegedCommandApprovalsCriticalSection);
-    PrivilegedCommandApprovals.Reset();
+    // Privileged approvals are deliberately single-use and are never cached.
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -443,7 +570,9 @@ FString UUnrealEditorWebUIBridge::TestOnlyCreateTask(
 
     FScopeLock Lock(&TasksCriticalSection);
     FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
+    Task.SessionId = CurrentDocumentSessionId;
     Task.RequestJson = RequestJson;
+    ParseJsonObjectOrEmpty(RequestJson)->TryGetStringField(TEXT("command"), Task.CommandName);
     Task.Status = Status;
     Task.ExecutionThread = ExecutionThread;
     Task.CancellationMode = CancellationMode;
@@ -462,16 +591,6 @@ bool UUnrealEditorWebUIBridge::TestOnlyTickCooperativeTasks(float DeltaTime)
     return TickCooperativeTasks(DeltaTime);
 }
 
-void UUnrealEditorWebUIBridge::TestOnlyGrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission)
-{
-    GrantPrivilegedCommandApproval(CommandName, Permission);
-}
-
-bool UUnrealEditorWebUIBridge::TestOnlyHasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const
-{
-    return HasPrivilegedCommandApproval(CommandName, Permission);
-}
-
 FString UUnrealEditorWebUIBridge::TestOnlyValidatePreflightResponse(
     const FString& RequestId,
     const FString& PreflightJson) const
@@ -488,18 +607,47 @@ FString UUnrealEditorWebUIBridge::TestOnlyValidatePreflightResponse(
     Result->SetStringField(TEXT("thread"), Preflight.ExecutionThread);
     Result->SetStringField(TEXT("cancellationMode"), Preflight.CancellationMode);
     Result->SetStringField(TEXT("timeoutPolicy"), Preflight.TimeoutPolicy);
-    return MakeSuccessResponse(RequestId, Result);
+    Result->SetStringField(TEXT("payloadSummary"), Preflight.PayloadSummary);
+    return MakeBoundedSuccessResponse(RequestId, Result);
+}
+
+FString UUnrealEditorWebUIBridge::TestOnlyBuildProjectStorageNamespace(
+    const FString& ProjectIdentity) const
+{
+    return BuildProjectStorageNamespace(ProjectIdentity);
+}
+
+void UUnrealEditorWebUIBridge::TestOnlyCompleteTaskWithResponse(
+    const FString& TaskId,
+    const FString& ResponseJson)
+{
+    UpdateTaskStatus(TaskId, TEXT("completed"), ResponseJson, 100, TEXT("Task completed."));
+}
+
+int32 UUnrealEditorWebUIBridge::TestOnlyStoredTaskCount() const
+{
+    FScopeLock Lock(&TasksCriticalSection);
+    return Tasks.Num();
 }
 #endif
 
 FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
 {
-    const FString RequestId = ExtractRequestId(RequestJson);
-
     if (RequestJson.IsEmpty())
     {
-        return MakeErrorResponse(RequestId, TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
+        return MakeErrorResponse(FString(), TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
     }
+    if (RequestJson.Len() > MaxRequestJsonCharacters)
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("request_too_large"),
+            FString::Printf(
+                TEXT("Request JSON exceeds the maximum size of %d characters."),
+                MaxRequestJsonCharacters));
+    }
+
+    const FString RequestId = ExtractRequestId(RequestJson);
 
     const FCommandPreflight Preflight = ParseCommandPreflight(
         RequestId,
@@ -509,11 +657,22 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
         return Preflight.ResponseJson;
     }
 
-    if (IsPrivilegedPermission(Preflight.Permission)
-        && (!CanReusePrivilegedApproval(Preflight.Permission)
-            || !HasPrivilegedCommandApproval(Preflight.CommandName, Preflight.Permission)))
+    if (IsCooperativeExecutionThread(Preflight.ExecutionThread))
     {
-        if (!ConfirmPrivilegedCommand(Preflight.CommandName, Preflight.Permission))
+        return MakeErrorResponse(
+            RequestId,
+            TEXT("task_required"),
+            FString::Printf(
+                TEXT("Command \"%s\" must be started as a cooperative task."),
+                *Preflight.CommandName));
+    }
+
+    if (IsPrivilegedPermission(Preflight.Permission))
+    {
+        if (!ConfirmPrivilegedCommand(
+                Preflight.CommandName,
+                Preflight.Permission,
+                Preflight.PayloadSummary))
         {
             return MakeErrorResponse(
                 RequestId,
@@ -522,11 +681,6 @@ FString UUnrealEditorWebUIBridge::ExecuteCommand(const FString& RequestJson)
                     TEXT("User declined %s command: %s"),
                     *Preflight.Permission,
                     *Preflight.CommandName));
-        }
-
-        if (CanReusePrivilegedApproval(Preflight.Permission))
-        {
-            GrantPrivilegedCommandApproval(Preflight.CommandName, Preflight.Permission);
         }
     }
 
@@ -541,6 +695,23 @@ FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
     const FString& FunctionName,
     const FString& PermissionPolicyJson) const
 {
+    if (RequestJson.Len() > MaxRequestJsonCharacters)
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("request_too_large"),
+            FString::Printf(
+                TEXT("Registry request exceeds the maximum size of %d characters."),
+                MaxRequestJsonCharacters));
+    }
+    if (PermissionPolicyJson.Len() > MaxPermissionPolicyCharacters)
+    {
+        return MakeErrorResponse(
+            ExtractRequestId(RequestJson),
+            TEXT("permission_policy_too_large"),
+            TEXT("Permission policy exceeds the bridge size limit."));
+    }
+
     const FString RequestId = ExtractRequestId(RequestJson);
 
     const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
@@ -585,6 +756,16 @@ FString UUnrealEditorWebUIBridge::ExecuteRegistryFunction(
         return MakeErrorResponse(RequestId, TEXT("missing_response"), TEXT("Python command registry did not return a response."));
     }
 
+    if (Utf8ByteLength(PythonCommand.CommandResult) > MaxResponseJsonUtf8Bytes)
+    {
+        return MakeErrorResponse(
+            RequestId,
+            TEXT("response_too_large"),
+            FString::Printf(
+                TEXT("Registry response exceeds the maximum size of %d UTF-8 bytes."),
+                MaxResponseJsonUtf8Bytes));
+    }
+
     return PythonCommand.CommandResult;
 }
 
@@ -594,6 +775,15 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
     {
         return MakeErrorResponse(FString(), TEXT("invalid_request"), TEXT("Request JSON cannot be empty."));
     }
+    if (RequestJson.Len() > MaxRequestJsonCharacters)
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("request_too_large"),
+            FString::Printf(
+                TEXT("Request JSON exceeds the maximum size of %d characters."),
+                MaxRequestJsonCharacters));
+    }
 
     const FCommandPreflight Preflight = ParseCommandPreflight(
         ExtractRequestId(RequestJson),
@@ -602,6 +792,25 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
     {
         return Preflight.ResponseJson;
     }
+
+    if (IsPrivilegedPermission(Preflight.Permission)
+        && !ConfirmPrivilegedCommand(
+            Preflight.CommandName,
+            Preflight.Permission,
+            Preflight.PayloadSummary))
+    {
+        return MakeErrorResponse(
+            ExtractRequestId(RequestJson),
+            TEXT("permission_denied"),
+            FString::Printf(
+                TEXT("User declined %s command: %s"),
+                *Preflight.Permission,
+                *Preflight.CommandName));
+    }
+
+    const FString PermissionPolicyJson = MakePermissionPolicyJson(
+        Preflight.CommandName,
+        Preflight.Permission);
 
     const FString TaskId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
     const FDateTime Now = FDateTime::UtcNow();
@@ -619,31 +828,34 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
         }
 
         FUnrealEditorWebUITask& Task = Tasks.Add(TaskId);
+        Task.SessionId = CurrentDocumentSessionId;
+        Task.CommandName = Preflight.CommandName;
         Task.RequestJson = RequestJson;
         Task.Status = TEXT("queued");
         Task.ExecutionThread = Preflight.ExecutionThread;
         Task.CancellationMode = Preflight.CancellationMode;
         Task.TimeoutPolicy = Preflight.TimeoutPolicy;
+        Task.PermissionPolicyJson = PermissionPolicyJson;
         Task.Progress = 0;
         Task.CreatedAt = Now;
         Task.UpdatedAt = Now;
         ApplyTaskLifecycleForStatusLocked(Task);
         AppendTaskLogLocked(Task, TEXT("Task queued."));
     }
-    BroadcastTaskEvent(TaskId, TEXT("queued"), FString(), 0, TEXT("Task queued."));
+    BroadcastTaskEvent(TaskId, TEXT("queued"), 0, TEXT("Task queued."));
 
     if (IsCooperativeExecutionThread(Preflight.ExecutionThread))
     {
-        StartCooperativeTask(TaskId, RequestJson);
+        StartCooperativeTask(TaskId, RequestJson, PermissionPolicyJson);
     }
     else
     {
         const TWeakObjectPtr<UUnrealEditorWebUIBridge> WeakThis(this);
-        AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson]()
+        AsyncTask(ENamedThreads::GameThread, [WeakThis, TaskId, RequestJson, PermissionPolicyJson]()
         {
             if (WeakThis.IsValid())
             {
-                WeakThis->RunTask(TaskId, RequestJson);
+                WeakThis->RunTask(TaskId, RequestJson, PermissionPolicyJson);
             }
         });
     }
@@ -656,14 +868,19 @@ FString UUnrealEditorWebUIBridge::StartCommand(const FString& RequestJson)
             WriteTaskResultFields(Result, TaskId, *Task);
         }
     }
-    return MakeSuccessResponse(ExtractRequestId(RequestJson), Result);
+    return MakeBoundedSuccessResponse(ExtractRequestId(RequestJson), Result);
 }
 
 FString UUnrealEditorWebUIBridge::GetTask(const FString& TaskId) const
 {
+    if (TaskId.IsEmpty() || TaskId.Len() > MaxTaskIdCharacters)
+    {
+        return MakeErrorResponse(FString(), TEXT("invalid_task_id"), TEXT("Task id is invalid."));
+    }
+
     FScopeLock Lock(&TasksCriticalSection);
     const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
-    if (Task == nullptr)
+    if (Task == nullptr || !IsTaskVisibleInCurrentSessionLocked(*Task))
     {
         return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
     }
@@ -671,7 +888,7 @@ FString UUnrealEditorWebUIBridge::GetTask(const FString& TaskId) const
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     WriteTaskResultFields(Result, TaskId, *Task);
 
-    return MakeSuccessResponse(FString(), Result);
+    return MakeBoundedSuccessResponse(FString(), Result);
 }
 
 FString UUnrealEditorWebUIBridge::ListTasks() const
@@ -679,7 +896,13 @@ FString UUnrealEditorWebUIBridge::ListTasks() const
     FScopeLock Lock(&TasksCriticalSection);
 
     TArray<FString> TaskIds;
-    Tasks.GetKeys(TaskIds);
+    for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+    {
+        if (IsTaskVisibleInCurrentSessionLocked(Pair.Value))
+        {
+            TaskIds.Add(Pair.Key);
+        }
+    }
     TaskIds.Sort([this](const FString& Left, const FString& Right)
     {
         return Tasks.FindChecked(Left).CreatedAt > Tasks.FindChecked(Right).CreatedAt;
@@ -690,20 +913,25 @@ FString UUnrealEditorWebUIBridge::ListTasks() const
     for (const FString& TaskId : TaskIds)
     {
         const TSharedRef<FJsonObject> TaskObject = MakeShared<FJsonObject>();
-        WriteTaskResultFields(TaskObject, TaskId, Tasks.FindChecked(TaskId));
+        WriteTaskSummaryFields(TaskObject, TaskId, Tasks.FindChecked(TaskId));
         TaskValues.Add(MakeShared<FJsonValueObject>(TaskObject));
     }
 
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetArrayField(TEXT("tasks"), TaskValues);
-    return MakeSuccessResponse(FString(), Result);
+    return MakeBoundedSuccessResponse(FString(), Result);
 }
 
 FString UUnrealEditorWebUIBridge::RemoveTask(const FString& TaskId)
 {
+    if (TaskId.IsEmpty() || TaskId.Len() > MaxTaskIdCharacters)
+    {
+        return MakeErrorResponse(FString(), TEXT("invalid_task_id"), TEXT("Task id is invalid."));
+    }
+
     FScopeLock Lock(&TasksCriticalSection);
     const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
-    if (Task == nullptr)
+    if (Task == nullptr || !IsTaskVisibleInCurrentSessionLocked(*Task))
     {
         return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
     }
@@ -720,17 +948,22 @@ FString UUnrealEditorWebUIBridge::RemoveTask(const FString& TaskId)
     const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
     Result->SetStringField(TEXT("taskId"), TaskId);
     Result->SetBoolField(TEXT("removed"), true);
-    return MakeSuccessResponse(FString(), Result);
+    return MakeBoundedSuccessResponse(FString(), Result);
 }
 
 FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
 {
+    if (TaskId.IsEmpty() || TaskId.Len() > MaxTaskIdCharacters)
+    {
+        return MakeErrorResponse(FString(), TEXT("invalid_task_id"), TEXT("Task id is invalid."));
+    }
+
     FString Status;
     bool bCancelled = false;
     {
         FScopeLock Lock(&TasksCriticalSection);
         FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
-        if (Task == nullptr)
+        if (Task == nullptr || !IsTaskVisibleInCurrentSessionLocked(*Task))
         {
             return MakeErrorResponse(FString(), TEXT("task_not_found"), FString::Printf(TEXT("Task not found: %s"), *TaskId));
         }
@@ -774,7 +1007,6 @@ FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
     BroadcastTaskEvent(
         TaskId,
         Status,
-        FString(),
         bCancelled ? 100 : INDEX_NONE,
         bCancelled
             ? TEXT("Task cancelled before execution.")
@@ -789,16 +1021,47 @@ FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
         }
     }
     Result->SetBoolField(TEXT("cancelled"), bCancelled);
-    return MakeSuccessResponse(FString(), Result);
+    return MakeBoundedSuccessResponse(FString(), Result);
 }
 
 FString UUnrealEditorWebUIBridge::GetWebUISettings() const
 {
-    return MakeSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(UnrealEditorWebUISettings::Load())));
+    return MakeBoundedSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(UnrealEditorWebUISettings::Load())));
+}
+
+FString UUnrealEditorWebUIBridge::GetProjectContext() const
+{
+    FString ProjectIdentity = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+    FPaths::NormalizeDirectoryName(ProjectIdentity);
+#if PLATFORM_WINDOWS
+    ProjectIdentity = ProjectIdentity.ToLower();
+#endif
+    if (ProjectIdentity.IsEmpty())
+    {
+        ProjectIdentity = FString(FApp::GetProjectName());
+    }
+
+    const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+    Result->SetNumberField(TEXT("protocolVersion"), 1);
+    Result->SetStringField(TEXT("projectName"), FString(FApp::GetProjectName()));
+    Result->SetStringField(
+        TEXT("storageNamespace"),
+        BuildProjectStorageNamespace(ProjectIdentity));
+    return MakeBoundedSuccessResponse(FString(), Result);
 }
 
 FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
 {
+    if (SettingsJson.Len() > MaxSettingsJsonCharacters)
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("request_too_large"),
+            FString::Printf(
+                TEXT("Settings JSON exceeds the maximum size of %d characters."),
+                MaxSettingsJsonCharacters));
+    }
+
     FUnrealEditorWebUISettings Settings;
     FString Error;
     if (!UnrealEditorWebUISettings::FromJson(SettingsJson, Settings, Error))
@@ -806,7 +1069,13 @@ FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
         return MakeErrorResponse(FString(), TEXT("invalid_settings"), Error);
     }
 
-    if (!ConfirmPrivilegedCommand(TEXT("settings.update"), TEXT("write"), false))
+    FString SettingsSummary = UnrealEditorWebUISettings::ToJson(Settings);
+    constexpr int32 MaxSettingsSummaryCharacters = 1200;
+    if (SettingsSummary.Len() > MaxSettingsSummaryCharacters)
+    {
+        SettingsSummary = SettingsSummary.Left(MaxSettingsSummaryCharacters) + TEXT("...");
+    }
+    if (!ConfirmPrivilegedCommand(TEXT("settings.update"), TEXT("write"), SettingsSummary))
     {
         return MakeErrorResponse(
             FString(),
@@ -815,46 +1084,47 @@ FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
     }
 
     UnrealEditorWebUISettings::Save(Settings);
-    return MakeSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(Settings)));
+    return MakeBoundedSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(Settings)));
 }
 
 bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(
     const FString& CommandName,
     const FString& Permission,
-    bool bAllowReusableApproval) const
+    const FString& PayloadSummary) const
 {
     const FText Title = NSLOCTEXT("UnrealEditorWebUIBridge", "ConfirmPrivilegedCommandTitle", "Confirm WebUI Command");
-    const FText ApprovalScope = bAllowReusableApproval && CanReusePrivilegedApproval(Permission)
-        ? NSLOCTEXT(
-            "UnrealEditorWebUIBridge",
-            "ConfirmPrivilegedCommandSessionScope",
-            "Confirming will allow this specific command for the current WebUI tab session.")
-        : NSLOCTEXT(
-            "UnrealEditorWebUIBridge",
-            "ConfirmPrivilegedCommandSingleUseScope",
-            "Destructive commands require confirmation every time.");
     const FText Message = FText::Format(
         NSLOCTEXT(
             "UnrealEditorWebUIBridge",
             "ConfirmPrivilegedCommandMessage",
-            "Run {0} command \"{1}\" from the WebUI?\n\n{2}\n\nOnly continue if you trust the currently loaded page."),
+            "Run {0} command \"{1}\" from the WebUI?\n\nNormalized payload:\n{2}\n\nThis approval applies only to this invocation. Only continue if you trust the currently loaded page."),
         FText::FromString(Permission),
         FText::FromString(CommandName),
-        ApprovalScope);
+        FText::FromString(PayloadSummary));
 
     return FMessageDialog::Open(EAppMsgType::YesNo, Message, Title) == EAppReturnType::Yes;
 }
 
-bool UUnrealEditorWebUIBridge::HasPrivilegedCommandApproval(const FString& CommandName, const FString& Permission) const
+bool UUnrealEditorWebUIBridge::IsTaskVisibleInCurrentSessionLocked(
+    const FUnrealEditorWebUITask& Task) const
 {
-    FScopeLock Lock(&PrivilegedCommandApprovalsCriticalSection);
-    return PrivilegedCommandApprovals.Contains(MakePrivilegedCommandKey(CommandName, Permission));
+    return Task.SessionId == CurrentDocumentSessionId;
 }
 
-void UUnrealEditorWebUIBridge::GrantPrivilegedCommandApproval(const FString& CommandName, const FString& Permission)
+void UUnrealEditorWebUIBridge::CancelAllCooperativeCommands() const
 {
-    FScopeLock Lock(&PrivilegedCommandApprovalsCriticalSection);
-    PrivilegedCommandApprovals.Add(MakePrivilegedCommandKey(CommandName, Permission));
+    const FString CleanupResponse = ExecuteRegistryFunction(
+        TEXT("{}"),
+        TEXT("cancel_all_cooperative_commands"));
+    const TSharedRef<FJsonObject> CleanupEnvelope = ParseJsonObjectOrEmpty(CleanupResponse);
+    bool bOk = false;
+    if (!CleanupEnvelope->TryGetBoolField(TEXT("ok"), bOk) || !bOk)
+    {
+        UE_LOG(
+            LogUnrealEditorWebUIBridge,
+            Warning,
+            TEXT("Failed to clean cooperative Python jobs while rotating the document session."));
+    }
 }
 
 void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)
@@ -870,7 +1140,7 @@ void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)
         }
     }
 
-    while (Tasks.Num() > MaxStoredTasks)
+    while (Tasks.Num() >= MaxStoredTasks)
     {
         FString OldestFinishedTaskId;
         FDateTime OldestFinishedTaskTime = FDateTime::MaxValue();
@@ -893,41 +1163,117 @@ void UUnrealEditorWebUIBridge::PruneTasksLocked(const FDateTime& Now)
     }
 }
 
-void UUnrealEditorWebUIBridge::StartCooperativeTask(const FString& TaskId, const FString& RequestJson)
+void UUnrealEditorWebUIBridge::StartCooperativeTask(
+    const FString& TaskId,
+    const FString& RequestJson,
+    const FString& PermissionPolicyJson)
 {
-    int32 TotalSteps = 10;
-    const TSharedRef<FJsonObject> Request = ParseJsonObjectOrEmpty(RequestJson);
-    const TSharedPtr<FJsonValue> PayloadValue = Request->TryGetField(TEXT("payload"));
-    const TSharedPtr<FJsonObject> Payload = PayloadValue.IsValid() ? PayloadValue->AsObject() : nullptr;
-    if (Payload.IsValid())
+    const TSharedRef<FJsonObject> TaskPolicy = ParseJsonObjectOrEmpty(PermissionPolicyJson);
+    TaskPolicy->SetStringField(TEXT("taskId"), TaskId);
+    const FString StartResponseJson = ExecuteRegistryFunction(
+        RequestJson,
+        TEXT("start_cooperative_command"),
+        WriteJsonObject(TaskPolicy));
+    const auto CleanupPythonJob = [this, &RequestJson, &TaskId]()
     {
-        double RequestedSteps = 0.0;
-        if (Payload->TryGetNumberField(TEXT("steps"), RequestedSteps))
-        {
-            TotalSteps = FMath::Clamp(FMath::RoundToInt(RequestedSteps), 1, 100);
-        }
+        ExecuteRegistryFunction(
+            MakeCooperativeControlJson(ExtractRequestId(RequestJson), TaskId, true),
+            TEXT("step_cooperative_command"));
+    };
+
+    TSharedPtr<FJsonObject> StartResponse;
+    const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(StartResponseJson);
+    bool bOk = false;
+    if (!FJsonSerializer::Deserialize(Reader, StartResponse)
+        || !StartResponse.IsValid()
+        || !StartResponse->TryGetBoolField(TEXT("ok"), bOk)
+        || !bOk)
+    {
+        CleanupPythonJob();
+        const FString FailureResponse = StartResponse.IsValid()
+            ? StartResponseJson
+            : MakeErrorResponse(
+                ExtractRequestId(RequestJson),
+                TEXT("invalid_cooperative_response"),
+                TEXT("Python did not return a valid cooperative start response."));
+        UpdateTaskStatus(
+            TaskId,
+            TEXT("failed"),
+            FailureResponse,
+            100,
+            TEXT("Cooperative command failed to start."));
+        return;
     }
 
+    const TSharedPtr<FJsonObject>* Result = nullptr;
+    FString Status;
+    if (!StartResponse->TryGetObjectField(TEXT("result"), Result)
+        || Result == nullptr
+        || !Result->IsValid()
+        || !(*Result)->TryGetStringField(TEXT("status"), Status)
+        || Status != TEXT("running"))
     {
-        FScopeLock Lock(&TasksCriticalSection);
-        if (FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
-        {
-            Task->Status = TEXT("running");
-            Task->Progress = 1;
-            Task->CooperativeStep = 0;
-            Task->CooperativeTotalSteps = TotalSteps;
-            Task->UpdatedAt = FDateTime::UtcNow();
-            ApplyTaskLifecycleForStatusLocked(*Task);
-            AppendTaskLogLocked(*Task, FString::Printf(TEXT("Cooperative task started with %d step(s)."), TotalSteps));
-        }
+        CleanupPythonJob();
+        UpdateTaskStatus(
+            TaskId,
+            TEXT("failed"),
+            MakeErrorResponse(
+                ExtractRequestId(RequestJson),
+                TEXT("invalid_cooperative_response"),
+                TEXT("Python returned invalid cooperative start metadata.")),
+            100,
+            TEXT("Cooperative command returned invalid start metadata."));
+        return;
     }
 
-    BroadcastTaskEvent(TaskId, TEXT("running"), FString(), 1, TEXT("Cooperative task started."));
+    FString LogLine = TEXT("Cooperative command started.");
+    (*Result)->TryGetStringField(TEXT("log"), LogLine);
+    UpdateTaskStatus(TaskId, TEXT("running"), FString(), 0, LogLine);
     EnsureCooperativeTicker();
+}
+
+void UUnrealEditorWebUIBridge::EnforceTaskResponseBudgetLocked(const FString& PreserveTaskId)
+{
+    int64 RetainedCharacters = 0;
+    for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+    {
+        RetainedCharacters += Pair.Value.ResponseJson.Len();
+    }
+
+    while (RetainedCharacters > MaxRetainedTaskResponseCharacters)
+    {
+        FString OldestResponseTaskId;
+        FDateTime OldestResponseTime = FDateTime::MaxValue();
+        for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
+        {
+            if (Pair.Key != PreserveTaskId
+                && IsFinishedTaskStatus(Pair.Value.Status)
+                && !Pair.Value.ResponseJson.IsEmpty()
+                && Pair.Value.UpdatedAt < OldestResponseTime)
+            {
+                OldestResponseTaskId = Pair.Key;
+                OldestResponseTime = Pair.Value.UpdatedAt;
+            }
+        }
+
+        if (OldestResponseTaskId.IsEmpty())
+        {
+            break;
+        }
+
+        FUnrealEditorWebUITask& EvictedTask = Tasks.FindChecked(OldestResponseTaskId);
+        RetainedCharacters -= EvictedTask.ResponseJson.Len();
+        EvictedTask.ResponseJson.Reset();
+        AppendTaskLogLocked(
+            EvictedTask,
+            TEXT("Full response evicted after the bridge reached its retained-response memory budget."));
+    }
 }
 
 bool UUnrealEditorWebUIBridge::TickCooperativeTasks(float DeltaTime)
 {
+    static_cast<void>(DeltaTime);
+
     TArray<FString> TaskIds;
     {
         FScopeLock Lock(&TasksCriticalSection);
@@ -942,63 +1288,192 @@ bool UUnrealEditorWebUIBridge::TickCooperativeTasks(float DeltaTime)
 
     for (const FString& TaskId : TaskIds)
     {
-        FString TerminalStatus;
-        FString TerminalResponseJson;
-        FString LogLine;
-        int32 Progress = INDEX_NONE;
+        FString RequestId;
+        bool bCancellationRequested = false;
+        bool bTimedOut = false;
+        double TimeoutSeconds = 0.0;
 
         {
             FScopeLock Lock(&TasksCriticalSection);
-            FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+            const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
             if (Task == nullptr || Task->Status != TEXT("running"))
             {
                 continue;
             }
 
-            if (Task->bCancellationRequested)
-            {
-                TerminalStatus = TEXT("cancelled");
-                Progress = 100;
-                LogLine = TEXT("Cooperative task cancelled.");
-            }
-            else
-            {
-                const double TimeoutSeconds = ParseTimeoutSeconds(Task->TimeoutPolicy);
-                if (TimeoutSeconds > 0.0 && (FDateTime::UtcNow() - Task->CreatedAt).GetTotalSeconds() >= TimeoutSeconds)
-                {
-                    TerminalStatus = TEXT("timed_out");
-                    Progress = 100;
-                    LogLine = FString::Printf(TEXT("Task timed out after %.2f second(s)."), TimeoutSeconds);
-                }
-                else
-                {
-                    Task->CooperativeStep = FMath::Min(Task->CooperativeStep + 1, FMath::Max(1, Task->CooperativeTotalSteps));
-                    const int32 TotalSteps = FMath::Max(1, Task->CooperativeTotalSteps);
-                    Progress = FMath::Clamp(FMath::RoundToInt((static_cast<float>(Task->CooperativeStep) / static_cast<float>(TotalSteps)) * 100.0f), 1, 100);
-                    LogLine = FString::Printf(TEXT("Cooperative step %d/%d."), Task->CooperativeStep, TotalSteps);
-
-                    if (Task->CooperativeStep >= TotalSteps)
-                    {
-                        TerminalStatus = TEXT("completed");
-
-                        const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
-                        Result->SetStringField(TEXT("mode"), TEXT("cooperative"));
-                        Result->SetNumberField(TEXT("steps"), TotalSteps);
-                        Result->SetStringField(TEXT("message"), TEXT("Cooperative demo task completed without blocking the editor."));
-                        TerminalResponseJson = MakeSuccessResponse(ExtractRequestId(Task->RequestJson), Result);
-                    }
-                }
-            }
+            RequestId = ExtractRequestId(Task->RequestJson);
+            bCancellationRequested = Task->bCancellationRequested;
+            TimeoutSeconds = ParseTimeoutSeconds(Task->TimeoutPolicy);
+            bTimedOut = TimeoutSeconds > 0.0
+                && (FDateTime::UtcNow() - Task->CreatedAt).GetTotalSeconds() >= TimeoutSeconds;
         }
 
-        if (!TerminalStatus.IsEmpty())
+        const bool bCleanupRequested = bCancellationRequested || bTimedOut;
+        const auto CleanupPythonJob = [this, &RequestId, &TaskId]()
         {
-            UpdateTaskStatus(TaskId, TerminalStatus, TerminalResponseJson, 100, LogLine);
-        }
-        else
+            ExecuteRegistryFunction(
+                MakeCooperativeControlJson(RequestId, TaskId, true),
+                TEXT("step_cooperative_command"));
+        };
+        const FString ControlJson = MakeCooperativeControlJson(
+            RequestId,
+            TaskId,
+            bCleanupRequested);
+        const FString StepResponseJson = ExecuteRegistryFunction(
+            ControlJson,
+            TEXT("step_cooperative_command"));
+
+        if (bTimedOut)
         {
-            UpdateTaskStatus(TaskId, TEXT("running"), FString(), Progress, LogLine);
+            const FString LogLine = FString::Printf(
+                TEXT("Task timed out after %.2f second(s); Python state was cleaned up."),
+                TimeoutSeconds);
+            UpdateTaskStatus(
+                TaskId,
+                TEXT("timed_out"),
+                MakeErrorResponse(RequestId, TEXT("task_timed_out"), LogLine),
+                100,
+                LogLine);
+            continue;
         }
+
+        if (bCancellationRequested)
+        {
+            UpdateTaskStatus(
+                TaskId,
+                TEXT("cancelled"),
+                FString(),
+                100,
+                TEXT("Cooperative task cancelled; Python state was cleaned up."));
+            continue;
+        }
+
+        TSharedPtr<FJsonObject> StepResponse;
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(StepResponseJson);
+        bool bOk = false;
+        if (!FJsonSerializer::Deserialize(Reader, StepResponse)
+            || !StepResponse.IsValid()
+            || !StepResponse->TryGetBoolField(TEXT("ok"), bOk)
+            || !bOk)
+        {
+            CleanupPythonJob();
+            const FString FailureResponse = StepResponse.IsValid()
+                ? StepResponseJson
+                : MakeErrorResponse(
+                    RequestId,
+                    TEXT("invalid_cooperative_response"),
+                    TEXT("Python did not return a valid cooperative step response."));
+            UpdateTaskStatus(
+                TaskId,
+                TEXT("failed"),
+                FailureResponse,
+                100,
+                TEXT("Cooperative command failed while stepping."));
+            continue;
+        }
+
+        const TSharedPtr<FJsonObject>* Result = nullptr;
+        FString Status;
+        if (!StepResponse->TryGetObjectField(TEXT("result"), Result)
+            || Result == nullptr
+            || !Result->IsValid()
+            || !(*Result)->TryGetStringField(TEXT("status"), Status))
+        {
+            CleanupPythonJob();
+            UpdateTaskStatus(
+                TaskId,
+                TEXT("failed"),
+                MakeErrorResponse(
+                    RequestId,
+                    TEXT("invalid_cooperative_response"),
+                    TEXT("Python returned invalid cooperative step metadata.")),
+                100,
+                TEXT("Cooperative command returned invalid step metadata."));
+            continue;
+        }
+
+        FString LogLine;
+        (*Result)->TryGetStringField(TEXT("log"), LogLine);
+        if (Status == TEXT("running"))
+        {
+            double ProgressValue = 0.0;
+            if (!(*Result)->TryGetNumberField(TEXT("progress"), ProgressValue)
+                || !FMath::IsFinite(ProgressValue)
+                || ProgressValue < 0.0
+                || ProgressValue >= 100.0)
+            {
+                CleanupPythonJob();
+                UpdateTaskStatus(
+                    TaskId,
+                    TEXT("failed"),
+                    MakeErrorResponse(
+                        RequestId,
+                        TEXT("invalid_cooperative_response"),
+                        TEXT("Python returned invalid cooperative progress.")),
+                    100,
+                    TEXT("Cooperative command returned invalid progress."));
+                continue;
+            }
+
+            UpdateTaskStatus(
+                TaskId,
+                TEXT("running"),
+                FString(),
+                FMath::RoundToInt(ProgressValue),
+                LogLine);
+            continue;
+        }
+
+        if (Status == TEXT("completed"))
+        {
+            const TSharedPtr<FJsonObject>* CommandResponse = nullptr;
+            bool bCommandOk = false;
+            if (!(*Result)->TryGetObjectField(TEXT("commandResponse"), CommandResponse)
+                || CommandResponse == nullptr
+                || !CommandResponse->IsValid()
+                || !(*CommandResponse)->TryGetBoolField(TEXT("ok"), bCommandOk))
+            {
+                CleanupPythonJob();
+                UpdateTaskStatus(
+                    TaskId,
+                    TEXT("failed"),
+                    MakeErrorResponse(
+                        RequestId,
+                        TEXT("invalid_cooperative_response"),
+                        TEXT("Completed cooperative command omitted its command response.")),
+                    100,
+                    TEXT("Cooperative command returned an invalid completion response."));
+                continue;
+            }
+
+            const FString CommandResponseJson = WriteJsonObject((*CommandResponse).ToSharedRef());
+            UpdateTaskStatus(
+                TaskId,
+                bCommandOk ? TEXT("completed") : TEXT("failed"),
+                CommandResponseJson,
+                100,
+                LogLine.IsEmpty()
+                    ? (bCommandOk ? TEXT("Task completed.") : TEXT("Task failed."))
+                    : LogLine);
+            continue;
+        }
+
+        if (Status == TEXT("cancelled"))
+        {
+            UpdateTaskStatus(TaskId, TEXT("cancelled"), FString(), 100, LogLine);
+            continue;
+        }
+
+        CleanupPythonJob();
+        UpdateTaskStatus(
+            TaskId,
+            TEXT("failed"),
+            MakeErrorResponse(
+                RequestId,
+                TEXT("invalid_cooperative_response"),
+                FString::Printf(TEXT("Unsupported cooperative status: %s"), *Status)),
+            100,
+            TEXT("Cooperative command returned an unsupported status."));
     }
 
     StopCooperativeTickerIfIdle();
@@ -1039,7 +1514,10 @@ void UUnrealEditorWebUIBridge::StopCooperativeTickerIfIdle()
     }
 }
 
-void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString RequestJson)
+void UUnrealEditorWebUIBridge::RunTask(
+    const FString TaskId,
+    const FString RequestJson,
+    const FString PermissionPolicyJson)
 {
     {
         FScopeLock Lock(&TasksCriticalSection);
@@ -1052,7 +1530,12 @@ void UUnrealEditorWebUIBridge::RunTask(const FString TaskId, const FString Reque
 
     UpdateTaskStatus(TaskId, TEXT("running"), FString(), 10, TEXT("Task running on the editor game thread."));
 
-    const FString ResponseJson = ExecuteCommand(RequestJson);
+    // StartCommand already performed the single-use native authorization. Execute
+    // the immutable queued request with only its exact command/permission policy.
+    const FString ResponseJson = ExecuteRegistryFunction(
+        RequestJson,
+        TEXT("execute_command"),
+        PermissionPolicyJson);
     const TSharedRef<FJsonObject> Response = ParseJsonObjectOrEmpty(ResponseJson);
 
     bool bOk = false;
@@ -1073,32 +1556,53 @@ void UUnrealEditorWebUIBridge::UpdateTaskStatus(
     int32 Progress,
     const FString& LogLine)
 {
+    FString EffectiveStatus = Status;
+    FString EffectiveResponseJson = ResponseJson;
+    int32 EffectiveProgress = Progress;
+    FString EffectiveLogLine = LogLine;
     {
         FScopeLock Lock(&TasksCriticalSection);
         if (FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
         {
-            Task->Status = Status;
-            Task->UpdatedAt = FDateTime::UtcNow();
-            if (Progress != INDEX_NONE)
+            if (!EffectiveResponseJson.IsEmpty()
+                && Utf8ByteLength(EffectiveResponseJson) > MaxTaskResponseJsonUtf8Bytes)
             {
-                Task->Progress = FMath::Clamp(Progress, 0, 100);
+                EffectiveStatus = TEXT("failed");
+                EffectiveProgress = 100;
+                EffectiveLogLine = TEXT("Task response exceeded the bounded task-detail limit.");
+                EffectiveResponseJson = MakeErrorResponse(
+                    ExtractRequestId(Task->RequestJson),
+                    TEXT("response_too_large"),
+                    FString::Printf(
+                        TEXT("Task response exceeds the maximum size of %d UTF-8 bytes."),
+                        MaxTaskResponseJsonUtf8Bytes));
             }
-            if (!ResponseJson.IsEmpty())
+
+            Task->Status = EffectiveStatus;
+            Task->UpdatedAt = FDateTime::UtcNow();
+            if (EffectiveProgress != INDEX_NONE)
             {
-                Task->ResponseJson = ResponseJson;
+                Task->Progress = FMath::Clamp(EffectiveProgress, 0, 100);
+            }
+            if (!EffectiveResponseJson.IsEmpty())
+            {
+                Task->ResponseJson = EffectiveResponseJson;
             }
             ApplyTaskLifecycleForStatusLocked(*Task);
-            AppendTaskLogLocked(*Task, LogLine);
+            AppendTaskLogLocked(*Task, EffectiveLogLine);
+            if (!EffectiveResponseJson.IsEmpty())
+            {
+                EnforceTaskResponseBudgetLocked(TaskId);
+            }
         }
     }
 
-    BroadcastTaskEvent(TaskId, Status, ResponseJson, Progress, LogLine);
+    BroadcastTaskEvent(TaskId, EffectiveStatus, EffectiveProgress, EffectiveLogLine);
 }
 
 void UUnrealEditorWebUIBridge::BroadcastTaskEvent(
     const FString& TaskId,
     const FString& Status,
-    const FString& ResponseJson,
     int32 Progress,
     const FString& LogLine)
 {
@@ -1114,14 +1618,16 @@ void UUnrealEditorWebUIBridge::BroadcastTaskEvent(
     Root->SetStringField(TEXT("updatedAt"), FDateTime::UtcNow().ToIso8601());
     {
         FScopeLock Lock(&TasksCriticalSection);
-        if (const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId))
+        const FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+        if (Task == nullptr || !IsTaskVisibleInCurrentSessionLocked(*Task))
         {
-            Root->SetBoolField(TEXT("cancellable"), Task->bCancellable);
-            Root->SetStringField(TEXT("cancellationMode"), Task->CancellationMode);
-            Root->SetStringField(TEXT("executionThread"), Task->ExecutionThread);
-            Root->SetStringField(TEXT("timeoutPolicy"), Task->TimeoutPolicy);
-            Root->SetStringField(TEXT("message"), Task->StatusMessage);
+            return;
         }
+        Root->SetBoolField(TEXT("cancellable"), Task->bCancellable);
+        Root->SetStringField(TEXT("cancellationMode"), Task->CancellationMode);
+        Root->SetStringField(TEXT("executionThread"), Task->ExecutionThread);
+        Root->SetStringField(TEXT("timeoutPolicy"), Task->TimeoutPolicy);
+        Root->SetStringField(TEXT("message"), Task->StatusMessage);
     }
     if (Progress != INDEX_NONE)
     {
@@ -1129,12 +1635,21 @@ void UUnrealEditorWebUIBridge::BroadcastTaskEvent(
     }
     if (!LogLine.IsEmpty())
     {
-        Root->SetStringField(TEXT("log"), LogLine);
+        Root->SetStringField(
+            TEXT("log"),
+            LogLine.Len() > MaxTaskLogLineCharacters
+                ? LogLine.Left(MaxTaskLogLineCharacters) + TEXT("...")
+                : LogLine);
     }
-    if (!ResponseJson.IsEmpty())
+    const FString EventJson = WriteJsonObject(Root);
+    if (Utf8ByteLength(EventJson) > MaxTaskEventJsonUtf8Bytes)
     {
-        Root->SetStringField(TEXT("responseJson"), ResponseJson);
+        UE_LOG(
+            LogUnrealEditorWebUIBridge,
+            Warning,
+            TEXT("Discarded oversized task event for %s."),
+            *TaskId);
+        return;
     }
-
-    EventDispatcher(WriteJsonObject(Root));
+    EventDispatcher(EventJson);
 }

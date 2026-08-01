@@ -3,7 +3,8 @@ export function resultToJson(result: unknown) {
 }
 
 function escapeCsvCell(value: unknown) {
-  const text = value === undefined || value === null ? '' : String(value)
+  const rawText = value === undefined || value === null ? '' : String(value)
+  const text = typeof value === 'string' && /^(?:[\t\r]|\s*[=+\-@])/.test(rawText) ? `'${rawText}` : rawText
   return `"${text.replace(/"/g, '""')}"`
 }
 

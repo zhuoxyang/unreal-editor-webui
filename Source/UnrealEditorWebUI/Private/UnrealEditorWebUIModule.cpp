@@ -48,6 +48,14 @@ public:
         }
 
         FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(UnrealEditorWebUI::TabName);
+        if (BrowserWidget.IsValid() && Bridge.Get() != nullptr)
+        {
+            BrowserWidget->UnbindUObject(TEXT("editorwebui"), Bridge.Get(), false);
+        }
+        if (Bridge.Get() != nullptr)
+        {
+            Bridge->BeginDocumentSession(TEXT("module-shutdown"));
+        }
         BrowserWidget.Reset();
         Bridge.Reset();
     }
@@ -103,7 +111,7 @@ private:
     {
         const FString NewUrl = NewUrlText.ToString();
         FString Error;
-        if (UnrealEditorWebUISettings::IsBridgeURLAllowed(NewUrl, Error))
+        if (UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(NewUrl, TrustedStartupURL, Error))
         {
             if (!LastAllowedURL.IsEmpty() && !NewUrl.Equals(LastAllowedURL, ESearchCase::CaseSensitive) && Bridge.Get() != nullptr)
             {
@@ -127,7 +135,7 @@ private:
     bool HandleBeforeNavigation(const FString& URL, const FWebNavigationRequest&)
     {
         FString Error;
-        if (UnrealEditorWebUISettings::IsBridgeURLAllowed(URL, Error))
+        if (UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(URL, TrustedStartupURL, Error))
         {
             if (!LastAllowedURL.IsEmpty() && !URL.Equals(LastAllowedURL, ESearchCase::CaseSensitive) && Bridge.Get() != nullptr)
             {
@@ -140,10 +148,35 @@ private:
         return true;
     }
 
+    void HandleBrowserLoadStarted()
+    {
+        if (Bridge.Get() != nullptr && BrowserWidget.IsValid())
+        {
+            Bridge->BeginDocumentSession(
+                LastAllowedURL.IsEmpty() ? TrustedStartupURL : LastAllowedURL);
+            // Temporary bindings are destroyed with their document context.
+            // Register from OnLoadStarted so an old page cannot call into the
+            // bridge after a new document session has begun.
+            BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), false);
+        }
+    }
+
     TSharedRef<SDockTab> SpawnWebUITab(const FSpawnTabArgs& SpawnTabArgs)
     {
+        static_cast<void>(SpawnTabArgs);
+        if (BrowserWidget.IsValid() && Bridge.Get() != nullptr)
+        {
+            BrowserWidget->UnbindUObject(TEXT("editorwebui"), Bridge.Get(), false);
+        }
+        if (Bridge.Get() != nullptr)
+        {
+            Bridge->BeginDocumentSession(TEXT("tab-replaced"));
+        }
+        BrowserWidget.Reset();
         Bridge = TStrongObjectPtr<UUnrealEditorWebUIBridge>(NewObject<UUnrealEditorWebUIBridge>());
         LastAllowedURL = GetInitialURL();
+        TrustedStartupURL = LastAllowedURL;
+        Bridge->BeginDocumentSession(TrustedStartupURL);
 
         BrowserWidget =
             SNew(SWebBrowser)
@@ -151,9 +184,9 @@ private:
             .ShowControls(false)
             .SupportsTransparency(true)
             .OnBeforeNavigation(SWebBrowser::FOnBeforeBrowse::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBeforeNavigation))
+            .OnLoadStarted(FSimpleDelegate::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserLoadStarted))
             .OnUrlChanged(FOnTextChanged::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserUrlChanged));
 
-        BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), true);
         Bridge->SetEventDispatcher([this](const FString& EventJson)
         {
             DispatchWebUIEvent(EventJson);
@@ -175,6 +208,7 @@ private:
     TSharedPtr<SWebBrowser> BrowserWidget;
     TStrongObjectPtr<UUnrealEditorWebUIBridge> Bridge;
     FString LastAllowedURL;
+    FString TrustedStartupURL;
 };
 
 IMPLEMENT_MODULE(FUnrealEditorWebUIModule, UnrealEditorWebUI)

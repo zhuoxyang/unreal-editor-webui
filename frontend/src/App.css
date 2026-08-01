@@ -551,6 +551,58 @@ button:disabled {
   margin: 12px 0;
 }
 
+.command-invocation-message,
+.stale-result-message {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(70, 130, 180, 0.12);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.command-invocation-message.error,
+.stale-result-message {
+  background: rgba(190, 70, 70, 0.14);
+  color: #f2a7a7;
+}
+
+.inline-error {
+  padding: 10px;
+  border-radius: 6px;
+  background: rgba(190, 70, 70, 0.14);
+  color: #f2a7a7;
+  overflow-wrap: anywhere;
+}
+
+.inline-error p {
+  margin: 0 0 8px;
+}
+
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text);
+}
+
+.settings-message.error {
+  color: #f2a7a7;
+}
+
+.local-data-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+}
+
 .command-actions button {
   padding: 8px 12px;
 }

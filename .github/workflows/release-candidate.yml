@@ -1,0 +1,247 @@
+name: Release Candidate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Candidate version tag (must match UnrealEditorWebUI.uplugin VersionName)
+        required: true
+        type: string
+      ue_workflow_run_id:
+        description: Successful trusted UE CI run id for the selected commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    name: Assemble verified UE 5.5 release candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Resolve and validate release context
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_RELEASE_TAG: ${{ inputs.release_tag }}
+          MANUAL_UE_RUN_ID: ${{ inputs.ue_workflow_run_id }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          release_commit="$(git rev-parse HEAD)"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            release_tag="$REF_NAME"
+            requested_run_id=""
+            tag_commit="$(git rev-list -n 1 "refs/tags/$release_tag")"
+            if [[ "$tag_commit" != "$release_commit" ]]; then
+              echo "Tag $release_tag resolves to $tag_commit, not checked-out commit $release_commit." >&2
+              exit 1
+            fi
+          else
+            release_tag="$MANUAL_RELEASE_TAG"
+            requested_run_id="$MANUAL_UE_RUN_ID"
+          fi
+
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag '$release_tag' is not a supported semantic version tag." >&2
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && ! "$requested_run_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Manual release candidates require a numeric trusted UE workflow run id." >&2
+            exit 1
+          fi
+
+          descriptor_version="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync('UnrealEditorWebUI.uplugin','utf8')); process.stdout.write(value.VersionName ?? '')")"
+          if [[ "v$descriptor_version" != "$release_tag" ]]; then
+            echo "Descriptor VersionName '$descriptor_version' does not match release tag '$release_tag'." >&2
+            exit 1
+          fi
+
+          echo "release_commit=$release_commit" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "requested_run_id=$requested_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve, download, and verify exact trusted UE artifact
+        id: ue
+        shell: bash
+        env:
+          ARTIFACT_ARCHIVE: trusted-package.zip
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
+          REQUESTED_RUN_ID: ${{ steps.release.outputs.requested_run_id }}
+        run: |
+          set -euo pipefail
+          arguments=(
+            --repository "$GITHUB_REPOSITORY"
+            --commit "$RELEASE_COMMIT"
+            --download-to "$ARTIFACT_ARCHIVE"
+          )
+          if [[ -n "$REQUESTED_RUN_ID" ]]; then
+            arguments+=(--run-id "$REQUESTED_RUN_ID")
+          fi
+          node scripts/resolve-ue-release-artifact.mjs "${arguments[@]}"
+
+      - name: Extract verified trusted UE package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir trusted-package
+          unzip -q trusted-package.zip -d trusted-package
+
+      - name: Validate packaged plugin structure
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          test -f trusted-package/UnrealEditorWebUI.uplugin
+          test -f trusted-package/Web/dist/index.html
+          if find trusted-package -type l -print -quit | grep -q .; then
+            echo "The trusted package contains a symbolic link; refusing to assemble a release candidate." >&2
+            exit 1
+          fi
+
+          package_version="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync('trusted-package/UnrealEditorWebUI.uplugin','utf8')); process.stdout.write(value.VersionName ?? '')")"
+          if [[ "v$package_version" != "$RELEASE_TAG" ]]; then
+            echo "Packaged descriptor version '$package_version' does not match '$RELEASE_TAG'." >&2
+            exit 1
+          fi
+
+      - name: Generate SBOM and locked dependency inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/metadata
+          npm sbom \
+            --prefix frontend \
+            --package-lock-only \
+            --sbom-format cyclonedx \
+            --sbom-type application \
+            > release/metadata/npm-cyclonedx.json
+          node scripts/export-npm-dependencies.mjs \
+            frontend/package-lock.json \
+            release/metadata/npm-dependencies.json
+
+      - name: Write fail-closed provenance
+        shell: python
+        env:
+          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          UE_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_artifact_digest }}
+          UE_ARTIFACT_ID: ${{ steps.ue.outputs.ue_artifact_id }}
+          UE_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_artifact_name }}
+          UE_JOB_ID: ${{ steps.ue.outputs.ue_job_id }}
+          UE_RUN_ID: ${{ steps.ue.outputs.ue_run_id }}
+          UE_RUN_URL: ${{ steps.ue.outputs.ue_run_url }}
+        run: |
+          import datetime
+          import json
+          import os
+          import pathlib
+
+          metadata = {
+              "schemaVersion": 1,
+              "releaseKind": "candidate",
+              "publishedAsGitHubRelease": False,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "releaseTag": os.environ["RELEASE_TAG"],
+              "releaseCommit": os.environ["RELEASE_COMMIT"],
+              "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "sourceArchiveCreated": False,
+              "ueValidation": {
+                  "workflowPath": ".github/workflows/ue-ci.yml",
+                  "requiredJob": "UE 5.5 BuildPlugin and automation",
+                  "requiredRunnerLabels": ["self-hosted", "windows", "ue-5.5"],
+                  "runId": int(os.environ["UE_RUN_ID"]),
+                  "runUrl": os.environ["UE_RUN_URL"],
+                  "jobId": int(os.environ["UE_JOB_ID"]),
+                  "artifactId": int(os.environ["UE_ARTIFACT_ID"]),
+                  "artifactDigest": os.environ["UE_ARTIFACT_DIGEST"],
+                  "artifactName": os.environ["UE_ARTIFACT_NAME"],
+                  "artifactCommitMatched": True,
+              },
+              "validationClaim": (
+                  "Trusted UE 5.5 BuildPlugin and repository automation only. "
+                  "This release-candidate workflow does not independently claim full CEF browser binding coverage."
+              ),
+          }
+
+          output = pathlib.Path("release/metadata/provenance.json")
+          output.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+
+      - name: Create candidate archive and SHA-256
+        id: archive
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          archive_name="UnrealEditorWebUI-${RELEASE_TAG}-UE55.zip"
+          mkdir -p release/staging/UnrealEditorWebUI
+          cp -a trusted-package/. release/staging/UnrealEditorWebUI/
+          (
+            cd release/staging
+            zip -q -r -X "../$archive_name" UnrealEditorWebUI
+          )
+          (
+            cd release
+            sha256sum "$archive_name" > "$archive_name.sha256"
+          )
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release candidate bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-candidate-${{ steps.release.outputs.release_tag }}
+          path: |
+            release/${{ steps.archive.outputs.archive_name }}
+            release/${{ steps.archive.outputs.archive_name }}.sha256
+            release/metadata/*.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Summarize candidate status
+        shell: bash
+        env:
+          ARCHIVE_NAME: ${{ steps.archive.outputs.archive_name }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          UE_RUN_URL: ${{ steps.ue.outputs.ue_run_url }}
+        run: |
+          {
+            echo "## Release candidate assembled"
+            echo
+            echo "- Tag: \`$RELEASE_TAG\`"
+            echo "- Commit: \`$RELEASE_COMMIT\`"
+            echo "- Archive: \`$ARCHIVE_NAME\`"
+            echo "- Trusted UE validation: $UE_RUN_URL"
+            echo
+            echo "This workflow created a short-lived candidate artifact only. It did not create a source archive or publish a GitHub Release. Full CEF browser-to-UObject coverage remains a separately reported validation boundary."
+          } >> "$GITHUB_STEP_SUMMARY"

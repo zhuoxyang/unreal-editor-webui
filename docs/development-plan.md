@@ -2,7 +2,7 @@
 
 ## Current Baseline
 
-The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
+The repository now contains a minimal Unreal Engine 5.5 editor plugin starter:
 
 - Editor-only plugin descriptor with `WebBrowserWidget` and `PythonScriptPlugin` enabled.
 - C++ module that registers `Window > Unreal Editor WebUI`.
@@ -30,7 +30,7 @@ The repository now contains a minimal Unreal Engine 5.5+ editor plugin starter:
 
 ## Near-Term Goals
 
-1. Compile and smoke test inside a real UE 5.5+ project.
+1. Compile and smoke test inside a real UE 5.5 project.
 2. Add more command-specific result renderers for validation reports.
 3. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
 4. Expand the asset-tool demo with validation and batch operations.

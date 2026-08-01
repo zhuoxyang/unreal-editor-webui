@@ -57,7 +57,6 @@ Runner prerequisites:
 - Node.js/npm for frontend packaging.
 - No user-global Unreal Python startup script that logs errors during commandlets.
 
-Once the runner is online, make the UE workflow a required pull-request check for changes under
-`Source/`, `Python/`, `Web/`, `frontend/`, `scripts/`, and the plugin descriptor.
+Public pull requests use only the required GitHub-hosted checks. The persistent licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it.
 
-See `docs/ue-ci-runner.md` for the runner setup script, branch protection checklist, and artifact policy.
+See `docs/ue-ci-runner.md` for the pinned runner setup, trust boundary, branch protection checklist, and artifact policy. See `docs/release-process.md` for exact-commit release candidate verification.

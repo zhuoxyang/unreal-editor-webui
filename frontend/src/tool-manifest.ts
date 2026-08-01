@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import toolCatalog from './tool-catalog.json'
 import {
   isRecord,
+  namespacedStorageKey,
   storedEnvelope,
   type StorageLoadResult,
 } from './storage'
@@ -164,9 +165,16 @@ export function normalizeToolPreferences(value: unknown): ToolPreferenceState {
   }
 }
 
-export function loadToolPreferencesState(): StorageLoadResult<ToolPreferenceState> {
+export function toolPreferencesStorageKey(storageNamespace?: string) {
+  return namespacedStorageKey(TOOL_PREFERENCES_STORAGE_KEY, storageNamespace)
+}
+
+export function loadToolPreferencesState(storageNamespace?: string | null): StorageLoadResult<ToolPreferenceState> {
+  if (storageNamespace === null) {
+    return { value: cloneDefaultToolPreferences(), needsRewrite: false, source: 'missing' }
+  }
   try {
-    const stored = globalThis.localStorage?.getItem(TOOL_PREFERENCES_STORAGE_KEY)
+    const stored = globalThis.localStorage?.getItem(toolPreferencesStorageKey(storageNamespace))
     if (!stored) {
       return { value: cloneDefaultToolPreferences(), needsRewrite: false, source: 'missing' }
     }
@@ -208,16 +216,30 @@ export function loadToolPreferencesState(): StorageLoadResult<ToolPreferenceStat
   }
 }
 
-export function loadToolPreferences(): ToolPreferenceState {
-  return loadToolPreferencesState().value
+export function loadToolPreferences(storageNamespace?: string | null): ToolPreferenceState {
+  return loadToolPreferencesState(storageNamespace).value
 }
 
-export function saveToolPreferences(preferences: ToolPreferenceState) {
+export function saveToolPreferences(preferences: ToolPreferenceState, storageNamespace?: string | null) {
+  if (storageNamespace === null) {
+    return
+  }
   try {
     globalThis.localStorage?.setItem(
-      TOOL_PREFERENCES_STORAGE_KEY,
+      toolPreferencesStorageKey(storageNamespace),
       JSON.stringify(storedEnvelope(TOOL_PREFERENCES_SCHEMA_VERSION, normalizeToolPreferences(preferences))),
     )
+  } catch {
+    // Embedded browser localStorage can be unavailable depending on context.
+  }
+}
+
+export function clearToolPreferences(storageNamespace?: string | null) {
+  if (storageNamespace === null) {
+    return
+  }
+  try {
+    globalThis.localStorage?.removeItem(toolPreferencesStorageKey(storageNamespace))
   } catch {
     // Embedded browser localStorage can be unavailable depending on context.
   }

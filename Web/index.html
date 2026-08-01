@@ -84,7 +84,7 @@
     <main>
       <h1>Unreal Editor WebUI</h1>
       <p>
-        A minimal UE 5.5+ editor Web UI panel using SWebBrowser, a C++ UObject bridge,
+        A minimal UE 5.5 editor Web UI panel using SWebBrowser, a C++ UObject bridge,
         and the Python Editor Script Plugin.
       </p>
 
@@ -202,7 +202,7 @@
 
       document.querySelector("#async-demo").addEventListener("click", async () => {
         try {
-          const taskId = await startCommand("demo.run");
+          const taskId = await startCommand("demo.longRun", { steps: 10 });
           const task = await pollTask(taskId);
           await callBridge("removetask", taskId);
           log(`async demo final response -> ${task.responseJson || "no response"}`);

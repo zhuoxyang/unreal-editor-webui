@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { BridgeCaller } from '../bridge'
+import { formatBridgeError, type BridgeCaller } from '../bridge'
+import { decodeRemoveTaskResult, decodeTaskListResult, decodeTaskResult } from '../bridge-decoders'
 import { isTerminalTaskStatus, parseTaskStatus } from '../task-model'
 import type { TaskResult } from '../types/bridge'
 import type { TaskRecord, WebUIEvent } from '../types/task'
@@ -15,71 +16,8 @@ const ACTIVE_RECONCILIATION_INTERVAL_MS = 15_000
 const IDLE_RECONCILIATION_INTERVAL_MS = 60_000
 const MAX_RECONCILIATION_BACKOFF_MS = 60_000
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function isPageHidden() {
   return document.visibilityState === 'hidden'
-}
-
-function isOptionalString(value: unknown) {
-  return value === undefined || typeof value === 'string'
-}
-
-function isTaskResult(value: unknown): value is TaskResult {
-  if (!isRecord(value) || typeof value.taskId !== 'string' || !value.taskId) {
-    return false
-  }
-  if (typeof value.status !== 'string' || !parseTaskStatus(value.status)) {
-    return false
-  }
-  if (value.payload !== undefined && !isRecord(value.payload)) {
-    return false
-  }
-  if (
-    value.progress !== undefined &&
-    (typeof value.progress !== 'number' || !Number.isFinite(value.progress) || value.progress < 0 || value.progress > 100)
-  ) {
-    return false
-  }
-  if (value.cancellable !== undefined && typeof value.cancellable !== 'boolean') {
-    return false
-  }
-  if (value.logs !== undefined && (!Array.isArray(value.logs) || value.logs.some((line) => typeof line !== 'string'))) {
-    return false
-  }
-
-  return [
-    value.command,
-    value.cancellationMode,
-    value.executionThread,
-    value.timeoutPolicy,
-    value.message,
-    value.createdAt,
-    value.updatedAt,
-    value.responseJson,
-  ].every(isOptionalString)
-}
-
-function parseTaskSnapshot(result: unknown): TaskResult[] {
-  if (!isRecord(result) || !Array.isArray(result.tasks)) {
-    throw new Error('Task reconciliation response is missing a tasks array.')
-  }
-
-  const taskIds = new Set<string>()
-  const tasks: TaskResult[] = []
-  for (const value of result.tasks) {
-    if (!isTaskResult(value)) {
-      throw new Error('Task reconciliation response contains an invalid task record.')
-    }
-    if (taskIds.has(value.taskId)) {
-      throw new Error(`Task reconciliation response contains duplicate task id: ${value.taskId}`)
-    }
-    taskIds.add(value.taskId)
-    tasks.push(value)
-  }
-  return tasks
 }
 
 function canAdvanceTaskStatus(current: TaskRecord['status'], incoming: TaskResult['status']) {
@@ -182,6 +120,8 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
   const revisionRef = useRef(0)
   const taskRevisionsRef = useRef(new Map<string, number>())
   const removedTaskIdsRef = useRef(new Set<string>())
+  const detailedTaskIdsRef = useRef(new Set<string>())
+  const detailRequestsRef = useRef(new Set<string>())
   const logRef = useRef(log)
 
   useEffect(() => {
@@ -352,7 +292,7 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
           return
         }
 
-        const tasks = parseTaskSnapshot(result)
+        const tasks = decodeTaskListResult(result)
         reconcileTaskSnapshot(tasks, snapshotRevision)
         consecutiveFailures = 0
         const hasActiveTasks =
@@ -365,7 +305,7 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
         }
 
         consecutiveFailures = Math.min(consecutiveFailures + 1, 6)
-        logRef.current(`Unable to reconcile tasks: ${error instanceof Error ? error.message : String(error)}`)
+        logRef.current(`Unable to reconcile tasks: ${formatBridgeError(error)}`)
         schedule(Math.min(1000 * 2 ** consecutiveFailures, MAX_RECONCILIATION_BACKOFF_MS))
       } finally {
         inFlight = false
@@ -397,7 +337,7 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
   }, [bridgeReady, callBridgeQuiet, reconcileTaskSnapshot])
 
   const recordTaskError = useCallback((taskId: string, error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = formatBridgeError(error)
     markTaskChanged(taskId)
     setTaskRecords((records) => {
       const existing = records[taskId]
@@ -415,15 +355,41 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
     })
   }, [markTaskChanged])
 
+  const loadTaskDetails = useCallback(async (taskId: string) => {
+    if (detailedTaskIdsRef.current.has(taskId)) {
+      return true
+    }
+    if (detailRequestsRef.current.has(taskId)) {
+      return false
+    }
+
+    detailRequestsRef.current.add(taskId)
+    try {
+      const task = decodeTaskResult('gettask', await callBridgeQuiet<unknown>('gettask', taskId), taskId)
+      mergeTaskResult(task, { lastError: undefined })
+      if (isTerminalTaskStatus(task.status)) {
+        detailedTaskIdsRef.current.add(taskId)
+        return true
+      }
+      return false
+    } catch (error) {
+      recordTaskError(taskId, error)
+      logRef.current(`Unable to load task details: ${formatBridgeError(error)}`)
+      return false
+    } finally {
+      detailRequestsRef.current.delete(taskId)
+    }
+  }, [callBridgeQuiet, mergeTaskResult, recordTaskError])
+
   async function cancelTask(taskId: string) {
     try {
-      const task = await callBridge<TaskResult>('canceltask', taskId)
+      const task = decodeTaskResult('canceltask', await callBridge<unknown>('canceltask', taskId), taskId)
       mergeTaskResult(task)
     } catch (error) {
       try {
-        const latest = await callBridgeQuiet<TaskResult>('gettask', taskId)
+        const latest = decodeTaskResult('gettask', await callBridgeQuiet<unknown>('gettask', taskId), taskId)
         mergeTaskResult(latest, {
-          lastError: error instanceof Error ? error.message : String(error),
+          lastError: formatBridgeError(error),
         })
         return
       } catch {
@@ -436,7 +402,7 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
           status: taskRecords[taskId]?.status || 'failed',
         },
         {
-          lastError: error instanceof Error ? error.message : String(error),
+          lastError: formatBridgeError(error),
         },
       )
     }
@@ -444,18 +410,20 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
 
   async function removeTask(taskId: string) {
     try {
-      const result = await callBridge<{ removed: boolean }>('removetask', taskId)
-      if (!isRecord(result) || result.removed !== true) {
+      const result = decodeRemoveTaskResult(await callBridge<unknown>('removetask', taskId), taskId)
+      if (result.removed !== true) {
         throw new Error(`Bridge did not confirm removal for task: ${taskId}`)
       }
     } catch (error) {
-      log(error instanceof Error ? error.message : String(error))
+      log(formatBridgeError(error))
       recordTaskError(taskId, error)
       return
     }
 
     markTaskChanged(taskId)
     removedTaskIdsRef.current.add(taskId)
+    detailedTaskIdsRef.current.delete(taskId)
+    detailRequestsRef.current.delete(taskId)
     setTaskRecords((records) => {
       const next = { ...records }
       delete next[taskId]
@@ -466,6 +434,7 @@ export function useTasks({ bridgeReady, callBridge, callBridgeQuiet, log }: UseT
   return {
     cancelTask,
     eventLines,
+    loadTaskDetails,
     mergeTaskResult,
     removeTask,
     taskList,

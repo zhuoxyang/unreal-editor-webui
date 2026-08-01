@@ -21,3 +21,8 @@ export function storedEnvelope<T>(schemaVersion: number, data: T): StoredEnvelop
     data,
   }
 }
+
+export function namespacedStorageKey(baseKey: string, storageNamespace?: string) {
+  const normalized = storageNamespace?.trim()
+  return normalized ? `${baseKey}.project.${encodeURIComponent(normalized)}` : baseKey
+}
