@@ -122,6 +122,15 @@ jobs:
       - name: Check Unix packaging script syntax
         run: bash -n scripts/package-plugin.sh
 
+      - name: Enforce release file byte policy
+        shell: bash
+        run: |
+          license_eol="$(git check-attr eol -- LICENSE)"
+          if [[ "$license_eol" != "LICENSE: eol: lf" ]]; then
+            echo "LICENSE must be pinned to LF in .gitattributes; received: $license_eol" >&2
+            exit 1
+          fi
+
       - name: Check PowerShell script syntax
         shell: pwsh
         run: |
