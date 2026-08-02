@@ -221,6 +221,7 @@ jobs:
       - name: Check release helper syntax
         run: |
           node --check scripts/resolve-ue-release-artifact.mjs
+          node --check scripts/stage-plugin-from-commit.mjs
           node --check scripts/export-npm-dependencies.mjs
           node --check scripts/validate-github-action-references.mjs
           node --check scripts/validate-npm-lock-registry.mjs

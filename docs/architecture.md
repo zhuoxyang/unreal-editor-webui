@@ -78,7 +78,7 @@ Local and CI validation entry points:
 - `python -m unittest tests.test_registry` covers the registry and Python entry dispatch.
 - `npm run lint`, `npm test`, and `npm run build` cover the React frontend.
 - Root `npm ci`, `node --test tests/validate-github-action-references.test.mjs`, and `node scripts/validate-github-action-references.mjs` validate every executable workflow action reference through a YAML 1.2 AST and require immutable external commit SHAs.
-- `scripts/package-plugin.ps1` and `scripts/package-plugin.sh` build the frontend and run UE `BuildPlugin`.
+- `scripts/package-plugin.ps1` and `scripts/package-plugin.sh` use the shared exact-commit staging helper to rebuild the frontend, emit a pre-UBT source manifest, and run UE `BuildPlugin` without consuming dirty or untracked working-tree files.
 - `.github/workflows/ci.yml` runs hosted frontend/Python validation.
 - `.github/workflows/ue-ci.yml` runs UE BuildPlugin and automation on a licensed Windows self-hosted runner.
 - `.github/workflows/release-candidate.yml` consumes only an exact-commit successful UE artifact and emits a short-lived candidate archive, SHA-256, SBOM, dependency inventory, and provenance.

@@ -118,6 +118,7 @@ jobs:
       - name: Validate packaged plugin structure
         shell: bash
         env:
+          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
         run: |
           set -euo pipefail
@@ -125,6 +126,12 @@ jobs:
           test -f trusted-package/UnrealEditorWebUI.uplugin
           test -f trusted-package/Web/dist/index.html
           test -f trusted-package/LICENSE
+          test -f trusted-package/SourceManifest.json
+          manifest_commit="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync('trusted-package/SourceManifest.json','utf8')); if (value.schemaVersion !== 1 || !Array.isArray(value.files) || !value.files.some((file) => file.path === 'Web/dist/index.html' && file.source === 'generated')) process.exit(1); process.stdout.write(value.sourceCommit ?? '')")"
+          if [[ "$manifest_commit" != "$RELEASE_COMMIT" ]]; then
+            echo "The package source manifest is not bound to exact release commit '$RELEASE_COMMIT'." >&2
+            exit 1
+          fi
           if ! cmp -s LICENSE trusted-package/LICENSE; then
             echo "The packaged license does not match the exact release commit." >&2
             exit 1

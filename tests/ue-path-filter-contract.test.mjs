@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import { parse } from 'yaml'
+import {
+  EXACT_COMMIT_INPUT_PATHS,
+  PLUGIN_DIRECTORIES,
+} from '../scripts/stage-plugin-from-commit.mjs'
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const EXPECTED_PUSH_PATHS = [
@@ -43,8 +47,10 @@ function readRepositoryFile(path) {
   return readFileSync(join(REPOSITORY_ROOT, path), 'utf8')
 }
 
-function quotedValues(source) {
-  return [...source.matchAll(/"([^"]+)"/gu)].map((match) => match[1])
+function pushPathCoversInput(pushPath, inputPath) {
+  if (!pushPath.endsWith('/**')) return pushPath === inputPath
+  const directory = pushPath.slice(0, -3)
+  return inputPath === directory || inputPath.startsWith(`${directory}/`)
 }
 
 test('UE pushes cover every direct workflow and packaging input', () => {
@@ -56,15 +62,18 @@ test('UE pushes cover every direct workflow and packaging input', () => {
   assert.equal(Object.hasOwn(push, 'paths-ignore'), false)
 
   const powershell = readRepositoryFile('scripts/package-plugin.ps1')
-  const powershellDirectories = /\$pluginDirectories = @\(([^)]+)\)/u.exec(powershell)
-  assert.ok(powershellDirectories, 'PowerShell package directory inventory is missing')
-
   const bash = readRepositoryFile('scripts/package-plugin.sh')
-  const bashDirectories = /^for directory_name in ([^;]+); do$/mu.exec(bash)
-  assert.ok(bashDirectories, 'Bash package directory inventory is missing')
-
-  assert.deepEqual(quotedValues(powershellDirectories[1]), EXPECTED_PACKAGE_DIRECTORIES)
-  assert.deepEqual(bashDirectories[1].trim().split(/\s+/u), EXPECTED_PACKAGE_DIRECTORIES)
+  assert.match(powershell, /stage-plugin-from-commit\.mjs/u)
+  assert.match(powershell, /\$SourceCommit/u)
+  assert.match(bash, /stage-plugin-from-commit\.mjs/u)
+  assert.match(bash, /\$SOURCE_COMMIT/u)
+  assert.deepEqual(PLUGIN_DIRECTORIES, EXPECTED_PACKAGE_DIRECTORIES)
+  for (const inputPath of EXACT_COMMIT_INPUT_PATHS) {
+    assert.ok(
+      push.paths.some((pushPath) => pushPathCoversInput(pushPath, inputPath)),
+      `${inputPath} is an exact-commit input missing from push.paths`,
+    )
+  }
   for (const directory of EXPECTED_PACKAGE_DIRECTORIES) {
     assert.ok(push.paths.includes(`${directory}/**`), `${directory} is missing from push.paths`)
   }

@@ -10,11 +10,23 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOW_PATH = join(REPOSITORY_ROOT, '.github', 'workflows', 'ue-ci.yml')
 const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, 'utf8')
 const WORKFLOW = parse(WORKFLOW_SOURCE)
+const RELEASE_WORKFLOW = parse(
+  readFileSync(
+    join(REPOSITORY_ROOT, '.github', 'workflows', 'release-candidate.yml'),
+    'utf8',
+  ),
+)
 const JOB = WORKFLOW.jobs['buildplugin-and-automation']
 const STEPS = JOB.steps
 const AUTOMATION_TOOL_DIRECTORY_OUTPUT = '${{ steps.automation_tool_logs.outputs.directory }}'
 const BUILDPLUGIN_CONSOLE_LOG_OUTPUT =
   '${{ steps.automation_tool_logs.outputs.console_log }}'
+const RUN_SUFFIX_ASSIGNMENT =
+  '$RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"'
+const SCOPED_PACKAGE_ASSIGNMENT =
+  '$PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"'
+const EXPECTED_PACKAGE_UPLOAD_PATH =
+  '${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}'
 const EXPECTED_LOG_PATHS = [
   '${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}.log',
   '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log',
@@ -49,7 +61,7 @@ test('BuildPlugin writes AutomationTool logs directly to one fresh run-attempt d
 
   assert.equal(prepare.id, 'automation_tool_logs')
   assertOrdered(prepare.run, [
-    '$RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"',
+    RUN_SUFFIX_ASSIGNMENT,
     '"UnrealEditorWebUI-AutomationToolLogs-$RunSuffix"',
     '"UnrealEditorWebUI-BuildPlugin-$RunSuffix.log"',
     'if (Test-Path -LiteralPath $AutomationToolLogDir)',
@@ -68,7 +80,7 @@ test('BuildPlugin writes AutomationTool logs directly to one fresh run-attempt d
     'if ([string]::IsNullOrWhiteSpace($AutomationToolLogDir)',
     '$PreviousErrorActionPreference = $ErrorActionPreference',
     '$ErrorActionPreference = "Continue"',
-    'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 $RunUAT $PackageDir 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG',
+    'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 -RunUAT $RunUAT -PackageDir $PackageDir -SourceCommit $env:GITHUB_SHA 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG',
     '$PackageExitCode = $LASTEXITCODE',
     '$ErrorActionPreference = $PreviousErrorActionPreference',
     'if (-not (Test-Path -LiteralPath $env:UE_BUILDPLUGIN_CONSOLE_LOG -PathType Leaf)',
@@ -91,6 +103,47 @@ test('BuildPlugin writes AutomationTool logs directly to one fresh run-attempt d
   assert.doesNotMatch(WORKFLOW_SOURCE, /\$env:APPDATA/iu)
   assert.doesNotMatch(WORKFLOW_SOURCE, /Unreal Engine[\\/]AutomationTool[\\/]Logs/iu)
   assert.equal(STEPS.some((step) => step.name === 'Collect AutomationTool logs'), false)
+})
+
+test('BuildPlugin uses an exact commit and one fresh run-attempt package directory end to end', () => {
+  const build = stepNamed('Build packaged plugin')
+  const host = stepNamed('Create temporary host project')
+
+  assertOrdered(build.run, [
+    RUN_SUFFIX_ASSIGNMENT,
+    SCOPED_PACKAGE_ASSIGNMENT,
+    'if (Test-Path -LiteralPath $PackageDir)',
+    'throw "Package directory is not fresh: $PackageDir"',
+    'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 -RunUAT $RunUAT -PackageDir $PackageDir -SourceCommit $env:GITHUB_SHA 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG',
+    '$SourceManifestPath = Join-Path $PackageDir "SourceManifest.json"',
+    'if (-not (Test-Path -LiteralPath $SourceManifestPath -PathType Leaf))',
+    '$SourceManifest = Get-Content -LiteralPath $SourceManifestPath -Raw | ConvertFrom-Json',
+    'if ([string]$SourceManifest.sourceCommit -cne $env:GITHUB_SHA)',
+    'if ([int]$SourceManifest.schemaVersion -ne 1)',
+    '$ManifestFiles = @($SourceManifest.files)',
+    '[string]$_.path -ceq "Web/dist/index.html" -and [string]$_.source -ceq "generated"',
+    '[string]$_.path -ceq "LICENSE" -and [string]$_.source -ceq "tracked"',
+    'if ($ManifestFrontend.Count -ne 1 -or $ManifestLicense.Count -ne 1)',
+    '$PackagedLicense = Join-Path $PackageDir "LICENSE"',
+    '$CommittedLicenseOutput = @(& git --no-replace-objects rev-parse "$($env:GITHUB_SHA):LICENSE")',
+    'if ([string]$ManifestLicense[0].gitObject -cne $CommittedLicenseOutput[0].Trim())',
+    '$PackagedLicenseOutput = @(& git --no-replace-objects hash-object --no-filters $PackagedLicense)',
+    'if ($PackagedLicenseOutput[0].Trim() -ne $CommittedLicenseOutput[0].Trim())',
+  ])
+  assert.equal(
+    build.run.includes(
+      '$PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"',
+    ),
+    false,
+  )
+  assert.equal(build.run.includes('git hash-object --no-filters LICENSE'), false)
+  assert.doesNotMatch(build.run, /WorkingLicense|working-tree LICENSE|Get-FileHash/u)
+
+  assertOrdered(host.run, [
+    RUN_SUFFIX_ASSIGNMENT,
+    '$PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"',
+    'scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION',
+  ])
 })
 
 test('UE diagnostic uploads select only the current run and attempt', () => {
@@ -117,7 +170,7 @@ test('UE diagnostic uploads select only the current run and attempt', () => {
   assert.equal(paths.some((path) => path.includes('APPDATA')), false)
 })
 
-test('the release package contract stays unchanged and uploads before diagnostics', () => {
+test('the release package identity stays unchanged and uploads before diagnostics', () => {
   const packageUpload = stepNamed('Upload packaged plugin')
   const logUpload = stepNamed('Upload UE logs')
 
@@ -127,7 +180,22 @@ test('the release package contract stays unchanged and uploads before diagnostic
     packageUpload.with.name,
     "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE58' }}",
   )
-  assert.equal(packageUpload.with.path, '${{ runner.temp }}/UnrealEditorWebUI-Package')
+  assert.equal(packageUpload.with.path, EXPECTED_PACKAGE_UPLOAD_PATH)
   assert.equal(packageUpload.with['if-no-files-found'], 'error')
   assert.equal(packageUpload.with['retention-days'], 14)
+})
+
+test('release candidates require the exact-commit package source manifest', () => {
+  const step = RELEASE_WORKFLOW.jobs.assemble.steps.find(
+    ({ name }) => name === 'Validate packaged plugin structure',
+  )
+  assert.ok(step)
+  assert.equal(step.env.RELEASE_COMMIT, '${{ steps.release.outputs.release_commit }}')
+  assertOrdered(step.run, [
+    'test -f trusted-package/SourceManifest.json',
+    'value.schemaVersion !== 1',
+    "file.path === 'Web/dist/index.html' && file.source === 'generated'",
+    "process.stdout.write(value.sourceCommit ?? '')",
+    'if [[ "$manifest_commit" != "$RELEASE_COMMIT" ]]',
+  ])
 })

@@ -113,23 +113,27 @@ The validator parses YAML 1.2 and requires every external action or reusable wor
 
 ## Package The Plugin
 
-Use the repository scripts when packaging. They install the locked frontend dependencies, build the React app, verify `Web/dist/index.html`, and then stage a clean copy of the plugin without local dependency folders such as `frontend/node_modules`.
+Use the repository scripts when packaging. They require one exact full commit SHA, materialize that commit's tracked inputs directly from Git objects, install and build the frontend in an isolated tree, and stage only tracked plugin files plus the newly generated `Web/dist`. Dirty and untracked working-tree files are never package inputs.
 
 ```sh
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
 bash scripts/package-plugin.sh \
   "/path/to/UE_5.8/Engine/Build/BatchFiles/RunUAT.sh" \
-  /tmp/UnrealEditorWebUI-Package
+  /tmp/UnrealEditorWebUI-Package \
+  "$SOURCE_COMMIT"
 ```
 
 On Windows, use the PowerShell script with `RunUAT.bat`:
 
 ```powershell
+$SourceCommit = (& git rev-parse --verify "HEAD^{commit}").Trim()
 powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
-  "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" `
-  "$env:TEMP\UnrealEditorWebUI-Package"
+  -RunUAT "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" `
+  -PackageDir "$env:TEMP\UnrealEditorWebUI-Package" `
+  -SourceCommit $SourceCommit
 ```
 
-Use the helper scripts for release packages so the React frontend is always rebuilt from the lockfile. Calling `RunUAT BuildPlugin` directly does not build `Web/dist` for you.
+The output directory must not already exist. `BuildPlugin` writes to a private sibling directory. On Windows, the helper publishes it with a no-overwrite directory move; on Unix, it atomically reserves the final name before populating it and moves `SourceManifest.json` last as the completion marker. A concurrently created or stale final path is never overwritten. A successful package includes `SourceManifest.json`, which binds every pre-UBT staged file to either its Git blob in the selected commit or the isolated frontend build. Use the helper scripts for release packages; calling `RunUAT BuildPlugin` directly neither builds `Web/dist` nor establishes this source boundary.
 
 See `docs/validation.md` for the latest local validation status.
 See `docs/tool-framework.md` for the tool rack manifest, prototype policy, and UE CI runner notes.

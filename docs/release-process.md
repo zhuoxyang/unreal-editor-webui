@@ -15,9 +15,11 @@ Before downloading anything, the workflow resolves the checked-out commit and ve
 - The artifact metadata remains bound to that workflow run and commit.
 - The raw artifact ZIP downloaded by id hashes to that exact API-provided SHA-256 digest before any extraction occurs.
 - The source and packaged descriptors both have a `VersionName` matching the candidate tag.
-- The package contains `UnrealEditorWebUI.uplugin`, `Web/dist/index.html`, and the exact commit's MIT `LICENSE`, and contains no symbolic links.
+- The package contains `UnrealEditorWebUI.uplugin`, `Web/dist/index.html`, the exact commit's MIT `LICENSE`, and `SourceManifest.json`; the manifest names the same release commit and classifies the frontend entry point as generated. The package contains no symbolic links.
 
 A tag push searches for an eligible UE run for that exact commit. A manual run requires the operator to select the release commit and provide the exact trusted UE workflow run id. A run id for a different commit, a skipped UE job, a partial/expired artifact, or a hosted-only validation cannot be promoted.
+
+The UE packaging helpers never copy plugin inputs from the live working tree. They materialize regular tracked files directly from the selected commit's Git blobs, rebuild the frontend from that commit in an isolated tree, then overlay only the fresh `Web/dist`. The deterministic pre-UBT manifest records every staged path, its SHA-256 and size, and either its Git mode/blob or generated provenance. `BuildPlugin` writes to a random private sibling directory. Windows publishes it with a no-overwrite directory move; Unix first atomically reserves the final directory name, then populates it and moves `SourceManifest.json` last as the completion marker. Neither path overwrites a stale or concurrently created final path. Dirty tracked bytes, untracked files, tracked build output, symlinks, gitlinks, and stale package directories fail closed.
 
 Manually dispatched UE 5.3 compatibility runs are intentionally ineligible: they use the job name `UE 5.3 BuildPlugin and automation (compatibility only)`, the runner label `ue-5.3`, and the artifact name `UnrealEditorWebUI-Package-UE53`. The release verifier accepts only the corresponding UE 5.8 GUI job, labels, and `UE58` artifact.
 

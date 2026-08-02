@@ -48,12 +48,12 @@ CI coverage added in `.github/workflows/ci.yml`:
 UE CI coverage is defined in `.github/workflows/ue-ci.yml`:
 
 - The UE workflow has no `pull_request` trigger. Automatic pull-request validation is provided entirely by the GitHub-hosted jobs in `.github/workflows/ci.yml`, including equivalent descriptor/module-wiring and script-syntax checks.
-- Its `main` push filter includes `.npmrc`, `.nvmrc`, `tests/**`, scripts, workflow configuration, and every directory that the packaging helpers can stage. A hosted semantic contract test compares the YAML filter with both Windows and Unix packaging inventories while keeping documentation-only changes outside the licensed runner trigger.
+- Its `main` push filter includes `.npmrc`, `.nvmrc`, `tests/**`, scripts, workflow configuration, and every directory that the shared staging helper can stage. A hosted semantic contract test compares the YAML filter with that inventory and verifies that both platform wrappers use it, while keeping documentation-only changes outside the licensed runner trigger.
 - The UE workflow's hosted prerequisite jobs run only on its trusted events. A push to `main` always selects `UE 5.8 BuildPlugin and automation`; an explicit trusted `workflow_dispatch` can select UE 5.3 compatibility validation or UE 5.8 release validation, and the self-hosted job is gated by the protected `ue-self-hosted` environment.
 - Runner labels: `self-hosted`, `windows`, `gui`, plus the selected `ue-5.3` or `ue-5.8` engine label.
 - Runner environment variable: `UE_ROOT` resolves to the matching standard Epic installation path.
 - Required software: the selected Unreal Engine version, a compatible Visual Studio C++ toolchain, Windows SDK, Git, and PowerShell. This repository's UE 5.8 runner baseline accepts Visual Studio 2022 17.14 with an MSVC compiler product version of 14.44.35211 or later within the 14.44 family, or Visual Studio 2026 18.x with 14.50.35723 or later within the 14.50 family. The check follows UnrealBuildTool in reading `cl.exe` product version instead of assuming the servicing version from its family directory name; the engine configuration bans MSVC 14.39 and the early portions of those newer families. The pinned `actions/setup-node` step provisions the repository-compatible Node.js/npm toolchain.
-- The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html` and exact repository `LICENSE`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the headless Bridge/Settings automation filters, executes the packaged bridge and settings smokes, and then runs `UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent` in the real GUI editor. It checks every required Automation path, a fresh structured packaged-smoke result, and explicit success markers for both Python smokes rather than trusting process exit codes alone.
+- The self-hosted job passes `GITHUB_SHA` to `scripts/package-plugin.ps1`, verifies the packaged `SourceManifest.json`, `Web/dist/index.html`, and exact committed `LICENSE` blob, creates a temporary host project with `scripts/create-host-project.ps1`, runs the headless Bridge/Settings automation filters, executes the packaged bridge and settings smokes, and then runs `UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent` in the real GUI editor. It checks every required Automation path, a fresh structured packaged-smoke result, and explicit success markers for both Python smokes rather than trusting process exit codes alone.
 - UE logs upload with `if: always()` after fresh scoped paths are successfully prepared, so failed runs keep current-run diagnostics without uploading a pre-existing same-attempt path. `RunUAT` writes directly to `%RUNNER_TEMP%\UnrealEditorWebUI-AutomationToolLogs-<run-id>-<run-attempt>` through matching `uebp_LogFolder` and `uebp_FinalLogFolder` values, and a sibling BuildPlugin console capture covers failures before the UAT logger starts. The workflow never reads or copies the persistent AppData AutomationTool history. Every editor log, structured result, browser report, and host-project log upload path is also bound to that exact run id and attempt.
 - The packaged plugin uploads only after all UE validation steps succeed; missing package output is an artifact error. The always-run diagnostics upload follows it, so a later artifact-service failure cannot prevent an already validated package from being uploaded, while the overall failed run remains ineligible for release.
 - Keep self-hosted runner user Python startup scripts clean or isolated. A global `Documents/UnrealEngine/Python/init_unreal.py` can pollute settings-smoke commandlet exit status.
@@ -103,22 +103,26 @@ Validated:
 
 ## BuildPlugin Commands
 
-Run the packaging helper that matches your platform. The script stages a clean plugin copy and then calls `RunUAT BuildPlugin`; Unreal's packaging filter includes the repository `LICENSE`, and the helper rejects a missing or mismatched packaged copy.
+Run the packaging helper that matches your platform. The script requires an exact 40-character commit, materializes tracked inputs from Git objects, builds the exact commit's frontend in an isolated tree, writes a pre-UBT `SourceManifest.json`, and then calls `RunUAT BuildPlugin` against a private sibling directory. After validation, Windows uses a no-overwrite directory move; Unix atomically reserves the final name before populating it and moves the manifest last. The final output path must not already exist and is never overwritten if another process creates it during the build.
 
 macOS/Linux:
 
 ```sh
+SOURCE_COMMIT="$(git rev-parse --verify 'HEAD^{commit}')"
 bash scripts/package-plugin.sh \
   "/path/to/UE_5.8/Engine/Build/BatchFiles/RunUAT.sh" \
-  /tmp/UnrealEditorWebUI-Package
+  /tmp/UnrealEditorWebUI-Package \
+  "$SOURCE_COMMIT"
 ```
 
 Windows:
 
 ```powershell
+$SourceCommit = (& git rev-parse --verify "HEAD^{commit}").Trim()
 powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
-  "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" `
-  "$env:TEMP\UnrealEditorWebUI-Package"
+  -RunUAT "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" `
+  -PackageDir "$env:TEMP\UnrealEditorWebUI-Package" `
+  -SourceCommit $SourceCommit
 ```
 
-Unreal Engine 5.8 on Windows is the current automated target. Validate another engine/platform combination on a licensed runner before describing it as supported.
+The helpers reject dirty/untracked input leakage, tracked `Web/dist`, symbolic links, gitlinks, unsafe portable paths, stale output directories, and a missing or non-commit SHA. Only a fresh `Web/dist` generated from the selected commit may overlay the tracked plugin stage. Unreal Engine 5.8 on Windows is the current automated target. Validate another engine/platform combination on a licensed runner before describing it as supported.
