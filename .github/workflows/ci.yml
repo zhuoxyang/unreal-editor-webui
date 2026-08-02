@@ -232,6 +232,7 @@ jobs:
           node --test tests/npm-registry-entrypoints.test.mjs
           node --test tests/package-plugin-registry-guard.test.mjs
           node --test tests/ue-log-artifact-contract.test.mjs
+          node --test tests/ue-path-filter-contract.test.mjs
           node scripts/validate-npm-lock-registry.mjs package-lock.json
           node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
 

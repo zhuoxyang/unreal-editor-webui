@@ -48,6 +48,7 @@ CI coverage added in `.github/workflows/ci.yml`:
 UE CI coverage is defined in `.github/workflows/ue-ci.yml`:
 
 - The UE workflow has no `pull_request` trigger. Automatic pull-request validation is provided entirely by the GitHub-hosted jobs in `.github/workflows/ci.yml`, including equivalent descriptor/module-wiring and script-syntax checks.
+- Its `main` push filter includes `.npmrc`, `.nvmrc`, `tests/**`, scripts, workflow configuration, and every directory that the packaging helpers can stage. A hosted semantic contract test compares the YAML filter with both Windows and Unix packaging inventories while keeping documentation-only changes outside the licensed runner trigger.
 - The UE workflow's hosted prerequisite jobs run only on its trusted events. A push to `main` always selects `UE 5.8 BuildPlugin and automation`; an explicit trusted `workflow_dispatch` can select UE 5.3 compatibility validation or UE 5.8 release validation, and the self-hosted job is gated by the protected `ue-self-hosted` environment.
 - Runner labels: `self-hosted`, `windows`, `gui`, plus the selected `ue-5.3` or `ue-5.8` engine label.
 - Runner environment variable: `UE_ROOT` resolves to the matching standard Epic installation path.
