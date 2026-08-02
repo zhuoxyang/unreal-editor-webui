@@ -31,7 +31,11 @@ function App() {
 
   const { bridgeReady, callBridge, callBridgeQuiet } = useEditorBridge(log)
   const { projectContext, projectContextReady } = useProjectContext({ bridgeReady, callBridgeQuiet, log })
-  const { commands, commandsError, commandsStatus, retryCommands } = useCommands({ bridgeReady, callBridgeQuiet, log })
+  const { commands, commandsError, commandsLoadErrors, commandsStatus, retryCommands } = useCommands({
+    bridgeReady,
+    callBridgeQuiet,
+    log,
+  })
   const { clearRecentExecutions, recentExecutions, recordRecentExecution } = useRecentExecutions(
     projectContext.storageNamespace,
   )
@@ -133,6 +137,7 @@ function App() {
         <ToolRackPanel
           categories={TOOL_CATEGORIES}
           commandsError={commandsError}
+          commandsLoadErrors={commandsLoadErrors}
           commandsStatus={commandsStatus}
           categoryId={toolPreferences.categoryId}
           commands={filteredCommands}

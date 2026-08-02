@@ -4,6 +4,7 @@ import type { CommandMetadata } from '../types/command'
 import { CommandInspectorPanel } from './CommandInspectorPanel'
 
 const command: CommandMetadata = {
+  metadataVersion: 1,
   name: 'asset.scan',
   description: 'Scan assets.',
   permission: 'read',

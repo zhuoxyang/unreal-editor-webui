@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from unreal_editor_webui_registry import COMMAND_LOAD_ERRORS, COMMAND_METADATA, command
+from unreal_editor_webui_registry import (
+    COMMAND_LOAD_ERRORS,
+    COMMAND_METADATA,
+    METADATA_VERSION,
+    command,
+)
 
 
 @command(
@@ -18,7 +23,7 @@ from unreal_editor_webui_registry import COMMAND_LOAD_ERRORS, COMMAND_METADATA, 
 def list_commands(payload: dict[str, Any]) -> dict[str, Any]:
     commands = [COMMAND_METADATA[name] for name in sorted(COMMAND_METADATA)]
     return {
-        "metadataVersion": 1,
+        "metadataVersion": METADATA_VERSION,
         "commands": commands,
         "loadErrors": list(COMMAND_LOAD_ERRORS),
     }

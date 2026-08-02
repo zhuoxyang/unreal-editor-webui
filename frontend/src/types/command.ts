@@ -1,8 +1,10 @@
 export type DraftValue = string | number | boolean
+export const COMMAND_METADATA_VERSION = 1 as const
+
 export type SchemaPropertyType = 'string' | 'number' | 'integer' | 'boolean' | 'array' | 'object'
 
 export type SchemaProperty = {
-  type?: SchemaPropertyType | SchemaPropertyType[]
+  type: SchemaPropertyType
   description?: string
   enum?: Array<string | number | boolean>
   default?: unknown
@@ -17,22 +19,27 @@ export type SchemaProperty = {
   items?: SchemaProperty
   properties?: Record<string, SchemaProperty>
   required?: string[]
-  additionalProperties?: boolean | SchemaProperty
+  additionalProperties?: boolean
   xDryRun?: boolean
 }
 
 export type CommandSchema = {
-  type?: string
+  type: 'object'
   properties?: Record<string, SchemaProperty>
   required?: string[]
   additionalProperties?: boolean
 }
 
+export type CommandLoadError = {
+  module: string
+  error: string
+}
+
 export type CommandMetadata = {
-  metadataVersion?: number
+  metadataVersion: typeof COMMAND_METADATA_VERSION
   name: string
   description: string
-  permission: 'read' | 'write' | 'destructive' | string
+  permission: 'read' | 'write' | 'destructive'
   schema: CommandSchema
   supportsDryRun?: boolean
   category?: string
@@ -50,16 +57,18 @@ export type CommandMetadata = {
   }
 }
 
-export function getPropertyTypes(property: SchemaProperty) {
-  if (Array.isArray(property.type)) {
-    return property.type
-  }
+export type CommandsResult = {
+  metadataVersion: typeof COMMAND_METADATA_VERSION
+  commands: CommandMetadata[]
+  loadErrors: CommandLoadError[]
+}
 
-  return property.type ? [property.type] : []
+export function getPropertyTypes(property: SchemaProperty) {
+  return [property.type]
 }
 
 export function propertyHasType(property: SchemaProperty, type: SchemaPropertyType) {
-  return getPropertyTypes(property).includes(type)
+  return property.type === type
 }
 
 export function isStructuredProperty(property: SchemaProperty) {

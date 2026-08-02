@@ -170,13 +170,25 @@ Tasks are scoped to the creating top-level document. Reloading or replacing the 
 Fetch command metadata from `system.commands` and build forms from each command schema:
 
 ```js
-const { commands } = await executeCommand("system.commands");
+const { metadataVersion, commands, loadErrors } = await executeCommand("system.commands");
+if (metadataVersion !== 1) {
+  throw new Error(`Unsupported command metadata version: ${metadataVersion}`);
+}
 for (const command of commands) {
   console.log(command.name, command.permission, command.schema, command.execution);
 }
+for (const loadError of loadErrors) {
+  console.warn(`Command module ${loadError.module} was skipped: ${loadError.error}`);
+}
 ```
 
-The registry supports a small JSON-schema-like subset: `required`, `additionalProperties`, `enum`, string length bounds, numeric bounds, arrays, nested objects, defaults, and `xDryRun` markers. Defaults are applied by the Python registry before command handlers run.
+`metadataVersion: 1` versions both the command-catalogue shape and the schema contract. Every command entry also carries this version. The payload root is an `object`; every v1 property schema has exactly one type: `object`, `array`, `string`, `integer`, `number`, or `boolean`. Nullable and union types are not supported.
+
+The complete v1 subset consists of root `type`, `properties`, `required`, and boolean `additionalProperties`; property `type`, optional `description`, and a type-compatible `default`; scalar, non-empty, type-compatible `enum`; object `properties`, `required`, and boolean `additionalProperties`; array `items`, `minItems`, and `maxItems`; string `minLength` and `maxLength`; numeric `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`; and `xDryRun` on direct payload boolean properties. Arrays require an `items` schema. Length and item bounds are non-negative integers, numeric bounds are finite, and lower bounds cannot exceed upper bounds. Omitted `additionalProperties` means `true`; schema-valued `additionalProperties` and unknown keywords are rejected.
+
+Defaults must satisfy the complete schema node, including enum, nested item, and bound constraints. The Python registry recursively applies them before validating a payload. This intentionally means a required property with a valid default can be omitted. The cross-layer acceptance and rejection cases are in `tests/fixtures/command-schema-v1.json`.
+
+Modules are registered independently. A schema-contract failure rolls back that module's partial commands and appears in `loadErrors`; healthy modules and their commands remain available. Treat `loadErrors` as visible catalogue diagnostics, not as a reason to discard valid commands.
 
 ## Error Codes
 

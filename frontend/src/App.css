@@ -579,6 +579,23 @@ button:disabled {
   margin: 0 0 8px;
 }
 
+.inline-warning {
+  padding: 10px;
+  border-radius: 6px;
+  background: rgba(205, 150, 45, 0.16);
+  color: #f0c979;
+  overflow-wrap: anywhere;
+}
+
+.inline-warning p {
+  margin: 0 0 8px;
+}
+
+.inline-warning ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .table-pagination {
   display: flex;
   align-items: center;

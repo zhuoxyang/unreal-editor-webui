@@ -11,9 +11,14 @@ function bridgeError(message: string) {
   return JSON.stringify({ id: null, ok: false, error: { code: 'test_error', message } })
 }
 
-function installBridge(tasks: unknown[], overrides: Partial<NonNullable<NonNullable<Window['ue']>['editorwebui']>> = {}) {
+function installBridge(
+  tasks: unknown[],
+  overrides: Partial<NonNullable<NonNullable<Window['ue']>['editorwebui']>> = {},
+  loadErrors: Array<{ module: string; error: string }> = [],
+) {
   const commands = [
     {
+      metadataVersion: 1,
       name: 'asset.scan',
       description: 'Scan assets',
       permission: 'read',
@@ -23,6 +28,7 @@ function installBridge(tasks: unknown[], overrides: Partial<NonNullable<NonNulla
       order: 10,
     },
     {
+      metadataVersion: 1,
       name: 'asset.longScan',
       description: 'Long asset scan',
       permission: 'read',
@@ -37,7 +43,7 @@ function installBridge(tasks: unknown[], overrides: Partial<NonNullable<NonNulla
       executecommand: vi.fn(async (requestJson: string) => {
         const request = JSON.parse(requestJson) as { command?: string }
         if (request.command === 'system.commands') {
-          return bridgeResponse({ commands })
+          return bridgeResponse({ metadataVersion: 1, commands, loadErrors })
         }
         return bridgeResponse({})
       }),
@@ -124,5 +130,18 @@ describe('tool preferences', () => {
 
     expect(await screen.findByDisplayValue('Project Neon')).toBeInTheDocument()
     expect((await screen.findAllByText('asset.longScan')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('command discovery diagnostics', () => {
+  it('keeps healthy commands available when one module fails to load', async () => {
+    installBridge([], {}, [{ module: 'broken.commands', error: 'unsupported schema contract' }])
+
+    render(<App />)
+
+    expect(await screen.findByText('1 command module is unavailable.')).toBeInTheDocument()
+    expect(screen.getByText('broken.commands')).toBeInTheDocument()
+    expect(screen.getAllByText(/unsupported schema contract/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('asset.scan').length).toBeGreaterThan(0)
   })
 })

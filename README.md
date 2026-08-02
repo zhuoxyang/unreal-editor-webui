@@ -234,7 +234,21 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
-The registry validates a small JSON-schema-like subset before dispatching. Supported schema features include `required`, `additionalProperties`, `enum`, string `minLength`/`maxLength`, numeric `minimum`/`maximum`, arrays with `items`/`minItems`/`maxItems`, nested object schemas, defaults, and `xDryRun` boolean field markers. Defaults are applied before the handler runs. `write` and `destructive` commands require a bridge-supplied exact-command capability after native confirmation, so command permissions are not only frontend labels. Every real privileged invocation receives a fresh, payload-specific confirmation; approvals are never cached or reusable, and a dry run cannot authorize a later write. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
+`system.commands.metadataVersion` and every command entry's `metadataVersion` are the version of both the command-catalogue shape and its schema contract. Version 1 uses a strict JSON-schema-like subset. Every property schema declares exactly one of `object`, `array`, `string`, `integer`, `number`, or `boolean`; `null` and union types are not supported. The complete v1 keyword set is:
+
+- payload root: `type: "object"`, `properties`, `required`, and boolean `additionalProperties`
+- property schemas: `type`, optional `description`, a type-compatible `default`, and, for scalar types, a non-empty type-compatible `enum`
+- objects: `properties`, `required`, and boolean `additionalProperties` (omission means `true`; schema-valued `additionalProperties` is not supported)
+- arrays: required `items` plus non-negative integer `minItems` and `maxItems`
+- strings: non-negative integer `minLength` and `maxLength`
+- integers and numbers: finite `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`
+- direct payload boolean properties: optional boolean `xDryRun`
+
+Unknown keywords, incompatible constraints, invalid defaults, inverted bounds, and required names that are not declared properties fail registration. Defaults are recursively applied before payload validation, so a required property with a valid default may be omitted by the caller. The shared executable contract examples live in `tests/fixtures/command-schema-v1.json`.
+
+Command modules are loaded independently. If a module violates the v1 contract, its partial registrations are rolled back and `system.commands.loadErrors` reports the module and error; commands from healthy modules remain available. Consumers should surface these diagnostics instead of treating them as a failure of the entire catalogue.
+
+`write` and `destructive` commands require a bridge-supplied exact-command capability after native confirmation, so command permissions are not only frontend labels. Every real privileged invocation receives a fresh, payload-specific confirmation; approvals are never cached or reusable, and a dry run cannot authorize a later write. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
 The React frontend reads this metadata from `system.commands` and generates forms for supported field types:
 
