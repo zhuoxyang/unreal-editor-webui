@@ -207,11 +207,42 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Unsupported Node.js version on self-hosted runner." }
           npm --version
 
+      - name: Prepare scoped AutomationTool logs
+        id: automation_tool_logs
+        shell: powershell
+        run: |
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $AutomationToolLogDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-AutomationToolLogs-$RunSuffix"
+          $BuildPluginConsoleLog = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BuildPlugin-$RunSuffix.log"
+          if (Test-Path -LiteralPath $AutomationToolLogDir) {
+            throw "AutomationTool log directory is not fresh: $AutomationToolLogDir"
+          }
+          if (Test-Path -LiteralPath $BuildPluginConsoleLog) {
+            throw "BuildPlugin console log is not fresh: $BuildPluginConsoleLog"
+          }
+          New-Item -ItemType Directory -Path $AutomationToolLogDir | Out-Null
+          @(
+            "directory=$AutomationToolLogDir"
+            "console_log=$BuildPluginConsoleLog"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Build packaged plugin
         shell: powershell
+        env:
+          uebp_LogFolder: ${{ steps.automation_tool_logs.outputs.directory }}
+          uebp_FinalLogFolder: ${{ steps.automation_tool_logs.outputs.directory }}
+          UE_BUILDPLUGIN_CONSOLE_LOG: ${{ steps.automation_tool_logs.outputs.console_log }}
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
           $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
+          $AutomationToolLogDir = $env:uebp_LogFolder
+          if ([string]::IsNullOrWhiteSpace($AutomationToolLogDir) -or
+              $AutomationToolLogDir -ne $env:uebp_FinalLogFolder) {
+            throw "AutomationTool log environment must use one non-empty scoped directory."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:UE_BUILDPLUGIN_CONSOLE_LOG)) {
+            throw "BuildPlugin console log path is missing."
+          }
           $CommittedLicenseOutput = @(& git rev-parse "$($env:GITHUB_SHA):LICENSE")
           $CommittedLicenseExitCode = $LASTEXITCODE
           if ($CommittedLicenseExitCode -ne 0 -or $CommittedLicenseOutput.Count -ne 1) {
@@ -227,7 +258,36 @@ jobs:
           if ($WorkingLicenseObject -ne $CommittedLicenseObject) {
             throw "Working-tree LICENSE bytes differ from the exact commit; check .gitattributes and checkout conversion."
           }
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 $RunUAT $PackageDir
+          $PreviousErrorActionPreference = $ErrorActionPreference
+          try {
+            # Windows PowerShell 5.1 turns redirected native stderr into non-terminating
+            # error records. Continue lets Tee-Object retain those records without
+            # obscuring the child process exit code.
+            $ErrorActionPreference = "Continue"
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 $RunUAT $PackageDir 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG
+            $PackageExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+          }
+          if (-not (Test-Path -LiteralPath $env:UE_BUILDPLUGIN_CONSOLE_LOG -PathType Leaf) -or
+              (Get-Item -LiteralPath $env:UE_BUILDPLUGIN_CONSOLE_LOG).Length -eq 0) {
+            Write-Host "::error::BuildPlugin console output was not retained."
+            if ($PackageExitCode -ne 0) { exit $PackageExitCode }
+            throw "BuildPlugin completed without a retained console log."
+          }
+          $AutomationToolLogFiles = @(
+            Get-ChildItem -LiteralPath $AutomationToolLogDir -File -Recurse -ErrorAction SilentlyContinue
+          )
+          if ($AutomationToolLogFiles.Count -eq 0) {
+            Write-Host "::error::BuildPlugin did not retain a current-run AutomationTool log in $AutomationToolLogDir."
+            if ($PackageExitCode -ne 0) { exit $PackageExitCode }
+            throw "BuildPlugin completed without a current-run AutomationTool log."
+          }
+          if ($PackageExitCode -ne 0) {
+            Write-Host "::error::BuildPlugin failed with exit code $PackageExitCode. See $AutomationToolLogDir."
+            exit $PackageExitCode
+          }
           if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "UnrealEditorWebUI.uplugin") -PathType Leaf)) {
             throw "Packaged plugin descriptor missing."
           }
@@ -356,31 +416,6 @@ jobs:
             throw "Required GUI CEF automation test did not report success: $TestPath"
           }
 
-      - name: Collect AutomationTool logs
-        shell: powershell
-        if: always()
-        run: |
-          $Source = Join-Path $env:APPDATA "Unreal Engine/AutomationTool/Logs"
-          $Destination = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-AutomationToolLogs"
-          if (Test-Path -LiteralPath $Source -PathType Container) {
-            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
-            Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
-          }
-
-      - name: Upload UE logs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: unreal-editor-webui-ue-logs
-          path: |
-            ${{ runner.temp }}/UnrealEditorWebUI-*.log
-            ${{ runner.temp }}/UnrealEditorWebUI-*.json
-            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-*/**
-            ${{ runner.temp }}/UnrealEditorWebUI-HostProject-*/Saved/Logs/**
-            ${{ runner.temp }}/UnrealEditorWebUI-AutomationToolLogs/**
-          if-no-files-found: ignore
-          retention-days: 14
-
       - name: Upload packaged plugin
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
@@ -388,4 +423,22 @@ jobs:
           name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE58' }}
           path: ${{ runner.temp }}/UnrealEditorWebUI-Package
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload UE logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.automation_tool_logs.outputs.directory != '' && steps.automation_tool_logs.outputs.console_log != ''
+        with:
+          name: unreal-editor-webui-ue-logs
+          path: |
+            ${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.json
+            ${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}/**
+            ${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}/Saved/Logs/**
+            ${{ steps.automation_tool_logs.outputs.console_log }}
+            ${{ steps.automation_tool_logs.outputs.directory }}/**
+          if-no-files-found: ignore
           retention-days: 14

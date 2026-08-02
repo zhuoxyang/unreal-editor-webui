@@ -101,6 +101,7 @@ Mark the hosted jobs from `.github/workflows/ci.yml` as required pull-request ch
 - `Frontend (Node 24.18.1)`
 - `Python registry (Python 3.9)`
 - `Python registry (Python 3.11)`
+- `Packaging contracts (Windows)`
 - `Repository checks`
 
 Do not make any `.github/workflows/ue-ci.yml` job a pull-request required check: that workflow deliberately has no `pull_request` trigger.
@@ -115,8 +116,10 @@ Hosted checks can validate source-level configuration but do not compile the C++
 
 The UE workflow uploads:
 
-- `unreal-editor-webui-ue-logs`: editor, AutomationTool, and smoke-test logs.
+- `unreal-editor-webui-ue-logs`: editor, AutomationTool, and smoke-test logs from the current workflow run and attempt only.
 - `UnrealEditorWebUI-Package-UE53`: compatibility-only packaged plugin output after a successful manual UE 5.3 run.
 - `UnrealEditorWebUI-Package-UE58`: release-eligible packaged plugin output only after a successful UE 5.8 GUI run.
 
-Log artifacts use `if: always()` so failed UE runs preserve useful diagnostics. The package artifact uses `if: success()` and a missing package fails the upload instead of publishing a partial build.
+Before `RunUAT BuildPlugin`, the workflow creates `%RUNNER_TEMP%\UnrealEditorWebUI-AutomationToolLogs-<run-id>-<run-attempt>` and sets both `uebp_LogFolder` and `uebp_FinalLogFolder` to it. AutomationTool writes directly into that directory, while a sibling `UnrealEditorWebUI-BuildPlugin-<run-id>-<run-attempt>.log` captures the nested PowerShell process's stdout and stderr even if RunUAT fails before its own logger starts. The fresh paths are exported only after both pre-existence checks pass, and the always-run upload is gated on those outputs, so a pre-existing same-attempt path is rejected without being uploaded. The workflow never reads or recursively copies the persistent `%APPDATA%\Unreal Engine\AutomationTool\Logs` history, and every other uploaded diagnostic path is likewise bound to the current run id and attempt.
+
+Log artifacts use `if: always()` so failed UE runs preserve current-run diagnostics. The package artifact uploads first, uses `if: success()`, and treats missing output as an error instead of publishing a partial build. Release verification still selects only the exact `UnrealEditorWebUI-Package-UE58` artifact from a successful exact-commit run; the diagnostic artifact is never a release input.
