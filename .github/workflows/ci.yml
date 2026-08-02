@@ -133,6 +133,7 @@ jobs:
         run: node scripts/validate-node-version.mjs
 
       - name: Test Windows packaging contracts
+        shell: powershell
         run: node --test tests/package-plugin-registry-guard.test.mjs
 
   repository:
