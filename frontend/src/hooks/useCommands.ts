@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createRequestId, formatBridgeError } from '../bridge'
 import type { BridgeCaller } from '../bridge'
 import { decodeCommandsResult } from '../bridge-decoders'
-import type { CommandMetadata } from '../types/command'
+import type { CommandLoadError, CommandMetadata } from '../types/command'
 
 export type CommandsLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -14,6 +14,7 @@ type UseCommandsOptions = {
 
 export function useCommands({ bridgeReady, callBridgeQuiet, log }: UseCommandsOptions) {
   const [commands, setCommands] = useState<CommandMetadata[]>([])
+  const [loadErrors, setLoadErrors] = useState<CommandLoadError[]>([])
   const [status, setStatus] = useState<CommandsLoadStatus>('idle')
   const [error, setError] = useState('')
   const requestSequenceRef = useRef(0)
@@ -29,6 +30,7 @@ export function useCommands({ bridgeReady, callBridgeQuiet, log }: UseCommandsOp
     const requestSequence = requestSequenceRef.current
     setStatus('loading')
     setError('')
+    setLoadErrors([])
     try {
       const result = await callBridgeQuiet<unknown>(
         'executecommand',
@@ -41,7 +43,11 @@ export function useCommands({ bridgeReady, callBridgeQuiet, log }: UseCommandsOp
       const decoded = decodeCommandsResult(result)
       if (requestSequenceRef.current === requestSequence) {
         setCommands(decoded.commands)
+        setLoadErrors(decoded.loadErrors)
         setStatus('ready')
+        decoded.loadErrors.forEach((loadError) => {
+          log(`Command module "${loadError.module}" was not loaded: ${loadError.error}`)
+        })
       }
     } catch (caught) {
       if (requestSequenceRef.current === requestSequence) {
@@ -71,6 +77,7 @@ export function useCommands({ bridgeReady, callBridgeQuiet, log }: UseCommandsOp
   return {
     commands,
     commandsError: error,
+    commandsLoadErrors: loadErrors,
     commandsStatus: bridgeReady ? status : 'idle',
     retryCommands: loadCommands,
     setCommands,

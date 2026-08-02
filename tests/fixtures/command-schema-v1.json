@@ -1,0 +1,306 @@
+{
+  "metadataVersion": 1,
+  "valid": [
+    {
+      "name": "minimal-open-object",
+      "schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "closed-scalar-fields",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "description": "Execution mode.",
+            "enum": [
+              "fast",
+              "safe"
+            ],
+            "default": "safe",
+            "minLength": 4,
+            "maxLength": 4
+          },
+          "count": {
+            "type": "integer",
+            "enum": [
+              1,
+              2,
+              3
+            ],
+            "default": 2,
+            "minimum": 1,
+            "maximum": 3
+          },
+          "ratio": {
+            "type": "number",
+            "default": 0.5,
+            "minimum": 0,
+            "maximum": 1
+          },
+          "threshold": {
+            "type": "number",
+            "default": 0.5,
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 1
+          },
+          "dryRun": {
+            "type": "boolean",
+            "enum": [
+              true,
+              false
+            ],
+            "default": true,
+            "xDryRun": true
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "nested-arrays-and-objects",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "assetPaths": {
+            "type": "array",
+            "description": "Assets to inspect.",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "minItems": 1,
+            "maxItems": 2,
+            "default": [
+              "/Game/Props/Chair"
+            ]
+          },
+          "options": {
+            "type": "object",
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "default": 2,
+                "minimum": 1,
+                "maximum": 5
+              }
+            },
+            "required": [
+              "limit"
+            ],
+            "additionalProperties": false,
+            "default": {
+              "limit": 2
+            }
+          }
+        },
+        "required": [
+          "assetPaths"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "explicit-open-object",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "nullable-type",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "null"
+          }
+        }
+      },
+      "errorContains": "type"
+    },
+    {
+      "name": "union-type",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "errorContains": "type"
+    },
+    {
+      "name": "schema-valued-additional-properties",
+      "schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "errorContains": "additionalProperties"
+    },
+    {
+      "name": "non-scalar-enum-value",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "safe",
+              {
+                "mode": "fast"
+              }
+            ]
+          }
+        }
+      },
+      "errorContains": "enum"
+    },
+    {
+      "name": "enum-type-mismatch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer",
+            "enum": [
+              1,
+              "two"
+            ]
+          }
+        }
+      },
+      "errorContains": "enum"
+    },
+    {
+      "name": "required-name-not-declared",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "missing"
+        ]
+      },
+      "errorContains": "required"
+    },
+    {
+      "name": "array-without-items",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "values": {
+            "type": "array"
+          }
+        }
+      },
+      "errorContains": "items"
+    },
+    {
+      "name": "default-type-mismatch",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer",
+            "default": "1"
+          }
+        }
+      },
+      "errorContains": "default"
+    },
+    {
+      "name": "default-not-in-enum",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "enum": [
+              "safe"
+            ],
+            "default": "fast"
+          }
+        }
+      },
+      "errorContains": "default"
+    },
+    {
+      "name": "unknown-keyword",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "pattern": "^safe$"
+          }
+        }
+      },
+      "errorContains": "pattern"
+    },
+    {
+      "name": "inverted-numeric-boundary",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 1
+          }
+        }
+      },
+      "errorContains": "bounds"
+    },
+    {
+      "name": "missing-property-type",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "description": "A field without a declared type."
+          }
+        }
+      },
+      "errorContains": "type"
+    },
+    {
+      "name": "xdryrun-on-non-boolean",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "dryRun": {
+            "type": "string",
+            "xDryRun": true
+          }
+        }
+      },
+      "errorContains": "xDryRun"
+    }
+  ]
+}

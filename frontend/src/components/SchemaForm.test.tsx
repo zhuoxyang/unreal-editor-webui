@@ -5,6 +5,7 @@ import { getDefaultValue } from '../hooks/useCommandPayloads'
 import type { CommandMetadata } from '../types/command'
 
 const command: CommandMetadata = {
+  metadataVersion: 1,
   name: 'asset.example',
   description: 'Example command',
   permission: 'read',

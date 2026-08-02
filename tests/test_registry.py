@@ -11,6 +11,7 @@ import unittest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REGISTRY_PATH = REPO_ROOT / "Python" / "unreal_editor_webui_registry.py"
 BRIDGE_ENTRY_PATH = REPO_ROOT / "Python" / "unreal_editor_webui_bridge_entry.py"
+COMMAND_SCHEMA_FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "command-schema-v1.json"
 
 
 def make_unreal_stub():
@@ -241,6 +242,114 @@ class RegistryTests(unittest.TestCase):
                 },
             )
 
+    def test_command_schema_v1_shared_contract(self):
+        fixture = json.loads(COMMAND_SCHEMA_FIXTURE_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(fixture["metadataVersion"], self.registry.METADATA_VERSION)
+
+        for index, case in enumerate(fixture["valid"]):
+            with self.subTest(valid=case["name"]):
+                command_name = f"test.schemaContractValid{index}"
+
+                def handler(payload):
+                    return payload
+
+                self.registry.command(command_name, schema=case["schema"])(handler)
+                self.assertIn(command_name, self.registry.COMMAND_METADATA)
+
+        for index, case in enumerate(fixture["invalid"]):
+            with self.subTest(invalid=case["name"]):
+                command_name = f"test.schemaContractInvalid{index}"
+                with self.assertRaises(ValueError) as caught:
+                    self.registry.command(command_name, schema=case["schema"])
+                self.assertIn(case["errorContains"], str(caught.exception))
+                self.assertNotIn(command_name, self.registry.COMMAND_METADATA)
+
+    def test_registered_schema_is_isolated_from_the_callers_mutable_input(self):
+        schema = {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+        }
+
+        def handler(payload):
+            return payload
+
+        self.registry.command("test.isolatedSchema", schema=schema)(handler)
+        schema["properties"]["value"]["type"] = "null"
+
+        registered_schema = self.registry.COMMAND_METADATA["test.isolatedSchema"]["schema"]
+        self.assertEqual(registered_schema["properties"]["value"]["type"], "string")
+
+    def test_command_schema_v1_rejects_nonfinite_duplicate_and_empty_domains(self):
+        invalid_schemas = [
+            (
+                "nonfiniteBoundary",
+                {"type": "number", "minimum": float("inf")},
+                "finite number",
+            ),
+            (
+                "nonfiniteDefault",
+                {"type": "number", "default": float("nan")},
+                "finite JSON numbers",
+            ),
+            (
+                "duplicateEnum",
+                {"type": "string", "enum": ["safe", "safe"]},
+                "duplicate",
+            ),
+            (
+                "fractionalLength",
+                {"type": "string", "minLength": 1.5},
+                "non-negative integer",
+            ),
+            (
+                "emptyIntegerDomain",
+                {
+                    "type": "integer",
+                    "exclusiveMinimum": 1,
+                    "exclusiveMaximum": 2,
+                },
+                "no integer value",
+            ),
+        ]
+
+        for index, (case_name, property_schema, error_text) in enumerate(invalid_schemas):
+            with self.subTest(case=case_name):
+                schema = {
+                    "type": "object",
+                    "properties": {"value": property_schema},
+                }
+                with self.assertRaises(ValueError) as caught:
+                    self.registry.command(f"test.schemaBoundary{index}", schema=schema)
+                self.assertIn(error_text, str(caught.exception))
+
+    def test_command_schema_v1_validates_recursive_defaults_and_depth(self):
+        invalid_default = {
+            "type": "object",
+            "properties": {
+                "options": {
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer", "minimum": 1}},
+                    "required": ["limit"],
+                    "additionalProperties": False,
+                    "default": {},
+                }
+            },
+        }
+        with self.assertRaises(ValueError) as default_error:
+            self.registry.command("test.invalidRecursiveDefault", schema=invalid_default)
+        self.assertIn("Missing required field", str(default_error.exception))
+
+        nested_schema = {"type": "string"}
+        for _ in range(self.registry.MAX_COMMAND_SCHEMA_DEPTH + 1):
+            nested_schema = {"type": "array", "items": nested_schema}
+        too_deep = {
+            "type": "object",
+            "properties": {"value": nested_schema},
+        }
+        with self.assertRaises(ValueError) as depth_error:
+            self.registry.command("test.schemaTooDeep", schema=too_deep)
+        self.assertIn("supported depth", str(depth_error.exception))
+
     def test_inspect_command_returns_permission_metadata(self):
         response = parse_response(self.registry.inspect_command(request("editor.log", {"message": "hello"})))
 
@@ -404,7 +513,15 @@ class RegistryTests(unittest.TestCase):
         response = parse_response(self.registry.execute_command(request("system.commands")))
 
         self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["metadataVersion"], self.registry.METADATA_VERSION)
+        self.assertEqual(response["result"]["loadErrors"], [])
         commands = {command["name"]: command for command in response["result"]["commands"]}
+        self.assertTrue(
+            all(
+                command_metadata["metadataVersion"] == self.registry.METADATA_VERSION
+                for command_metadata in commands.values()
+            )
+        )
         editor_log = commands["editor.log"]
         self.assertTrue(editor_log["supportsDryRun"])
         self.assertTrue(editor_log["schema"]["properties"]["dryRun"]["xDryRun"])
@@ -467,6 +584,55 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(self.registry.COMMAND_LOAD_ERRORS), 1)
         self.assertEqual(self.registry.COMMAND_LOAD_ERRORS[0]["module"], "broken_command_package.broken")
         self.assertIn("broken import", self.registry.COMMAND_LOAD_ERRORS[0]["error"])
+
+    def test_unsupported_schema_module_is_omitted_with_catalog_diagnostic(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_dir = pathlib.Path(temp_dir) / "unsupported_schema_package"
+            package_dir.mkdir()
+            (package_dir / "__init__.py").write_text("", encoding="utf-8")
+            (package_dir / "invalid.py").write_text(
+                "from unreal_editor_webui_registry import command\n"
+                "\n"
+                "@command('test.beforeUnsupported')\n"
+                "def before_unsupported(payload):\n"
+                "    return payload\n"
+                "\n"
+                "@command(\n"
+                "    'test.unsupportedSchema',\n"
+                "    schema={\n"
+                "        'type': 'object',\n"
+                "        'properties': {'value': {'type': ['string', 'null']}},\n"
+                "    },\n"
+                ")\n"
+                "def unsupported_schema(payload):\n"
+                "    return payload\n",
+                encoding="utf-8",
+            )
+            sys.path.insert(0, temp_dir)
+            try:
+                self.registry.load_command_modules("unsupported_schema_package")
+                catalog = parse_response(
+                    self.registry.execute_command(request("system.commands"))
+                )["result"]
+            finally:
+                sys.path.remove(temp_dir)
+                for module_name in list(sys.modules):
+                    if module_name == "unsupported_schema_package" or module_name.startswith(
+                        "unsupported_schema_package."
+                    ):
+                        sys.modules.pop(module_name, None)
+
+        command_names = {command_metadata["name"] for command_metadata in catalog["commands"]}
+        self.assertIn("system.ping", command_names)
+        self.assertNotIn("test.beforeUnsupported", command_names)
+        self.assertNotIn("test.unsupportedSchema", command_names)
+        self.assertEqual(catalog["metadataVersion"], self.registry.METADATA_VERSION)
+        self.assertEqual(len(catalog["loadErrors"]), 1)
+        self.assertEqual(
+            catalog["loadErrors"][0]["module"],
+            "unsupported_schema_package.invalid",
+        )
+        self.assertIn("unions are not supported", catalog["loadErrors"][0]["error"])
 
     def test_batch_rename_dry_run_returns_change_set(self):
         response = parse_response(

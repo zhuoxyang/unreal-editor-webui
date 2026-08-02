@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import schemaContract from '../../tests/fixtures/command-schema-v1.json'
 import {
   decodeCommandsResult,
   decodeProjectContext,
@@ -9,19 +10,82 @@ import {
 } from './bridge-decoders'
 
 const command = {
+  metadataVersion: 1,
   name: 'asset.scan',
   description: 'Scan assets.',
   permission: 'read',
   schema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1 } } },
 }
 
+function commandCatalogue(commands: unknown[], loadErrors: unknown[] = []) {
+  return {
+    metadataVersion: 1,
+    commands,
+    loadErrors,
+  }
+}
+
 describe('bridge result decoders', () => {
-  it('accepts well-formed command metadata and rejects unsafe shapes', () => {
-    expect(decodeCommandsResult({ commands: [command] }).commands).toHaveLength(1)
-    expect(() => decodeCommandsResult({ commands: [{ ...command, schema: null }] })).toThrow(
-      'commands[0].schema',
+  it('accepts a v1 catalogue and preserves registry load diagnostics', () => {
+    const decoded = decodeCommandsResult(commandCatalogue(
+      [command],
+      [{ module: 'plugin.optional', error: 'optional dependency unavailable' }],
+    ))
+
+    expect(decoded.commands).toHaveLength(1)
+    expect(decoded.loadErrors).toEqual([
+      { module: 'plugin.optional', error: 'optional dependency unavailable' },
+    ])
+  })
+
+  it('isolates malformed and duplicate commands without dropping healthy commands', () => {
+    const decoded = decodeCommandsResult(commandCatalogue([
+      command,
+      { ...command, name: 'asset.invalid', schema: null },
+      command,
+    ]))
+
+    expect(decoded.commands.map((item) => item.name)).toEqual(['asset.scan'])
+    expect(decoded.loadErrors.map((item) => item.module)).toEqual(['asset.invalid', 'asset.scan'])
+    expect(decoded.loadErrors[0].error).toContain('commands[1].schema')
+    expect(decoded.loadErrors[1].error).toContain('Duplicate command name')
+  })
+
+  it('rejects incompatible catalogue envelopes', () => {
+    expect(() => decodeCommandsResult({ ...commandCatalogue([command]), metadataVersion: 2 })).toThrow(
+      'metadataVersion 1',
     )
-    expect(() => decodeCommandsResult({ commands: [command, command] })).toThrow('duplicate command name')
+    expect(() => decodeCommandsResult({ ...commandCatalogue([command]), loadErrors: null })).toThrow(
+      'loadErrors',
+    )
+    expect(() => decodeCommandsResult(commandCatalogue([command], [{ module: '', error: 'broken' }]))).toThrow(
+      'loadErrors[0].module',
+    )
+  })
+
+  it('consumes the shared command schema v1 contract fixtures', () => {
+    expect(schemaContract.metadataVersion).toBe(1)
+
+    for (const fixture of schemaContract.valid) {
+      const decoded = decodeCommandsResult(commandCatalogue([{
+        ...command,
+        name: fixture.name,
+        schema: fixture.schema,
+      }]))
+      expect(decoded.commands, fixture.name).toHaveLength(1)
+      expect(decoded.loadErrors, fixture.name).toEqual([])
+    }
+
+    for (const fixture of schemaContract.invalid) {
+      const decoded = decodeCommandsResult(commandCatalogue([{
+        ...command,
+        name: fixture.name,
+        schema: fixture.schema,
+      }]))
+      expect(decoded.commands, fixture.name).toEqual([])
+      expect(decoded.loadErrors, fixture.name).toHaveLength(1)
+      expect(decoded.loadErrors[0].error, fixture.name).toContain(fixture.errorContains)
+    }
   })
 
   it('validates task bodies for every task method', () => {

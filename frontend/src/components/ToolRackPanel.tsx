@@ -1,6 +1,7 @@
 import type { ChangeEvent } from 'react'
 import type { CommandsLoadStatus } from '../hooks/useCommands'
 import type { ToolCategory, ToolCategoryId, ToolProject, ToolProjectId, ToolStage, ToolStageId } from '../tool-manifest'
+import type { CommandLoadError } from '../types/command'
 
 export type ToolRackCommand = {
   name: string
@@ -24,6 +25,7 @@ type ToolRackPanelProps = {
   search: string
   shownCount: number
   commandsError: string
+  commandsLoadErrors: CommandLoadError[]
   commandsStatus: CommandsLoadStatus
   onProjectChange: (projectId: ToolProjectId) => void
   onStageChange: (stageId: ToolStageId) => void
@@ -76,6 +78,7 @@ export function ToolRackPanel({
   search,
   shownCount,
   commandsError,
+  commandsLoadErrors,
   commandsStatus,
   onProjectChange,
   onStageChange,
@@ -178,6 +181,21 @@ export function ToolRackPanel({
             <div className="inline-error" role="alert">
               <p>{commandsError}</p>
               <button type="button" onClick={onRetryCommands}>Retry loading tools</button>
+            </div>
+          ) : null}
+          {commandsLoadErrors.length > 0 ? (
+            <div className="inline-warning" role="status">
+              <p>
+                {commandsLoadErrors.length} command {commandsLoadErrors.length === 1 ? 'module is' : 'modules are'} unavailable.
+              </p>
+              <ul>
+                {commandsLoadErrors.slice(0, 5).map((loadError, index) => (
+                  <li key={`${loadError.module}-${index}`}>
+                    <strong>{loadError.module}</strong>: {loadError.error}
+                  </li>
+                ))}
+              </ul>
+              {commandsLoadErrors.length > 5 ? <p>And {commandsLoadErrors.length - 5} more.</p> : null}
             </div>
           ) : null}
           {commands.length > 0 ? (

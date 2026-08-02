@@ -27,6 +27,7 @@ import {
 import type { CommandMetadata } from './types/command'
 
 const TEST_COMMAND: CommandMetadata = {
+  metadataVersion: 1,
   name: 'asset.scan',
   description: 'Scan assets',
   permission: 'read',

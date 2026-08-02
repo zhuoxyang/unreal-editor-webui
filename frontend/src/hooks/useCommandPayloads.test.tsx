@@ -5,6 +5,7 @@ import { useCommandPayloads } from './useCommandPayloads'
 
 function numericCommand(required = true): CommandMetadata {
   return {
+    metadataVersion: 1,
     name: 'asset.resize',
     description: 'Resize an asset.',
     permission: 'write',

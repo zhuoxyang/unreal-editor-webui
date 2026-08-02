@@ -22,7 +22,18 @@ COMMAND_LOAD_ERRORS: list[dict[str, str]] = []
 COOPERATIVE_JOBS: dict[str, "CooperativeJob"] = {}
 METADATA_VERSION = 1
 SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
-SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
+SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean"}
+MAX_COMMAND_SCHEMA_DEPTH = 16
+ROOT_SCHEMA_KEYWORDS = {"type", "properties", "required", "additionalProperties"}
+COMMON_PROPERTY_SCHEMA_KEYWORDS = {"type", "description", "default", "enum"}
+TYPE_SCHEMA_KEYWORDS = {
+    "object": {"properties", "required", "additionalProperties"},
+    "array": {"items", "minItems", "maxItems"},
+    "string": {"minLength", "maxLength"},
+    "integer": {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"},
+    "number": {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"},
+    "boolean": set(),
+}
 SUPPORTED_EXECUTION_THREADS = {"editor_game_thread", "editor_tick"}
 SUPPORTED_CANCELLATION_MODES = {"queued_only", "cooperative"}
 MAX_REQUEST_BYTES = 256 * 1024
@@ -177,7 +188,11 @@ def command(
     normalized_execution_thread = execution_thread.lower().strip() if isinstance(execution_thread, str) else ""
     normalized_cancellation_mode = cancellation_mode.lower().strip() if isinstance(cancellation_mode, str) else ""
     normalized_timeout_policy = timeout_policy.lower().strip() if isinstance(timeout_policy, str) else ""
-    normalized_schema = schema or {"type": "object", "properties": {}}
+    normalized_schema = (
+        copy.deepcopy(schema)
+        if schema is not None
+        else {"type": "object", "properties": {}}
+    )
 
     if not normalized_name:
         raise ValueError("Command name must be a non-empty string.")
@@ -410,59 +425,247 @@ def _validate_type(value: Any, expected_type: str) -> bool:
     if expected_type == "string":
         return isinstance(value, str)
     if expected_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+        ) or (
+            isinstance(value, float)
+            and math.isfinite(value)
+            and value.is_integer()
+        )
     if expected_type == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (not isinstance(value, float) or math.isfinite(value))
+        )
     if expected_type == "boolean":
         return isinstance(value, bool)
-    if expected_type == "null":
-        return value is None
     return False
 
 
 def _validate_command_schema(command_name: str, schema: Any) -> None:
-    def validate_node(node: Any, path: str) -> None:
+    def fail(path: str, message: str) -> None:
+        raise ValueError(f'Command "{command_name}" schema at {path} {message}')
+
+    def validate_json_value(value: Any, path: str) -> None:
+        node_count = 0
+        stack = [(value, 0)]
+        while stack:
+            current, depth = stack.pop()
+            node_count += 1
+            if node_count > MAX_JSON_NODES:
+                fail(path, f"contains more than {MAX_JSON_NODES} JSON nodes.")
+            if depth > MAX_JSON_DEPTH:
+                fail(path, f"exceeds the maximum JSON depth of {MAX_JSON_DEPTH}.")
+            if current is None or isinstance(current, (str, bool, int)):
+                continue
+            if isinstance(current, float):
+                if math.isfinite(current):
+                    continue
+                fail(path, "must contain only finite JSON numbers.")
+            if isinstance(current, list):
+                stack.extend((item, depth + 1) for item in current)
+                continue
+            if isinstance(current, dict):
+                if any(not isinstance(key, str) for key in current):
+                    fail(path, "must contain only string JSON object keys.")
+                stack.extend((item, depth + 1) for item in current.values())
+                continue
+            fail(path, "must be JSON-compatible.")
+
+    def validate_nonnegative_integer(node: dict[str, Any], key: str, path: str) -> int | None:
+        if key not in node:
+            return None
+        value = node[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            fail(f"{path}.{key}", "must be a non-negative integer.")
+        return value
+
+    def validate_finite_number(node: dict[str, Any], key: str, path: str) -> int | float | None:
+        if key not in node:
+            return None
+        value = node[key]
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+        ):
+            fail(f"{path}.{key}", "must be a finite number.")
+        return value
+
+    def validate_numeric_bounds(node: dict[str, Any], declared_type: str, path: str) -> None:
+        minimum = validate_finite_number(node, "minimum", path)
+        maximum = validate_finite_number(node, "maximum", path)
+        exclusive_minimum = validate_finite_number(node, "exclusiveMinimum", path)
+        exclusive_maximum = validate_finite_number(node, "exclusiveMaximum", path)
+
+        lower_bounds = [
+            (value, exclusive)
+            for value, exclusive in ((minimum, False), (exclusive_minimum, True))
+            if value is not None
+        ]
+        upper_bounds = [
+            (value, exclusive)
+            for value, exclusive in ((maximum, False), (exclusive_maximum, True))
+            if value is not None
+        ]
+        if not lower_bounds or not upper_bounds:
+            return
+
+        lower_value = max(value for value, _ in lower_bounds)
+        lower_exclusive = any(value == lower_value and exclusive for value, exclusive in lower_bounds)
+        upper_value = min(value for value, _ in upper_bounds)
+        upper_exclusive = any(value == upper_value and exclusive for value, exclusive in upper_bounds)
+        if lower_value > upper_value or (
+            lower_value == upper_value and (lower_exclusive or upper_exclusive)
+        ):
+            fail(path, "has contradictory numeric bounds.")
+
+        if declared_type == "integer":
+            first_integer = (
+                math.floor(lower_value) + 1
+                if lower_exclusive
+                else math.ceil(lower_value)
+            )
+            last_integer = (
+                math.ceil(upper_value) - 1
+                if upper_exclusive
+                else math.floor(upper_value)
+            )
+            if first_integer > last_integer:
+                fail(path, "has numeric bounds that allow no integer value.")
+
+    def validate_node(
+        node: Any,
+        path: str,
+        depth: int,
+        *,
+        is_root: bool = False,
+        is_direct_payload_property: bool = False,
+    ) -> None:
         if not isinstance(node, dict):
-            raise ValueError(f'Command "{command_name}" schema at {path} must be an object.')
+            fail(path, "must be an object.")
+        if depth > MAX_COMMAND_SCHEMA_DEPTH:
+            fail(path, f"exceeds the supported depth of {MAX_COMMAND_SCHEMA_DEPTH}.")
+        if any(not isinstance(key, str) or not key for key in node):
+            fail(path, "has an invalid keyword name.")
 
         declared_type = node.get("type")
-        declared_types = _expected_types(declared_type)
-        if declared_type is not None and not declared_types:
-            raise ValueError(f'Command "{command_name}" schema at {path} has an invalid type declaration.')
-
-        unsupported_types = [item for item in declared_types if item not in SUPPORTED_SCHEMA_TYPES]
-        if unsupported_types:
-            raise ValueError(
-                f'Command "{command_name}" schema at {path} uses unsupported type(s): '
-                f'{", ".join(unsupported_types)}.'
+        if not isinstance(declared_type, str):
+            fail(f"{path}.type", "must declare one supported string type; unions are not supported.")
+        if declared_type not in SUPPORTED_SCHEMA_TYPES:
+            fail(
+                f"{path}.type",
+                f'uses unsupported type "{declared_type}"; expected one of: {sorted(SUPPORTED_SCHEMA_TYPES)}.',
             )
+        if is_root and declared_type != "object":
+            fail(f"{path}.type", 'must be "object".')
 
-        properties = node.get("properties")
-        if properties is not None:
+        allowed_keywords = (
+            ROOT_SCHEMA_KEYWORDS
+            if is_root
+            else COMMON_PROPERTY_SCHEMA_KEYWORDS | TYPE_SCHEMA_KEYWORDS[declared_type]
+        )
+        if is_direct_payload_property:
+            allowed_keywords = allowed_keywords | {"xDryRun"}
+        unknown_keywords = sorted(set(node).difference(allowed_keywords))
+        if unknown_keywords:
+            fail(path, f"uses unsupported keyword(s): {', '.join(unknown_keywords)}.")
+
+        description = node.get("description")
+        if description is not None and not isinstance(description, str):
+            fail(f"{path}.description", "must be a string.")
+
+        if "xDryRun" in node:
+            if not isinstance(node["xDryRun"], bool):
+                fail(f"{path}.xDryRun", "must be a boolean.")
+            if declared_type != "boolean":
+                fail(f"{path}.xDryRun", 'is only supported for type "boolean".')
+
+        if declared_type == "object":
+            properties = node.get("properties", {})
             if not isinstance(properties, dict):
-                raise ValueError(f'Command "{command_name}" schema properties at {path} must be an object.')
+                fail(f"{path}.properties", "must be an object.")
             for property_name, property_schema in properties.items():
                 if not isinstance(property_name, str) or not property_name:
-                    raise ValueError(f'Command "{command_name}" schema at {path} has an invalid property name.')
-                validate_node(property_schema, f"{path}.{property_name}")
+                    fail(f"{path}.properties", "has an invalid property name.")
+                validate_node(
+                    property_schema,
+                    f"{path}.{property_name}",
+                    depth + 1,
+                    is_direct_payload_property=is_root,
+                )
 
-        items = node.get("items")
-        if items is not None:
-            validate_node(items, f"{path}[]")
+            required = node.get("required", [])
+            if not isinstance(required, list) or any(
+                not isinstance(item, str) or not item for item in required
+            ):
+                fail(f"{path}.required", "must be an array of non-empty strings.")
+            if len(set(required)) != len(required):
+                fail(f"{path}.required", "must not contain duplicate property names.")
+            unknown_required = sorted(set(required).difference(properties))
+            if unknown_required:
+                fail(
+                    f"{path}.required",
+                    f"references unknown properties: {', '.join(unknown_required)}.",
+                )
 
-        required = node.get("required")
-        if required is not None and (
-            not isinstance(required, list) or any(not isinstance(item, str) or not item for item in required)
-        ):
-            raise ValueError(f'Command "{command_name}" schema required list at {path} is invalid.')
+            additional_properties = node.get("additionalProperties", True)
+            if not isinstance(additional_properties, bool):
+                fail(f"{path}.additionalProperties", "must be a boolean.")
+
+        if declared_type == "array":
+            if "items" not in node:
+                fail(f"{path}.items", "is required for array schemas.")
+            validate_node(node["items"], f"{path}[]", depth + 1)
+            min_items = validate_nonnegative_integer(node, "minItems", path)
+            max_items = validate_nonnegative_integer(node, "maxItems", path)
+            if min_items is not None and max_items is not None and min_items > max_items:
+                fail(path, "has minItems greater than maxItems.")
+
+        if declared_type == "string":
+            min_length = validate_nonnegative_integer(node, "minLength", path)
+            max_length = validate_nonnegative_integer(node, "maxLength", path)
+            if min_length is not None and max_length is not None and min_length > max_length:
+                fail(path, "has minLength greater than maxLength.")
+
+        if declared_type in {"integer", "number"}:
+            validate_numeric_bounds(node, declared_type, path)
 
         enum_values = node.get("enum")
-        if enum_values is not None and not isinstance(enum_values, list):
-            raise ValueError(f'Command "{command_name}" schema enum at {path} must be an array.')
+        if enum_values is not None:
+            if not isinstance(enum_values, list) or not enum_values:
+                fail(f"{path}.enum", "must be a non-empty array.")
+            seen_values: list[Any] = []
+            for value in enum_values:
+                if not isinstance(value, (str, int, float, bool)) or not _validate_type(
+                    value, declared_type
+                ):
+                    fail(
+                        f"{path}.enum",
+                        f'must contain only finite scalar values of type "{declared_type}".',
+                    )
+                if any(value == seen for seen in seen_values):
+                    fail(f"{path}.enum", "must not contain duplicate values.")
+                seen_values.append(value)
 
-    validate_node(schema, "payload")
-    if schema.get("type", "object") != "object":
-        raise ValueError(f'Command "{command_name}" payload schema must have type "object".')
+        if "default" in node:
+            default_value = node["default"]
+            validate_json_value(default_value, f"{path}.default")
+            normalized_default = _apply_schema_defaults(copy.deepcopy(default_value), node)
+            default_errors = _validate_schema_value(
+                normalized_default,
+                node,
+                [f"{path}.default"],
+            )
+            if default_errors:
+                fail(
+                    f"{path}.default",
+                    f"does not satisfy its schema: {'; '.join(default_errors)}",
+                )
+
+    validate_node(schema, "payload", 0, is_root=True)
 
 
 def _format_schema_path(path: list[str]) -> str:
@@ -486,8 +689,6 @@ def _get_schema_integer(schema: dict[str, Any], key: str) -> int | None:
 def _expected_types(expected_type: Any) -> list[str]:
     if isinstance(expected_type, str):
         return [expected_type]
-    if isinstance(expected_type, list):
-        return [item for item in expected_type if isinstance(item, str)]
     return []
 
 
@@ -610,14 +811,11 @@ def _validate_object_payload(payload: dict[str, Any], schema: dict[str, Any], pa
             errors.extend(_validate_schema_value(value, property_schema, child_path))
             continue
 
-        if isinstance(additional_properties, dict):
-            errors.extend(_validate_schema_value(value, additional_properties, child_path))
-
     return errors
 
 
 def _validate_payload(payload: dict[str, Any], schema: dict[str, Any]) -> list[str]:
-    if schema.get("type", "object") != "object":
+    if schema.get("type") != "object":
         return ["Command payload schema must be an object schema."]
 
     return _validate_object_payload(payload, schema, [])
