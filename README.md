@@ -98,6 +98,16 @@ npm run build
 
 The build output is written to `Web/dist`. If that folder is missing, the plugin falls back to the minimal diagnostic page at `Web/index.html`; this fallback does not provide the complete React tool UI.
 
+Repository governance tools use the small root lockfile separately from the frontend. To run the immutable GitHub Actions reference check locally:
+
+```sh
+npm ci --ignore-scripts --include=dev --no-audit --no-fund
+node --test tests/validate-github-action-references.test.mjs
+node scripts/validate-github-action-references.mjs
+```
+
+The validator parses YAML 1.2 and requires every external action or reusable workflow to use a full 40-character commit SHA. Local actions and Docker actions remain fail-closed until their nested dependencies have equivalent immutable-reference validation.
+
 ## Package The Plugin
 
 Use the repository scripts when packaging. They install the locked frontend dependencies, build the React app, verify `Web/dist/index.html`, and then stage a clean copy of the plugin without local dependency folders such as `frontend/node_modules`.
