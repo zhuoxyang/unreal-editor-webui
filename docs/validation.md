@@ -41,7 +41,7 @@ CI coverage added in `.github/workflows/ci.yml`:
 
 - Node 22.22.2 and 24.18.1 frontend install/build/lint and packaged frontend entry-point validation on GitHub-hosted runners. Node 22.22.2 runs the ordinary test command, while Node 24.18.1 runs the complete suite once with the production-source coverage gates; Node 24.18.1 is also pinned for local packaging, Unreal validation, and release tooling through `.nvmrc`.
 - Python 3.9 and 3.11 descriptor, syntax, and registry unit tests on GitHub-hosted runners.
-- A Windows-hosted Node 24.18.1 packaging-contract job that exercises the real Windows PowerShell 5.1 and `.cmd` branches, including scoped AutomationTool environment inheritance, failure-code propagation, and success/failure artifact fixtures without requiring Unreal Engine.
+- A Windows-hosted Node 24.18.1 packaging-contract job that exercises the real Windows PowerShell 5.1 and `.cmd` branches, including short same-volume private BuildPlugin paths, scoped AutomationTool environment inheritance, failure-code propagation, and success/failure artifact fixtures without requiring Unreal Engine.
 - Repository descriptor/module-wiring, script-syntax, and tracked-file whitespace checks on a GitHub-hosted runner. The whitespace check compares Git's empty tree with `HEAD`, so it covers every tracked file even on a clean checkout and works for an initial commit; legacy extra blank lines at EOF remain tolerated.
 - Workflow-level `contents: read` permission and checkout with persisted GitHub credentials disabled.
 
@@ -103,7 +103,7 @@ Validated:
 
 ## BuildPlugin Commands
 
-Run the packaging helper that matches your platform. The script requires an exact 40-character commit, materializes tracked inputs from Git objects, builds the exact commit's frontend in an isolated tree, writes a pre-UBT `SourceManifest.json`, and then calls `RunUAT BuildPlugin` against a private sibling directory. After validation, Windows uses a no-overwrite directory move; Unix atomically reserves the final name before populating it and moves the manifest last. The final output path must not already exist and is never overwritten if another process creates it during the build.
+Run the packaging helper that matches your platform. The script requires an exact 40-character commit, materializes tracked inputs from Git objects, builds the exact commit's frontend in an isolated tree, and writes a pre-UBT `SourceManifest.json`. On Windows it calls `RunUAT BuildPlugin` against a short random system-temp path on the output volume, then uses a no-overwrite directory move; this keeps UE action paths below 260 characters without weakening atomic publication. On Unix it builds in a private sibling, atomically reserves the final name before populating it, and moves the manifest last. The final output path must not already exist and is never overwritten if another process creates it during the build.
 
 macOS/Linux:
 

@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
@@ -669,6 +669,74 @@ function assertRunUatFailureCleansStaging(shellKind, executable) {
   }
 }
 
+function assertPowerShellBuildPackageUsesShortTempRoot(executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, 'powershell')
+  const delegatedRunUat = fixture.runUat
+  const maxPrivatePackageLength = 150
+  let deepPackageParent = fixture.root
+  while (deepPackageParent.length < maxPrivatePackageLength + 20) {
+    deepPackageParent = join(deepPackageParent, 'deep-package-parent')
+  }
+  mkdirSync(deepPackageParent, { recursive: true })
+  fixture.packageDir = join(deepPackageParent, 'package-output')
+  fixture.env.RUNUAT_PACKAGE_DIR = fixture.packageDir
+
+  const hypotheticalSibling = join(
+    deepPackageParent,
+    `.unreal-editor-webui-package-${'0'.repeat(32)}`,
+  )
+  assert.ok(
+    hypotheticalSibling.length > maxPrivatePackageLength,
+    'the fixture must reproduce the former long private-output layout',
+  )
+
+  const lengthGuardRunUat = join(fixture.root, 'RunUAT-length-guard.ps1')
+  writeFileSync(
+    lengthGuardRunUat,
+    `$PackageArgument = @($args | Where-Object { $_ -like '-Package=*' })
+if ($PackageArgument.Count -ne 1) {
+    throw 'Expected exactly one -Package argument.'
+}
+$PrivatePackageDir = $PackageArgument[0].Substring('-Package='.Length)
+if ($PrivatePackageDir.Length -gt [int]$env:RUNUAT_MAX_PACKAGE_PATH) {
+    $global:LASTEXITCODE = 97
+    return
+}
+& $env:RUNUAT_DELEGATE @args
+`,
+    'utf8',
+  )
+  fixture.runUat = lengthGuardRunUat
+  fixture.env.RUNUAT_DELEGATE = delegatedRunUat
+  fixture.env.RUNUAT_MAX_PACKAGE_PATH = String(maxPrivatePackageLength)
+  fixture.env.NPM_PROBE_MODE = 'succeed'
+  fixture.env.RUNUAT_PROBE_MODE = 'succeed'
+  try {
+    const result = runPackageScript('powershell', fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 0, output)
+
+    const invocation = readFileSync(fixture.runUatProbe, 'utf8').trim()
+    const packageArgument = invocation.match(/-Package=(.+?)(?="?\s+"?-Rocket(?:"|\s|$))/u)
+    assert.notEqual(packageArgument, null, invocation)
+    const privatePackageDir = packageArgument[1].replace(/^"|"$/gu, '')
+    assert.ok(privatePackageDir.length <= maxPrivatePackageLength)
+    const privateParentIdentity = statSync(dirname(privatePackageDir), { bigint: true })
+    const tempRootIdentity = statSync(fixture.tempRoot, { bigint: true })
+    assert.equal(privateParentIdentity.dev, tempRootIdentity.dev)
+    assert.equal(privateParentIdentity.ino, tempRootIdentity.ino)
+    assert.match(basename(privatePackageDir), /^uewp-[0-9a-f]{32}$/u)
+    assert.equal(existsSync(privatePackageDir), false, 'private output must move to PackageDir')
+    assert.equal(existsSync(fixture.packageDir), true, 'the package must be published')
+    assert.deepEqual(topLevelDirectories(fixture.tempRoot), fixture.initialDirectories)
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
 function runPowerShellPackageWithConsoleCapture(fixture, executable, consoleLog) {
   const wrapper = join(fixture.root, 'capture-package-console.ps1')
   writeFileSync(
@@ -893,6 +961,20 @@ test(
   () => {
     assert.ok(powershellAvailable, 'PowerShell is required in CI')
     assertRunUatFailureCleansStaging('powershell', powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell packaging keeps private BuildPlugin output under the short temp root',
+  {
+    skip:
+      process.platform !== 'win32'
+        ? 'Windows volume identity and PowerShell 5.1 are required'
+        : powershellSkip,
+  },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertPowerShellBuildPackageUsesShortTempRoot(powershellExecutable)
   },
 )
 
