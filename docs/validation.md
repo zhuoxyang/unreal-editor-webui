@@ -32,7 +32,7 @@ Historical local UE 5.5 evidence from 2026-06-20 (before the current changes):
 
 CI coverage added in `.github/workflows/ci.yml`:
 
-- Node 20.19 and 22.13 frontend install/build/lint/test and packaged frontend entry-point validation on GitHub-hosted runners.
+- Node 22.22.2 and 24.18.1 frontend install/build/lint/test and packaged frontend entry-point validation on GitHub-hosted runners. Node 24.18.1 is also pinned for local packaging, Unreal validation, and release tooling through `.nvmrc`.
 - Python 3.9 and 3.11 descriptor, syntax, and registry unit tests on GitHub-hosted runners.
 - Repository descriptor/module-wiring, script-syntax, and tracked-file whitespace checks on a GitHub-hosted runner. The whitespace check compares Git's empty tree with `HEAD`, so it covers every tracked file even on a clean checkout and works for an initial commit; legacy extra blank lines at EOF remain tolerated.
 - Workflow-level `contents: read` permission and checkout with persisted GitHub credentials disabled.

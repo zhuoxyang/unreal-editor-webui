@@ -87,8 +87,10 @@ C:\actions-runner-unreal-editor-webui-ue58\run.cmd
 
 Mark the hosted jobs from `.github/workflows/ci.yml` as required pull-request checks:
 
-- `Frontend (Node ...)`
-- `Python registry (Python ...)`
+- `Frontend (Node 22.22.2)`
+- `Frontend (Node 24.18.1)`
+- `Python registry (Python 3.9)`
+- `Python registry (Python 3.11)`
 - `Repository checks`
 
 Do not make any `.github/workflows/ue-ci.yml` job a pull-request required check: that workflow deliberately has no `pull_request` trigger.

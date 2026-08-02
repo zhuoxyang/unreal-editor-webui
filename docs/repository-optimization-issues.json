@@ -21,7 +21,7 @@
   },
   {
     "title": "CI: add Node and Python version matrix coverage",
-    "body": "Category: CI and compatibility\n\nProblem:\nLocal validation found Python 3.9 and Node version compatibility gaps that CI did not cover directly.\n\nProposed work:\n- Run Python registry tests on 3.9 and 3.11.\n- Run frontend checks on Node 20.19+ and 22.13+.\n- Keep UE-specific validation in the self-hosted workflow.\n\nAcceptance criteria:\n- Hosted CI catches the supported local toolchain floor.\n- Existing validation steps remain intact."
+    "body": "Category: CI and compatibility\n\nProblem:\nLocal validation found Python 3.9 and Node version compatibility gaps that CI did not cover directly.\n\nProposed work:\n- Run Python registry tests on 3.9 and 3.11.\n- Run frontend checks on the supported Node 22.22.2 and 24.18.1 floors.\n- Keep UE-specific validation in the self-hosted workflow.\n\nAcceptance criteria:\n- Hosted CI catches every supported local toolchain floor.\n- Existing validation steps remain intact."
   },
   {
     "title": "Tool manifest: move project/stage catalog out of hard-coded frontend state",
