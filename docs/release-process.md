@@ -15,7 +15,7 @@ Before downloading anything, the workflow resolves the checked-out commit and ve
 - The artifact metadata remains bound to that workflow run and commit.
 - The raw artifact ZIP downloaded by id hashes to that exact API-provided SHA-256 digest before any extraction occurs.
 - The source and packaged descriptors both have a `VersionName` matching the candidate tag.
-- The package contains `UnrealEditorWebUI.uplugin` and `Web/dist/index.html` and contains no symbolic links.
+- The package contains `UnrealEditorWebUI.uplugin`, `Web/dist/index.html`, and the exact commit's MIT `LICENSE`, and contains no symbolic links.
 
 A tag push searches for an eligible UE run for that exact commit. A manual run requires the operator to select the release commit and provide the exact trusted UE workflow run id. A run id for a different commit, a skipped UE job, a partial/expired artifact, or a hosted-only validation cannot be promoted.
 
@@ -50,4 +50,4 @@ This commandlet smoke does not create an interactive CEF window. It therefore do
 
 ## Promotion Policy
 
-The repository currently makes no automated GitHub Release and grants this workflow no `contents: write` permission. Promotion is a separate owner-approved action after reviewing the candidate and validation evidence. Selecting a repository/distribution license is also an explicit repository-owner decision; this workflow does not choose or infer one.
+The repository currently makes no automated GitHub Release and grants this workflow no `contents: write` permission. Promotion is a separate owner-approved action after reviewing the candidate and validation evidence. The owner selected the MIT License; packaging copies the exact repository `LICENSE`, and candidate assembly rejects a missing or mismatched copy.

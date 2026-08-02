@@ -14,7 +14,13 @@ Windows source validation on 2026-08-02:
 - Workflow/dependabot YAML parsing, PowerShell AST parsing, shell syntax, release-helper syntax, immutable action references, and whitespace validation: passed; artifact ZIP digest tests passed (2 tests).
 - SBOM and locked dependency inventory generation: passed and produced 301 npm components/packages.
 
-Unreal Engine 5.5 is not installed in this local environment. The current C++ bridge/session changes, packaged smoke, and release-candidate artifact chain therefore still require the protected trusted UE runner before this commit can be described as release-validated.
+Local Unreal inventory and auxiliary validation on 2026-08-02:
+
+- Unreal Engine 5.1.1 and 5.3.2 are installed; Unreal Engine 5.5 is not installed.
+- UE 5.3.2 `BuildPlugin` passed on Windows with Visual Studio 2022, and the packaged MIT `LICENSE` matched the repository SHA-256 (`a1ff542acadcc7847fba925b0b82474d1de27ae18c4804564eb76a302f4f19d5`).
+- All 9 `UnrealEditorWebUI.` native Automation tests passed, including `Bridge.PackagedRegistryPing` through the packaged Python registry.
+- The packaged frontend smoke passed with both generated assets validated; the native settings smoke passed with 0 errors.
+- This UE 5.3.2 run is useful compatibility evidence, not the release gate. The exact commit still requires the protected trusted UE 5.5 runner before it can be described as release-validated.
 
 Historical local UE 5.5 evidence from 2026-06-20 (before the current changes):
 
@@ -36,7 +42,7 @@ UE CI coverage is defined in `.github/workflows/ue-ci.yml`:
 - Runner labels: `self-hosted`, `windows`, `ue-5.5`.
 - Runner environment variable: `UE_ROOT=C:\Program Files\Epic Games\UE_5.5`.
 - Required software: Unreal Engine 5.5, Visual Studio 2022 C++ toolchain, Windows SDK, Node.js/npm, Git, PowerShell.
-- The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the `UnrealEditorWebUI.` automation test filter, executes the packaged bridge smoke, and runs `scripts/validate-settings-smoke.py`.
+- The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html` and exact repository `LICENSE`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the `UnrealEditorWebUI.` automation test filter, executes the packaged bridge smoke, and runs `scripts/validate-settings-smoke.py`.
 - UE logs upload with `if: always()` so failed runs keep diagnostics when files exist. The HostProject log glob points to the temporary host project directory.
 - The packaged plugin uploads only when the full UE job succeeds; missing package output is an artifact error.
 - Keep self-hosted runner user Python startup scripts clean or isolated. A global `Documents/UnrealEngine/Python/init_unreal.py` can pollute settings-smoke commandlet exit status.
@@ -86,7 +92,7 @@ Validated:
 
 ## BuildPlugin Commands
 
-Run the packaging helper that matches your platform. The script stages a clean plugin copy and then calls `RunUAT BuildPlugin`.
+Run the packaging helper that matches your platform. The script stages a clean plugin copy and then calls `RunUAT BuildPlugin`; Unreal's packaging filter includes the repository `LICENSE`, and the helper rejects a missing or mismatched packaged copy.
 
 macOS/Linux:
 

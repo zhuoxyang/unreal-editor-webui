@@ -259,4 +259,7 @@ The frontend renders those asset results as tables instead of raw JSON, while ot
 
 - Add more command-specific result views and production editor workflows.
 - Add GUI-capable CEF automation for the JavaScript binding and task-event hops.
-- Select and add the repository's distribution license before publishing a release.
+
+## License
+
+This project is distributed under the [MIT License](LICENSE).

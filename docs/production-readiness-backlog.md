@@ -107,4 +107,4 @@ Acceptance criteria:
 - Archives include checksums and machine-readable provenance or an SBOM.
 - GitHub Actions dependencies and runner downloads are pinned and updateable.
 - Source-install instructions build `Web/dist` before opening the plugin.
-- A repository license is selected explicitly by the owner and included in release packages.
+- The owner-selected MIT License is present in the repository and verified in release packages.

@@ -178,6 +178,16 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid timeout policy"):
             self.registry.command("test.timeoutTypo", timeout_policy="seconds:later")
 
+        for index, timeout_policy in enumerate(("seconds:10junk", "seconds: 10", "seconds:1e")):
+            with self.subTest(timeout_policy=timeout_policy):
+                with self.assertRaisesRegex(ValueError, "invalid timeout policy"):
+                    self.registry.command(
+                        f"test.timeoutMalformed{index}",
+                        execution_thread="editor_tick",
+                        cancellation_mode="cooperative",
+                        timeout_policy=timeout_policy,
+                    )
+
     def test_incompatible_execution_metadata_is_rejected_during_registration(self):
         with self.assertRaisesRegex(ValueError, "queued_only cancellation"):
             self.registry.command(

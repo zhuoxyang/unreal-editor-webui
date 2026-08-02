@@ -112,6 +112,11 @@ jobs:
           assert (root / "Python/unreal_editor_webui_bridge_entry.py").is_file(), "Python bridge entry missing"
           assert (root / "Python/unreal_editor_webui_registry.py").is_file(), "Python registry missing"
           assert (root / "scripts/validate-packaged-bridge-smoke.py").is_file(), "Packaged bridge smoke missing"
+          license_text = (root / "LICENSE").read_text(encoding="utf-8")
+          assert license_text.startswith("MIT License\n"), "MIT license header missing"
+          assert "Copyright (c) 2026 zhuoxyang" in license_text, "MIT copyright holder missing"
+          packaging_filter = (root / "Config/FilterPlugin.ini").read_text(encoding="utf-8")
+          assert "/LICENSE" in {line.strip() for line in packaging_filter.splitlines()}, "LICENSE packaging rule missing"
 
       - name: Check Unix packaging script syntax
         run: bash -n scripts/package-plugin.sh

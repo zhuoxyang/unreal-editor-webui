@@ -8,7 +8,6 @@
 #include "Misc/App.h"
 #include "Misc/Base64.h"
 #include "Misc/Guid.h"
-#include "Misc/LexFromString.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopeLock.h"
@@ -153,15 +152,87 @@ namespace
         return ExecutionThread.ToLower() == TEXT("editor_tick");
     }
 
-    double ParseTimeoutSeconds(const FString& TimeoutPolicy)
+    bool IsStrictDecimalNumber(const FString& Value)
     {
+        int32 Index = 0;
+        if (Value.IsEmpty())
+        {
+            return false;
+        }
+
+        if (Value[Index] == TEXT('+') || Value[Index] == TEXT('-'))
+        {
+            ++Index;
+        }
+
+        bool bHasMantissaDigit = false;
+        while (Index < Value.Len() && FChar::IsDigit(Value[Index]))
+        {
+            bHasMantissaDigit = true;
+            ++Index;
+        }
+
+        if (Index < Value.Len() && Value[Index] == TEXT('.'))
+        {
+            ++Index;
+            while (Index < Value.Len() && FChar::IsDigit(Value[Index]))
+            {
+                bHasMantissaDigit = true;
+                ++Index;
+            }
+        }
+
+        if (!bHasMantissaDigit)
+        {
+            return false;
+        }
+
+        if (Index < Value.Len() && (Value[Index] == TEXT('e') || Value[Index] == TEXT('E')))
+        {
+            ++Index;
+            if (Index < Value.Len() && (Value[Index] == TEXT('+') || Value[Index] == TEXT('-')))
+            {
+                ++Index;
+            }
+
+            const int32 ExponentStart = Index;
+            while (Index < Value.Len() && FChar::IsDigit(Value[Index]))
+            {
+                ++Index;
+            }
+            if (Index == ExponentStart)
+            {
+                return false;
+            }
+        }
+
+        return Index == Value.Len();
+    }
+
+    bool TryParsePositiveTimeoutSeconds(const FString& TimeoutPolicy, double& OutSeconds)
+    {
+        OutSeconds = 0.0;
         const FString Normalized = TimeoutPolicy.ToLower();
         if (!Normalized.StartsWith(TEXT("seconds:")))
         {
-            return 0.0;
+            return false;
         }
 
-        return FCString::Atod(*Normalized.Mid(8));
+        const FString SecondsText = Normalized.Mid(8);
+        if (!IsStrictDecimalNumber(SecondsText))
+        {
+            return false;
+        }
+
+        OutSeconds = FCString::Atod(*SecondsText);
+        return FMath::IsFinite(OutSeconds) && OutSeconds > 0.0;
+    }
+
+    double ParseTimeoutSeconds(const FString& TimeoutPolicy)
+    {
+        double Seconds = 0.0;
+        TryParsePositiveTimeoutSeconds(TimeoutPolicy, Seconds);
+        return Seconds;
     }
 
     void AppendTaskLogLocked(FUnrealEditorWebUITask& Task, const FString& LogLine)
@@ -342,12 +413,8 @@ namespace
             return false;
         }
 
-        const FString SecondsText = Normalized.Mid(8);
         double Seconds = 0.0;
-        return !SecondsText.IsEmpty()
-            && LexTryParseString(Seconds, *SecondsText)
-            && FMath::IsFinite(Seconds)
-            && Seconds > 0.0;
+        return TryParsePositiveTimeoutSeconds(Normalized, Seconds);
     }
 
     bool IsSupportedExecutionMetadata(

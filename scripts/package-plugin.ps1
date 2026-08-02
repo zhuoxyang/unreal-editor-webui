@@ -17,6 +17,7 @@ $RunUATPath = (Resolve-Path -LiteralPath $RunUAT).Path
 $RootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $FrontendDir = Join-Path $RootDir "frontend"
 $FrontendEntry = Join-Path $RootDir "Web/dist/index.html"
+$LicenseFile = Join-Path $RootDir "LICENSE"
 $StagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ("UnrealEditorWebUI-" + [System.Guid]::NewGuid().ToString("N"))
 $PluginStage = Join-Path $StagingDir "UnrealEditorWebUI"
 $PluginDescriptor = Join-Path $PluginStage "UnrealEditorWebUI.uplugin"
@@ -50,10 +51,14 @@ try {
     if (-not (Test-Path -LiteralPath $FrontendEntry -PathType Leaf)) {
         throw "Frontend build did not create the expected entry point: $FrontendEntry"
     }
+    if (-not (Test-Path -LiteralPath $LicenseFile -PathType Leaf)) {
+        throw "Repository license not found: $LicenseFile"
+    }
 
     New-Item -ItemType Directory -Path $PluginStage -Force | Out-Null
 
     Copy-Item -LiteralPath (Join-Path $RootDir "UnrealEditorWebUI.uplugin") -Destination $PluginDescriptor
+    Copy-Item -LiteralPath $LicenseFile -Destination (Join-Path $PluginStage "LICENSE")
 
     $pluginDirectories = @("Config", "Content", "Platforms", "Python", "Resources", "Shaders", "Source", "Web")
     foreach ($directoryName in $pluginDirectories) {
@@ -76,6 +81,14 @@ try {
 
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
+    }
+
+    $PackagedLicense = Join-Path $PackageDir "LICENSE"
+    if (-not (Test-Path -LiteralPath $PackagedLicense -PathType Leaf)) {
+        throw "Packaged plugin license missing: $PackagedLicense"
+    }
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedLicense).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $LicenseFile).Hash) {
+        throw "Packaged plugin license does not match the repository license."
     }
 }
 finally {

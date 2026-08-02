@@ -121,6 +121,11 @@ jobs:
 
           test -f trusted-package/UnrealEditorWebUI.uplugin
           test -f trusted-package/Web/dist/index.html
+          test -f trusted-package/LICENSE
+          if ! cmp -s LICENSE trusted-package/LICENSE; then
+            echo "The packaged license does not match the exact release commit." >&2
+            exit 1
+          fi
           if find trusted-package -type l -print -quit | grep -q .; then
             echo "The trusted package contains a symbolic link; refusing to assemble a release candidate." >&2
             exit 1
@@ -173,6 +178,11 @@ jobs:
               "releaseCommit": os.environ["RELEASE_COMMIT"],
               "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "sourceArchiveCreated": False,
+              "license": {
+                  "spdxId": "MIT",
+                  "path": "LICENSE",
+                  "verifiedAgainstSource": True,
+              },
               "ueValidation": {
                   "workflowPath": ".github/workflows/ue-ci.yml",
                   "requiredJob": "UE 5.5 BuildPlugin and automation",

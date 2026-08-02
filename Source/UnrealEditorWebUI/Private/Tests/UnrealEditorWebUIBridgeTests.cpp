@@ -188,6 +188,8 @@ bool FUnrealEditorWebUIBridgePreflightValidationTest::RunTest(const FString& Par
         {TEXT("negative timeout"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:-1"))},
         {TEXT("non-finite timeout"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:nan"))},
         {TEXT("trailing timeout text"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:10junk"))},
+        {TEXT("timeout whitespace"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds: 10"))},
+        {TEXT("incomplete timeout exponent"), MakePreflightJson(TEXT("editor_tick"), TEXT("cooperative"), TEXT("seconds:1e"))},
     };
 
     for (const TPair<FString, FString>& TestCase : InvalidPreflights)

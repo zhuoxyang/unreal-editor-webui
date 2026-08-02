@@ -11,6 +11,7 @@ PACKAGE_DIR="$2"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 FRONTEND_ENTRY="$ROOT_DIR/Web/dist/index.html"
+LICENSE_FILE="$ROOT_DIR/LICENSE"
 STAGING_DIR="$(mktemp -d)"
 PLUGIN_STAGE="$STAGING_DIR/UnrealEditorWebUI"
 
@@ -46,9 +47,14 @@ if [[ ! -f "$FRONTEND_ENTRY" ]]; then
   echo "Frontend build did not create the expected entry point: $FRONTEND_ENTRY" >&2
   exit 1
 fi
+if [[ ! -f "$LICENSE_FILE" ]]; then
+  echo "Repository license not found: $LICENSE_FILE" >&2
+  exit 1
+fi
 
 mkdir -p "$PLUGIN_STAGE"
 cp "$ROOT_DIR/UnrealEditorWebUI.uplugin" "$PLUGIN_STAGE/UnrealEditorWebUI.uplugin"
+cp "$LICENSE_FILE" "$PLUGIN_STAGE/LICENSE"
 
 for directory_name in Config Content Platforms Python Resources Shaders Source Web; do
   source_directory="$ROOT_DIR/$directory_name"
@@ -68,3 +74,6 @@ done
   -Plugin="$PLUGIN_STAGE/UnrealEditorWebUI.uplugin" \
   -Package="$PACKAGE_DIR" \
   -Rocket
+
+test -f "$PACKAGE_DIR/LICENSE"
+cmp -s "$LICENSE_FILE" "$PACKAGE_DIR/LICENSE"

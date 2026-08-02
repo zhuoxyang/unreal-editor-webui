@@ -312,7 +312,7 @@ namespace
 #endif
     }
 
-    FString WriteJsonObject(const TSharedRef<FJsonObject>& JsonObject)
+    FString WriteSettingsJsonObject(const TSharedRef<FJsonObject>& JsonObject)
     {
         FString Output;
         const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
@@ -518,7 +518,7 @@ namespace UnrealEditorWebUISettings
         Root->SetStringField(TEXT("devServerUrl"), Settings.DevServerURL);
         Root->SetStringField(TEXT("startupUrl"), Settings.StartupURL);
         Root->SetStringField(TEXT("resolvedUrl"), ResolveStartupURL());
-        return WriteJsonObject(Root);
+        return WriteSettingsJsonObject(Root);
     }
 
     bool FromJson(const FString& SettingsJson, FUnrealEditorWebUISettings& OutSettings, FString& OutError)

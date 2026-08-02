@@ -19,6 +19,7 @@ on:
       - "Web/**"
       - "frontend/**"
       - "scripts/**"
+      - "LICENSE"
       - "UnrealEditorWebUI.uplugin"
 
 permissions:
@@ -163,6 +164,13 @@ jobs:
           }
           if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "Web/dist/index.html") -PathType Leaf)) {
             throw "Packaged React frontend entry point missing."
+          }
+          $PackagedLicense = Join-Path $PackageDir "LICENSE"
+          if (-not (Test-Path -LiteralPath $PackagedLicense -PathType Leaf)) {
+            throw "Packaged plugin license missing."
+          }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedLicense).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath "LICENSE").Hash) {
+            throw "Packaged plugin license does not match the repository license."
           }
 
       - name: Create temporary host project

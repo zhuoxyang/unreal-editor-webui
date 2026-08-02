@@ -6,6 +6,7 @@ import inspect
 import json
 import math
 import pkgutil
+import re
 import traceback
 from dataclasses import dataclass
 from types import GeneratorType
@@ -28,6 +29,7 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 10_000
 MAX_COOPERATIVE_JOBS = 64
+STRICT_DECIMAL_PATTERN = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
 DEFAULT_PERMISSION_POLICY = {
     "allowedCommand": "",
     "allowedPermission": "",
@@ -228,8 +230,13 @@ def _validate_execution_metadata(
         )
 
     if timeout_policy != "none":
+        seconds_text = timeout_policy.removeprefix("seconds:")
+        if STRICT_DECIMAL_PATTERN.fullmatch(seconds_text) is None:
+            raise ValueError(
+                f'Command "{command_name}" uses invalid timeout policy "{timeout_policy}".'
+            )
         try:
-            seconds = float(timeout_policy.removeprefix("seconds:"))
+            seconds = float(seconds_text)
         except ValueError as exc:
             raise ValueError(
                 f'Command "{command_name}" uses invalid timeout policy "{timeout_policy}".'
