@@ -7,6 +7,12 @@ CI has two trust layers:
 
 Public `pull_request` events cannot trigger the UE workflow or schedule its self-hosted job. Both workflows have read-only `contents` permission and every checkout disables persisted GitHub credentials.
 
+## Push Trigger Contract
+
+Pushes to `main` start UE CI when a direct workflow input changes. The checked-in contract covers the workflow itself, `.gitattributes`, `.npmrc`, `.nvmrc`, tests and scripts, the descriptor and license, frontend sources, and every supported package directory: `Config`, `Content`, `Platforms`, `Python`, `Resources`, `Shaders`, `Source`, and `Web`. Hosted CI parses the workflow and both packaging helpers to keep these inventories aligned.
+
+Documentation-only changes under `docs/` or to `README.md` deliberately remain outside this path filter so they do not consume the licensed runner. This optimization does not add a `pull_request` trigger or weaken the `ue-self-hosted` environment boundary.
+
 ## Protect The Self-Hosted Environment
 
 Create a GitHub Actions environment named `ue-self-hosted` before enabling the UE job:
