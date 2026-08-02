@@ -89,15 +89,15 @@ The `gui` runner must run interactively. Omit `-InstallService` and start:
 C:\actions-runner-unreal-editor-webui-ue58\run.cmd
 ```
 
-Do not prepend Git paths manually in the shell that starts `run.cmd`, and do not add Git's Unix tools to the machine-wide PATH. Before `actions/setup-node`, the trusted UE job runs `scripts/validate-git-cache-tools.ps1`, temporarily verifies the exact standard-path executables with a gzip archive round trip, and writes the resolved 64-bit Git `usr\bin` directory to [`GITHUB_PATH`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands-for-github-actions#adding-a-system-path). GitHub then prepends that directory for all later actions in the job, including the `setup-node` post-job npm cache save. This workflow-level export also repairs already-registered runners without freezing a copy of the machine PATH in the runner's `.env` file.
+Do not prepend Git paths manually in the shell that starts `run.cmd`, and do not add Git's Unix tools to the machine-wide PATH. Runner setup validates the standard-path `tar.exe` and `gzip.exe` with a gzip archive round trip before registration. The trusted UE workflow deliberately sets `package-manager-cache: false` for `actions/setup-node`: Node setup and exact-commit validation must not depend on the optional Actions cache service, especially for one-job ephemeral runners. Exact-commit staging still validates the selected lockfile and runs `npm ci`, so disabling the remote cache changes performance only, not dependency integrity.
 
-To diagnose a cache warning on the runner, run the same validator from a repository checkout:
+To diagnose a runner-setup Git compression-tool failure, run the same validator from a repository checkout:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-git-cache-tools.ps1
 ```
 
-It must print the standard 64-bit Git tools path, normally `C:\Program Files\Git\usr\bin`. If either executable is absent or the round trip fails, repair or reinstall 64-bit Git for Windows at the standard path before registering or restarting the runner. After a trusted run, inspect the `Post Set up Node.js` log: cache restore/save must complete without `gzip: command not found`, `Failed to save`, or a cache-save warning.
+It must print the standard 64-bit Git tools path, normally `C:\Program Files\Git\usr\bin`. If either executable is absent or the round trip fails, repair or reinstall 64-bit Git for Windows at the standard path before registering or restarting the runner. The `setup-node` post action has no npm cache state and makes no restore/save request; a cache-service outage therefore cannot block package validation.
 
 ## Branch Protection
 

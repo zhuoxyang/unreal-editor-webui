@@ -55,6 +55,23 @@ function assertOrdered(source, fragments) {
   }
 }
 
+test('protected UE Node setup does not depend on the remote npm cache', () => {
+  const nodeSetup = stepNamed('Set up Node.js')
+  const hostedNodeSetup = WORKFLOW.jobs['fast-checks'].steps.find(
+    (step) => step.name === 'Set up Node.js',
+  )
+
+  assert.ok(hostedNodeSetup, 'missing hosted Node setup step')
+  assert.equal(nodeSetup.with['node-version-file'], '.nvmrc')
+  assert.equal(nodeSetup.with['package-manager-cache'], false)
+  assert.equal(Object.hasOwn(nodeSetup.with, 'cache'), false)
+  assert.equal(Object.hasOwn(nodeSetup.with, 'cache-dependency-path'), false)
+  assert.equal(STEPS.some((step) => step.name === 'Expose and validate Git cache tools'), false)
+
+  assert.equal(hostedNodeSetup.with.cache, 'npm')
+  assert.equal(hostedNodeSetup.with['cache-dependency-path'], 'frontend/package-lock.json')
+})
+
 test('BuildPlugin writes AutomationTool logs directly to one fresh run-attempt directory', () => {
   const prepare = stepNamed('Prepare scoped AutomationTool logs')
   const build = stepNamed('Build packaged plugin')
