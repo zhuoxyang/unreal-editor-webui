@@ -22,7 +22,7 @@ $ProjectPath = Join-Path $ProjectDirPath "HostProject.uproject"
 
 New-Item -ItemType Directory -Path $PluginDest -Force | Out-Null
 
-& robocopy $PluginSourceDir $PluginDest /MIR /XD "__pycache__" "Intermediate" "Saved" "DerivedDataCache" /XF ".DS_Store" | Out-Host
+& robocopy $PluginSourceDir $PluginDest /MIR /XD "__pycache__" "Intermediate" "Saved" "DerivedDataCache" /XF ".DS_Store" | Out-Null
 if ($LASTEXITCODE -gt 7) {
     throw "robocopy failed with exit code $LASTEXITCODE"
 }
