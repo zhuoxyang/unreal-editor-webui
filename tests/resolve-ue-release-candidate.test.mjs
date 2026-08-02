@@ -55,6 +55,22 @@ test('accepts the exact successful UE 5.8 GUI candidate', () => {
   assert.equal(selected.artifact.name, EXPECTED_ARTIFACT_NAME)
 })
 
+test('ignores the diagnostic artifact when selecting the exact UE 5.8 package', () => {
+  const candidate = eligibleCandidate()
+  candidate.artifacts.unshift({
+    digest: `sha256:${'b'.repeat(64)}`,
+    expired: false,
+    id: 304,
+    name: 'unreal-editor-webui-ue-logs',
+    size_in_bytes: 2048,
+    workflow_run: { head_sha: commit, id: candidate.run.id },
+  })
+
+  const selected = validateReleaseCandidate(candidate)
+  assert.equal(selected.artifact.id, 303)
+  assert.equal(selected.artifact.name, EXPECTED_ARTIFACT_NAME)
+})
+
 test('matches trusted runner labels using GitHub case-insensitive semantics', () => {
   const candidate = eligibleCandidate()
   candidate.jobs[0].labels = ['SELF-HOSTED', 'Windows', 'GUI', 'UE-5.8']
