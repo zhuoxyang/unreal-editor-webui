@@ -78,7 +78,7 @@ export function TaskCard({ bridgeReady, resultType, task, onCancel, onLoadDetail
   }, [detailsOpen, onLoadDetails, task.status, task.taskId, task.updatedAt])
 
   return (
-    <article className="task-card">
+    <article className="task-card" data-task-id={task.taskId}>
       <div className="task-card-header">
         <div>
           <strong>{task.command}</strong>

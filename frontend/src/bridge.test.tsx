@@ -75,6 +75,30 @@ describe('parseBridgeResponse', () => {
 })
 
 describe('useEditorBridge', () => {
+  it('becomes ready when Unreal publishes a delayed JavaScript binding', () => {
+    const { result } = renderHook(() => useEditorBridge())
+    expect(result.current.bridgeReady).toBe(false)
+
+    window.ue = {
+      editorwebui: {
+        executecommand: vi.fn(),
+        startcommand: vi.fn(),
+        gettask: vi.fn(),
+        listtasks: vi.fn(),
+        removetask: vi.fn(),
+        canceltask: vi.fn(),
+        getwebuisettings: vi.fn(),
+        setwebuisettings: vi.fn(),
+      },
+    }
+
+    act(() => {
+      document.dispatchEvent(new CustomEvent('ue:ready'))
+    })
+
+    expect(result.current.bridgeReady).toBe(true)
+  })
+
   it('uses shared validation and preserves structured bridge errors', async () => {
     window.ue = {
       editorwebui: {

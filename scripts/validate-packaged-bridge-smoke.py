@@ -27,11 +27,14 @@ class _FrontendAssetParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.assets: list[str] = []
+        self.module_scripts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
         if tag == "script" and attributes.get("src"):
             self.assets.append(attributes["src"] or "")
+            if (attributes.get("type") or "").lower() == "module":
+                self.module_scripts.append(attributes["src"] or "")
         elif tag == "link" and "stylesheet" in (attributes.get("rel") or "").split():
             if attributes.get("href"):
                 self.assets.append(attributes["href"] or "")
@@ -57,6 +60,11 @@ def _validate_frontend(plugin_directory: Path) -> list[str]:
     parser.feed(index_path.read_text(encoding="utf-8"))
     if not parser.assets:
         raise RuntimeError("Packaged React entry point did not reference any script or stylesheet assets.")
+    if parser.module_scripts:
+        raise RuntimeError(
+            "Packaged React entry point uses module scripts that Chromium blocks under file://: "
+            + ", ".join(parser.module_scripts)
+        )
 
     validated_assets: list[str] = []
     for asset_reference in parser.assets:

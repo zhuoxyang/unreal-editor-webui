@@ -6,21 +6,23 @@ Windows source validation on 2026-08-02:
 
 - Frontend build: passed with `npm run build`.
 - Frontend lint: passed with `npm run lint`.
-- Frontend tests: passed with `npm test` (93 tests in 17 files).
+- Frontend tests: passed with `npm test` (94 tests in 17 files).
 - Frontend dependency audit: passed with 0 vulnerabilities.
 - Plugin descriptor JSON: passed with `python -m json.tool UnrealEditorWebUI.uplugin`.
 - Python syntax: passed with `python -m compileall` across plugin Python, tests, and smoke scripts.
 - Python registry tests: passed with `python -m unittest discover -s tests -v` (42 tests).
-- Workflow/dependabot YAML parsing, PowerShell AST parsing, shell syntax, release-helper syntax, immutable action references, and whitespace validation: passed; artifact ZIP digest tests passed (2 tests).
+- Workflow/dependabot YAML parsing, PowerShell AST parsing, shell syntax, release-helper syntax, immutable action references, and whitespace validation: passed; release-artifact verification tests passed (28 tests).
 - SBOM and locked dependency inventory generation: passed and produced 301 npm components/packages.
 
 Local Unreal inventory and auxiliary validation on 2026-08-02:
 
-- Unreal Engine 5.1.1 and 5.3.2 are installed; Unreal Engine 5.5 is not installed.
-- UE 5.3.2 `BuildPlugin` passed on Windows with Visual Studio 2022, and the packaged MIT `LICENSE` matched the repository SHA-256 (`a1ff542acadcc7847fba925b0b82474d1de27ae18c4804564eb76a302f4f19d5`).
-- All 9 `UnrealEditorWebUI.` native Automation tests passed, including `Bridge.PackagedRegistryPing` through the packaged Python registry.
-- The packaged frontend smoke passed with both generated assets validated; the native settings smoke passed with 0 errors.
-- This UE 5.3.2 run is useful compatibility evidence, not the release gate. The exact commit still requires the protected trusted UE 5.5 runner before it can be described as release-validated.
+- Unreal Engine 5.1.1, 5.3.2, and 5.8.1 are installed; Unreal Engine 5.5 is not installed.
+- UE 5.8.1 `BuildPlugin` passed from a fresh staging directory on Windows with Visual Studio 2022, MSVC 14.44.35228, and Windows SDK 10.0.22621.0. The packaged MIT `LICENSE` matched the repository SHA-256 (`a1ff542acadcc7847fba925b0b82474d1de27ae18c4804564eb76a302f4f19d5`).
+- All 9 required `UnrealEditorWebUI.` native Automation tests passed against a host project created from that fresh package, including the real packaged Python registry path and the new authorization, lifecycle, and N/N+1 resource-limit coverage.
+- The packaged frontend smoke passed with its classic IIFE asset validated and no `file://` module entry; the native settings smoke passed with 0 errors.
+- `UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent` passed in the real UE 5.8 GUI editor. It verified the packaged React page, temporary CEF UObject binding, bridge-ready state, `system.ping` task, DOM event log, and completed TaskCard round trip without a plugin warning.
+- UE 5.3.2 `BuildPlugin`, native Automation, packaged frontend smoke, and settings smoke also passed earlier as compatibility evidence. UE 5.3 remains compatibility-only.
+- This local UE 5.8.1 run validates the implementation and package. The final release commit still requires the protected exact-commit UE 5.8 GUI workflow and `UE58` artifact before it can be described as release-validated.
 
 Historical local UE 5.5 evidence from 2026-06-20 (before the current changes):
 
@@ -38,24 +40,24 @@ CI coverage added in `.github/workflows/ci.yml`:
 UE CI coverage is defined in `.github/workflows/ue-ci.yml`:
 
 - The UE workflow has no `pull_request` trigger. Automatic pull-request validation is provided entirely by the GitHub-hosted jobs in `.github/workflows/ci.yml`, including equivalent descriptor/module-wiring and script-syntax checks.
-- The UE workflow's hosted prerequisite jobs run only on its trusted events. A push to `main` always selects `UE 5.5 BuildPlugin and automation`; an explicit trusted `workflow_dispatch` can select UE 5.3 compatibility validation or UE 5.5 release validation, and the self-hosted job is gated by the protected `ue-self-hosted` environment.
-- Runner labels: `self-hosted`, `windows`, plus the selected `ue-5.3` or `ue-5.5` engine label.
+- The UE workflow's hosted prerequisite jobs run only on its trusted events. A push to `main` always selects `UE 5.8 BuildPlugin and automation`; an explicit trusted `workflow_dispatch` can select UE 5.3 compatibility validation or UE 5.8 release validation, and the self-hosted job is gated by the protected `ue-self-hosted` environment.
+- Runner labels: `self-hosted`, `windows`, `gui`, plus the selected `ue-5.3` or `ue-5.8` engine label.
 - Runner environment variable: `UE_ROOT` resolves to the matching standard Epic installation path.
-- Required software: the selected Unreal Engine version, Visual Studio 2022 C++ toolchain, Windows SDK, Git, and PowerShell. The pinned `actions/setup-node` step provisions the repository-compatible Node.js/npm toolchain.
-- The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html` and exact repository `LICENSE`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the `UnrealEditorWebUI.` automation test filter, executes the packaged bridge smoke, and runs `scripts/validate-settings-smoke.py`.
-- UE logs upload with `if: always()` so failed runs keep diagnostics when files exist. The HostProject log glob points to the temporary host project directory.
+- Required software: the selected Unreal Engine version, a compatible Visual Studio C++ toolchain, Windows SDK, Git, and PowerShell. This repository's UE 5.8 runner baseline accepts Visual Studio 2022 17.14 with an MSVC compiler product version of 14.44.35211 or later within the 14.44 family, or Visual Studio 2026 18.x with 14.50.35723 or later within the 14.50 family. The check follows UnrealBuildTool in reading `cl.exe` product version instead of assuming the servicing version from its family directory name; the engine configuration bans MSVC 14.39 and the early portions of those newer families. The pinned `actions/setup-node` step provisions the repository-compatible Node.js/npm toolchain.
+- The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html` and exact repository `LICENSE`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the headless Bridge/Settings automation filters, executes the packaged bridge and settings smokes, and then runs `UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent` in the real GUI editor. It checks every required Automation path, a fresh structured packaged-smoke result, and explicit success markers for both Python smokes rather than trusting process exit codes alone.
+- UE logs upload with `if: always()` so failed runs keep diagnostics when files exist. Each host project uses the workflow run id and attempt in its temporary directory name, and the log glob matches those isolated directories.
 - The packaged plugin uploads only when the full UE job succeeds; missing package output is an artifact error.
 - Keep self-hosted runner user Python startup scripts clean or isolated. A global `Documents/UnrealEngine/Python/init_unreal.py` can pollute settings-smoke commandlet exit status.
 
-Unreal validation depends on an external licensed runner. If no correctly labelled runner is online, or the protected environment is not approved, the trusted UE job remains queued. Hosted checks do not compile the C++ module. A successful UE 5.3 run is compatibility evidence but cannot replace the successful exact-commit UE 5.5 run required for release promotion.
+Unreal validation depends on an external licensed runner. If no correctly labelled interactive runner is online, or the protected environment is not approved, the trusted UE job remains queued. Hosted checks do not compile the C++ module. A successful UE 5.3 run is compatibility evidence but cannot replace the successful exact-commit UE 5.8 GUI run required for release promotion.
 
 ## Packaged Bridge Smoke
 
-After `scripts/create-host-project.ps1` copies the trusted BuildPlugin output into a temporary project, run the executable packaged smoke with Unreal Engine 5.5:
+After `scripts/create-host-project.ps1` copies the trusted BuildPlugin output into a temporary project, run the executable packaged smoke with Unreal Engine 5.8:
 
 ```powershell
 $env:UNREAL_WEBUI_PACKAGED_SMOKE_RESULT = Join-Path $env:TEMP "UnrealEditorWebUI-PackagedSmoke.json"
-& "C:\Program Files\Epic Games\UE_5.5\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" `
+& "C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" `
   $HostProject `
   -run=pythonscript `
   "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" `
@@ -65,7 +67,7 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged bridge smoke failed with exit code $L
 
 The script verifies the packaged `Web/dist/index.html` and its local script/stylesheet files. The preceding native automation suite includes `UnrealEditorWebUI.Bridge.PackagedRegistryPing`, which creates `UUnrealEditorWebUIBridge` in C++ and executes `system.ping` through the production bridge into the real packaged Python registry. The split avoids exporting production bridge methods as Blueprint/Python-callable APIs solely for a test. The commandlet's optional JSON result records only the frontend-asset scope it directly covers.
 
-This commandlet does not create an interactive CEF browser, so it deliberately reports `cefBrowserToBindUObject` and `taskDomEventDelivery` as unverified. Completing those final hops requires a GUI-capable, isolated Unreal runner plus a C++/Slate browser automation harness. A hosted check or this commandlet smoke alone must not be described as full browser end-to-end validation.
+This commandlet does not create an interactive CEF browser, so its own structured result deliberately reports `cefBrowserToBindUObject` and `taskDomEventDelivery` as unverified. The formal UE job covers those final hops separately with `UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent` on an interactive `gui` runner. A hosted check or the commandlet smoke alone must not be described as full browser end-to-end validation.
 
 Historical UE validation (retained as evidence, not a maintained compatibility guarantee):
 
@@ -98,7 +100,7 @@ macOS/Linux:
 
 ```sh
 bash scripts/package-plugin.sh \
-  "/path/to/UE_5.5/Engine/Build/BatchFiles/RunUAT.sh" \
+  "/path/to/UE_5.8/Engine/Build/BatchFiles/RunUAT.sh" \
   /tmp/UnrealEditorWebUI-Package
 ```
 
@@ -106,8 +108,8 @@ Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
-  "C:\Program Files\Epic Games\UE_5.5\Engine\Build\BatchFiles\RunUAT.bat" `
+  "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" `
   "$env:TEMP\UnrealEditorWebUI-Package"
 ```
 
-Unreal Engine 5.5 on Windows is the current automated target. Validate another engine/platform combination on a licensed runner before describing it as supported.
+Unreal Engine 5.8 on Windows is the current automated target. Validate another engine/platform combination on a licensed runner before describing it as supported.

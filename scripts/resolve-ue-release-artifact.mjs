@@ -10,8 +10,9 @@ import { pathToFileURL } from 'node:url'
 
 const API_VERSION = '2022-11-28'
 const EXPECTED_WORKFLOW_PATH = '.github/workflows/ue-ci.yml'
-const EXPECTED_JOB_NAME = 'UE 5.5 BuildPlugin and automation'
-const EXPECTED_ARTIFACT_NAME = 'UnrealEditorWebUI-Package-UE55'
+export const EXPECTED_JOB_NAME = 'UE 5.8 BuildPlugin and automation'
+export const EXPECTED_ARTIFACT_NAME = 'UnrealEditorWebUI-Package-UE58'
+export const EXPECTED_RUNNER_LABELS = ['self-hosted', 'windows', 'gui', 'ue-5.8']
 
 function parseArguments(argv) {
   const result = new Map()
@@ -167,13 +168,21 @@ async function githubJson(token, apiPath) {
   return response.json()
 }
 
-async function githubCollection(token, initialPath, propertyName) {
+export async function githubCollection(
+  token,
+  initialPath,
+  propertyName,
+  githubJsonImpl = githubJson,
+) {
   const values = []
   let page = 1
 
   while (true) {
     const separator = initialPath.includes('?') ? '&' : '?'
-    const response = await githubJson(token, `${initialPath}${separator}per_page=100&page=${page}`)
+    const response = await githubJsonImpl(
+      token,
+      `${initialPath}${separator}per_page=100&page=${page}`,
+    )
     const pageValues = response[propertyName]
     if (!Array.isArray(pageValues)) {
       throw new Error(`GitHub API response did not contain '${propertyName}'.`)
@@ -188,7 +197,7 @@ async function githubCollection(token, initialPath, propertyName) {
   }
 }
 
-function validateRunMetadata(run, repository, commit) {
+export function validateRunMetadata(run, repository, commit) {
   const errors = []
 
   if (run.path !== EXPECTED_WORKFLOW_PATH) {
@@ -215,14 +224,9 @@ function validateRunMetadata(run, repository, commit) {
   }
 }
 
-async function validateRun(token, repository, repositoryApiPath, commit, run) {
+export function validateReleaseCandidate({ artifacts, commit, jobs, repository, run }) {
   validateRunMetadata(run, repository, commit)
 
-  const jobs = await githubCollection(
-    token,
-    `/repos/${repositoryApiPath}/actions/runs/${run.id}/jobs`,
-    'jobs',
-  )
   const expectedJobs = jobs.filter((job) => job.name === EXPECTED_JOB_NAME)
   if (expectedJobs.length !== 1 || expectedJobs[0].conclusion !== 'success') {
     const conclusions = expectedJobs.map((job) => job.conclusion).join(', ') || 'missing'
@@ -232,8 +236,12 @@ async function validateRun(token, repository, repositoryApiPath, commit, run) {
   }
 
   const expectedJob = expectedJobs[0]
-  const jobLabels = new Set(Array.isArray(expectedJob.labels) ? expectedJob.labels : [])
-  const missingLabels = ['self-hosted', 'windows', 'ue-5.5'].filter(
+  const jobLabels = new Set(
+    (Array.isArray(expectedJob.labels) ? expectedJob.labels : [])
+      .filter((label) => typeof label === 'string')
+      .map((label) => label.toLowerCase()),
+  )
+  const missingLabels = EXPECTED_RUNNER_LABELS.filter(
     (label) => !jobLabels.has(label),
   )
   if (missingLabels.length > 0 || !expectedJob.runner_name) {
@@ -242,11 +250,6 @@ async function validateRun(token, repository, repositoryApiPath, commit, run) {
     )
   }
 
-  const artifacts = await githubCollection(
-    token,
-    `/repos/${repositoryApiPath}/actions/runs/${run.id}/artifacts`,
-    'artifacts',
-  )
   const expectedArtifacts = artifacts.filter((artifact) => artifact.name === EXPECTED_ARTIFACT_NAME)
   if (expectedArtifacts.length !== 1) {
     throw new Error(
@@ -264,14 +267,36 @@ async function validateRun(token, repository, repositoryApiPath, commit, run) {
   if (!/^sha256:[0-9a-f]{64}$/.test(artifact.digest ?? '')) {
     throw new Error(`UE artifact ${artifact.id} does not expose a valid immutable SHA-256 digest.`)
   }
-  if (artifact.workflow_run?.id && Number(artifact.workflow_run.id) !== Number(run.id)) {
+  if (!artifact.workflow_run || typeof artifact.workflow_run !== 'object') {
+    throw new Error(`UE artifact ${artifact.id} does not expose its workflow-run binding.`)
+  }
+  if (!Number.isSafeInteger(artifact.workflow_run.id) || artifact.workflow_run.id !== run.id) {
     throw new Error(`UE artifact ${artifact.id} is not bound to workflow run ${run.id}.`)
   }
-  if (artifact.workflow_run?.head_sha && artifact.workflow_run.head_sha.toLowerCase() !== commit) {
+  if (
+    typeof artifact.workflow_run.head_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(artifact.workflow_run.head_sha) ||
+    artifact.workflow_run.head_sha.toLowerCase() !== commit
+  ) {
     throw new Error(`UE artifact ${artifact.id} is not bound to commit ${commit}.`)
   }
 
   return { artifact, job: expectedJob, run }
+}
+
+async function validateRun(token, repository, repositoryApiPath, commit, run) {
+  const jobs = await githubCollection(
+    token,
+    `/repos/${repositoryApiPath}/actions/runs/${run.id}/jobs`,
+    'jobs',
+  )
+  const artifacts = await githubCollection(
+    token,
+    `/repos/${repositoryApiPath}/actions/runs/${run.id}/artifacts`,
+    'artifacts',
+  )
+
+  return validateReleaseCandidate({ artifacts, commit, jobs, repository, run })
 }
 
 function writeOutputs(selection) {

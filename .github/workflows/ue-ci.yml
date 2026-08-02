@@ -9,12 +9,12 @@ on:
         default: false
         type: boolean
       ue_version:
-        description: Engine version for this trusted run (UE 5.3 is compatibility-only; releases require UE 5.5)
+        description: Engine version for this trusted run (UE 5.3 is compatibility-only; releases require UE 5.8)
         required: true
-        default: "5.5"
+        default: "5.8"
         type: choice
         options:
-          - "5.5"
+          - "5.8"
           - "5.3"
   push:
     branches:
@@ -34,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ue-ci-${{ github.ref }}
+  group: ue-ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.ue_version || '5.8' }}-${{ github.event_name }}-${{ inputs.run_trusted_ue_validation || 'hosted-only' }}
   cancel-in-progress: true
 
 jobs:
@@ -78,6 +78,11 @@ jobs:
       - name: Test Python command registry
         run: python -m unittest discover -s tests -v
 
+      - name: Test release artifact verifier
+        run: |
+          node --test tests/download-verified-github-artifact.test.mjs
+          node --test tests/resolve-ue-release-candidate.test.mjs
+
   ue-config-validation:
     name: UE config validation (hosted)
     runs-on: ubuntu-latest
@@ -105,6 +110,7 @@ jobs:
           assert plugins.get("WebBrowserWidget", {}).get("Enabled") is True, "WebBrowserWidget must be enabled"
           assert (root / "Source/UnrealEditorWebUI/UnrealEditorWebUI.Build.cs").is_file(), "Build.cs missing"
           assert (root / "Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp").is_file(), "Bridge source missing"
+          assert (root / "Source/UnrealEditorWebUI/Private/Tests/UnrealEditorWebUIBrowserTests.cpp").is_file(), "GUI CEF automation test missing"
           assert (root / "Python/unreal_editor_webui_bridge_entry.py").is_file(), "Python bridge entry missing"
           assert (root / "Python/unreal_editor_webui_registry.py").is_file(), "Python registry missing"
 
@@ -132,18 +138,18 @@ jobs:
           }
 
   buildplugin-and-automation:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UE 5.3 BuildPlugin and automation (compatibility only)' || 'UE 5.5 BuildPlugin and automation' }}
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UE 5.3 BuildPlugin and automation (compatibility only)' || 'UE 5.8 BuildPlugin and automation' }}
     needs: [fast-checks, ue-config-validation]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
-    runs-on: [self-hosted, windows, "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'ue-5.3' || 'ue-5.5' }}"]
+    runs-on: [self-hosted, windows, gui, "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'ue-5.3' || 'ue-5.8' }}"]
     timeout-minutes: 90
     environment:
       name: ue-self-hosted
     env:
-      UE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && '5.3' || '5.5' }}
-      UE_ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'C:\Program Files\Epic Games\UE_5.3' || 'C:\Program Files\Epic Games\UE_5.5' }}
+      UE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && '5.3' || '5.8' }}
+      UE_ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'C:\Program Files\Epic Games\UE_5.3' || 'C:\Program Files\Epic Games\UE_5.8' }}
 
     steps:
       - name: Check out repository
@@ -163,8 +169,24 @@ jobs:
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $Editor = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.exe"
+          $BuildVersionPath = Join-Path $env:UE_ROOT "Engine/Build/Build.version"
           if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) { throw "RunUAT not found: $RunUAT" }
           if (-not (Test-Path -LiteralPath $EditorCmd -PathType Leaf)) { throw "UnrealEditor-Cmd not found: $EditorCmd" }
+          if (-not (Test-Path -LiteralPath $Editor -PathType Leaf)) { throw "UnrealEditor not found: $Editor" }
+          if (-not (Test-Path -LiteralPath $BuildVersionPath -PathType Leaf)) { throw "Build.version not found: $BuildVersionPath" }
+          $BuildVersion = Get-Content -LiteralPath $BuildVersionPath -Raw | ConvertFrom-Json
+          $DetectedVersion = "$($BuildVersion.MajorVersion).$($BuildVersion.MinorVersion)"
+          if ($DetectedVersion -ne $env:UE_VERSION) { throw "Runner engine is UE $DetectedVersion, expected UE $env:UE_VERSION." }
+          $RunnerSessionId = (Get-Process -Id $PID).SessionId
+          if ($RunnerSessionId -eq 0) {
+            throw "GUI validation cannot run from Windows Session 0. Start run.cmd interactively from the logged-in desktop session."
+          }
+          $SessionExplorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $RunnerSessionId })
+          if ($SessionExplorer.Count -eq 0) {
+            throw "No interactive Windows desktop was found in runner session $RunnerSessionId. Start the GUI runner from a logged-in desktop session."
+          }
+          Write-Host "Validated interactive GUI runner session $RunnerSessionId."
           node scripts/validate-node-version.mjs
           if ($LASTEXITCODE -ne 0) { throw "Unsupported Node.js version on self-hosted runner." }
           npm --version
@@ -192,7 +214,8 @@ jobs:
       - name: Create temporary host project
         shell: powershell
         run: |
-          $ProjectDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-HostProject"
+          $ProjectDirName = "UnrealEditorWebUI-HostProject-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $ProjectDir = Join-Path $env:RUNNER_TEMP $ProjectDirName
           $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
           $ProjectOutput = @(powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION)
           if ($LASTEXITCODE -ne 0) { throw "Host project creation failed with exit code $LASTEXITCODE." }
@@ -205,39 +228,101 @@ jobs:
         shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
-          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation.log"
-          & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation-$RunSuffix.log"
+          & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests StartsWith:UnrealEditorWebUI.Bridge+StartsWith:UnrealEditorWebUI.Settings; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
           if ($LASTEXITCODE -ne 0) {
             throw "Unreal automation tests failed with exit code $LASTEXITCODE. See $LogPath"
+          }
+          $LogText = Get-Content -LiteralPath $LogPath -Raw
+          $RequiredTests = @(
+            "UnrealEditorWebUI.Bridge.CancelTaskTransitions",
+            "UnrealEditorWebUI.Bridge.CooperativeTaskRequiresPythonJob",
+            "UnrealEditorWebUI.Bridge.DocumentSessionIsolation",
+            "UnrealEditorWebUI.Bridge.ListTasksSummary",
+            "UnrealEditorWebUI.Bridge.PackagedRegistryPing",
+            "UnrealEditorWebUI.Bridge.PreflightValidation",
+            "UnrealEditorWebUI.Bridge.ResourceLimitsAndProjectContext",
+            "UnrealEditorWebUI.Bridge.TimeoutAndRemovalRules",
+            "UnrealEditorWebUI.Settings.URLAllowlist"
+          )
+          foreach ($TestPath in $RequiredTests) {
+            $Pattern = "Test Completed\. Result=\{Success\}.*Path=\{$([regex]::Escape($TestPath))\}"
+            if (-not [regex]::IsMatch($LogText, $Pattern)) {
+              throw "Required Unreal automation test did not report success: $TestPath"
+            }
           }
 
       - name: Run packaged bridge smoke
         shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
-          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke.log"
-          $ResultPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke.json"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke-$RunSuffix.log"
+          $ResultPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke-$RunSuffix.json"
+          if (Test-Path -LiteralPath $ResultPath) {
+            throw "Packaged bridge smoke result path is not fresh: $ResultPath"
+          }
+          $SmokeExitCode = -1
           $env:UNREAL_WEBUI_PACKAGED_SMOKE_RESULT = $ResultPath
-          & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Packaged bridge smoke failed with exit code $LASTEXITCODE. See $LogPath"
+          try {
+            & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+            $SmokeExitCode = $LASTEXITCODE
+          }
+          finally {
+            Remove-Item Env:\UNREAL_WEBUI_PACKAGED_SMOKE_RESULT -ErrorAction SilentlyContinue
+          }
+          if ($SmokeExitCode -ne 0) {
+            throw "Packaged bridge smoke failed with exit code $SmokeExitCode. See $LogPath"
           }
           if (-not (Test-Path -LiteralPath $ResultPath -PathType Leaf)) {
             throw "Packaged bridge smoke did not write its structured result: $ResultPath"
           }
           $SmokeResult = Get-Content -LiteralPath $ResultPath -Raw | ConvertFrom-Json
-          if ($SmokeResult.ok -ne $true) {
-            throw "Packaged bridge smoke result did not report success."
+          if ($SmokeResult.schemaVersion -ne 1 -or
+              $SmokeResult.ok -ne $true -or
+              $SmokeResult.scope.packagedFrontendAssets -ne $true -or
+              @($SmokeResult.validatedAssets).Count -lt 1) {
+            throw "Packaged bridge smoke result is incomplete or did not report success."
+          }
+          $LogText = Get-Content -LiteralPath $LogPath -Raw
+          if ($LogText -notmatch "Unreal Editor WebUI packaged frontend smoke passed\.") {
+            throw "Packaged bridge smoke success marker is missing from $LogPath"
           }
 
       - name: Run native settings smoke
         shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
-          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke.log"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke-$RunSuffix.log"
           & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
           if ($LASTEXITCODE -ne 0) {
             throw "Native settings smoke failed with exit code $LASTEXITCODE. See $LogPath"
+          }
+          $LogText = Get-Content -LiteralPath $LogPath -Raw
+          if ($LogText -notmatch "Unreal Editor WebUI settings smoke passed\.") {
+            throw "Native settings smoke success marker is missing from $LogPath"
+          }
+
+      - name: Run GUI CEF binding and task event test
+        shell: powershell
+        run: |
+          $Editor = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.exe"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomation-$RunSuffix.log"
+          $ReportPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomationReport-$RunSuffix"
+          # Windows PowerShell does not otherwise wait reliably for a GUI-subsystem executable.
+          & $Editor $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent; Quit" -unattended -nopause -nosplash -ReportExportPath="$ReportPath" -abslog="$LogPath" | Out-Host
+          $EditorExitCode = $LASTEXITCODE
+          if ($EditorExitCode -ne 0) {
+            throw "GUI CEF automation failed with exit code $EditorExitCode. See $LogPath"
+          }
+          $LogText = Get-Content -LiteralPath $LogPath -Raw
+          $TestPath = "UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent"
+          $Pattern = "Test Completed\. Result=\{Success\}.*Path=\{$([regex]::Escape($TestPath))\}"
+          if (-not [regex]::IsMatch($LogText, $Pattern)) {
+            throw "Required GUI CEF automation test did not report success: $TestPath"
           }
 
       - name: Collect AutomationTool logs
@@ -259,7 +344,8 @@ jobs:
           path: |
             ${{ runner.temp }}/UnrealEditorWebUI-*.log
             ${{ runner.temp }}/UnrealEditorWebUI-*.json
-            ${{ runner.temp }}/UnrealEditorWebUI-HostProject/Saved/Logs/**
+            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-*/**
+            ${{ runner.temp }}/UnrealEditorWebUI-HostProject-*/Saved/Logs/**
             ${{ runner.temp }}/UnrealEditorWebUI-AutomationToolLogs/**
           if-no-files-found: ignore
           retention-days: 14
@@ -268,7 +354,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: success()
         with:
-          name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE55' }}
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE58' }}
           path: ${{ runner.temp }}/UnrealEditorWebUI-Package
           if-no-files-found: error
           retention-days: 14

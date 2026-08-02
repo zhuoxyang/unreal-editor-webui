@@ -49,6 +49,38 @@ namespace
         return FTCHARToUTF8(*Value).Length();
     }
 
+    FString BoundStringWithEllipsis(const FString& Value, int32 MaxCharacters)
+    {
+        constexpr int32 EllipsisCharacters = 3;
+        if (Value.Len() <= MaxCharacters)
+        {
+            return Value;
+        }
+        return MaxCharacters <= EllipsisCharacters
+            ? FString::ChrN(MaxCharacters, TEXT('.'))
+            : Value.Left(MaxCharacters - EllipsisCharacters) + TEXT("...");
+    }
+
+    FString BoundTaskLogLine(const FString& LogLine)
+    {
+        return BoundStringWithEllipsis(LogLine, MaxTaskLogLineCharacters);
+    }
+
+    FText BuildPrivilegedCommandMessage(
+        const FString& CommandName,
+        const FString& Permission,
+        const FString& PayloadSummary)
+    {
+        return FText::Format(
+            NSLOCTEXT(
+                "UnrealEditorWebUIBridge",
+                "ConfirmPrivilegedCommandMessage",
+                "Run {0} command \"{1}\" from the WebUI?\n\nNormalized payload:\n{2}\n\nThis approval applies only to this invocation. Only continue if you trust the currently loaded page."),
+            FText::FromString(Permission),
+            FText::FromString(CommandName),
+            FText::FromString(PayloadSummary));
+    }
+
     FString BuildProjectStorageNamespace(const FString& ProjectIdentity)
     {
         const FTCHARToUTF8 Utf8Identity(*ProjectIdentity);
@@ -242,10 +274,7 @@ namespace
             return;
         }
 
-        const FString BoundedLogLine = LogLine.Len() > MaxTaskLogLineCharacters
-            ? LogLine.Left(MaxTaskLogLineCharacters) + TEXT("...")
-            : LogLine;
-        Task.Logs.Add(BoundedLogLine);
+        Task.Logs.Add(BoundTaskLogLine(LogLine));
         while (Task.Logs.Num() > MaxTaskLogLines)
         {
             Task.Logs.RemoveAt(0);
@@ -530,10 +559,9 @@ namespace
         }
         Parsed.PayloadSummary = WriteJsonObject(NormalizedPayload->ToSharedRef());
         constexpr int32 MaxPayloadSummaryCharacters = 1200;
-        if (Parsed.PayloadSummary.Len() > MaxPayloadSummaryCharacters)
-        {
-            Parsed.PayloadSummary = Parsed.PayloadSummary.Left(MaxPayloadSummaryCharacters) + TEXT("...");
-        }
+        Parsed.PayloadSummary = BoundStringWithEllipsis(
+            Parsed.PayloadSummary,
+            MaxPayloadSummaryCharacters);
 
         const TSharedPtr<FJsonObject>* ExecutionObject = nullptr;
         if (!(*ResultObject)->TryGetObjectField(TEXT("execution"), ExecutionObject)
@@ -686,9 +714,46 @@ FString UUnrealEditorWebUIBridge::TestOnlyBuildProjectStorageNamespace(
 
 void UUnrealEditorWebUIBridge::TestOnlyCompleteTaskWithResponse(
     const FString& TaskId,
-    const FString& ResponseJson)
+    const FString& ResponseJson,
+    const FString& LogLine)
 {
-    UpdateTaskStatus(TaskId, TEXT("completed"), ResponseJson, 100, TEXT("Task completed."));
+    UpdateTaskStatus(TaskId, TEXT("completed"), ResponseJson, 100, LogLine);
+}
+
+bool UUnrealEditorWebUIBridge::TestOnlySetTaskCreatedAt(
+    const FString& TaskId,
+    const FDateTime& CreatedAt)
+{
+    FScopeLock Lock(&TasksCriticalSection);
+    FUnrealEditorWebUITask* Task = Tasks.Find(TaskId);
+    if (Task == nullptr)
+    {
+        return false;
+    }
+    Task->CreatedAt = CreatedAt;
+    return true;
+}
+
+void UUnrealEditorWebUIBridge::TestOnlyRunTask(
+    const FString& TaskId,
+    const FString& RequestJson,
+    const FString& PermissionPolicyJson)
+{
+    RunTask(TaskId, RequestJson, PermissionPolicyJson);
+}
+
+void UUnrealEditorWebUIBridge::TestOnlySetPrivilegedCommandConfirmation(
+    TFunction<bool(const FString&, const FString&, const FString&)> InConfirmation)
+{
+    TestPrivilegedCommandConfirmation = MoveTemp(InConfirmation);
+}
+
+FString UUnrealEditorWebUIBridge::TestOnlyBuildPrivilegedCommandMessage(
+    const FString& CommandName,
+    const FString& Permission,
+    const FString& PayloadSummary) const
+{
+    return BuildPrivilegedCommandMessage(CommandName, Permission, PayloadSummary).ToString();
 }
 
 int32 UUnrealEditorWebUIBridge::TestOnlyStoredTaskCount() const
@@ -1138,10 +1203,7 @@ FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
 
     FString SettingsSummary = UnrealEditorWebUISettings::ToJson(Settings);
     constexpr int32 MaxSettingsSummaryCharacters = 1200;
-    if (SettingsSummary.Len() > MaxSettingsSummaryCharacters)
-    {
-        SettingsSummary = SettingsSummary.Left(MaxSettingsSummaryCharacters) + TEXT("...");
-    }
+    SettingsSummary = BoundStringWithEllipsis(SettingsSummary, MaxSettingsSummaryCharacters);
     if (!ConfirmPrivilegedCommand(TEXT("settings.update"), TEXT("write"), SettingsSummary))
     {
         return MakeErrorResponse(
@@ -1159,15 +1221,15 @@ bool UUnrealEditorWebUIBridge::ConfirmPrivilegedCommand(
     const FString& Permission,
     const FString& PayloadSummary) const
 {
+#if WITH_DEV_AUTOMATION_TESTS
+    if (TestPrivilegedCommandConfirmation)
+    {
+        return TestPrivilegedCommandConfirmation(CommandName, Permission, PayloadSummary);
+    }
+#endif
+
     const FText Title = NSLOCTEXT("UnrealEditorWebUIBridge", "ConfirmPrivilegedCommandTitle", "Confirm WebUI Command");
-    const FText Message = FText::Format(
-        NSLOCTEXT(
-            "UnrealEditorWebUIBridge",
-            "ConfirmPrivilegedCommandMessage",
-            "Run {0} command \"{1}\" from the WebUI?\n\nNormalized payload:\n{2}\n\nThis approval applies only to this invocation. Only continue if you trust the currently loaded page."),
-        FText::FromString(Permission),
-        FText::FromString(CommandName),
-        FText::FromString(PayloadSummary));
+    const FText Message = BuildPrivilegedCommandMessage(CommandName, Permission, PayloadSummary);
 
     return FMessageDialog::Open(EAppMsgType::YesNo, Message, Title) == EAppReturnType::Yes;
 }
@@ -1702,11 +1764,7 @@ void UUnrealEditorWebUIBridge::BroadcastTaskEvent(
     }
     if (!LogLine.IsEmpty())
     {
-        Root->SetStringField(
-            TEXT("log"),
-            LogLine.Len() > MaxTaskLogLineCharacters
-                ? LogLine.Left(MaxTaskLogLineCharacters) + TEXT("...")
-                : LogLine);
+        Root->SetStringField(TEXT("log"), BoundTaskLogLine(LogLine));
     }
     const FString EventJson = WriteJsonObject(Root);
     if (Utf8ByteLength(EventJson) > MaxTaskEventJsonUtf8Bytes)

@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   assemble:
-    name: Assemble verified UE 5.5 release candidate
+    name: Assemble verified UE 5.8 release candidate
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -185,8 +185,8 @@ jobs:
               },
               "ueValidation": {
                   "workflowPath": ".github/workflows/ue-ci.yml",
-                  "requiredJob": "UE 5.5 BuildPlugin and automation",
-                  "requiredRunnerLabels": ["self-hosted", "windows", "ue-5.5"],
+                  "requiredJob": "UE 5.8 BuildPlugin and automation",
+                  "requiredRunnerLabels": ["self-hosted", "windows", "gui", "ue-5.8"],
                   "runId": int(os.environ["UE_RUN_ID"]),
                   "runUrl": os.environ["UE_RUN_URL"],
                   "jobId": int(os.environ["UE_JOB_ID"]),
@@ -196,8 +196,7 @@ jobs:
                   "artifactCommitMatched": True,
               },
               "validationClaim": (
-                  "Trusted UE 5.5 BuildPlugin and repository automation only. "
-                  "This release-candidate workflow does not independently claim full CEF browser binding coverage."
+                  "Trusted UE 5.8 BuildPlugin, repository automation, and GUI CEF browser binding/task DOM-event coverage."
               ),
           }
 
@@ -212,7 +211,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          archive_name="UnrealEditorWebUI-${RELEASE_TAG}-UE55.zip"
+          archive_name="UnrealEditorWebUI-${RELEASE_TAG}-UE58.zip"
           mkdir -p release/staging/UnrealEditorWebUI
           cp -a trusted-package/. release/staging/UnrealEditorWebUI/
           (
@@ -253,5 +252,5 @@ jobs:
             echo "- Archive: \`$ARCHIVE_NAME\`"
             echo "- Trusted UE validation: $UE_RUN_URL"
             echo
-            echo "This workflow created a short-lived candidate artifact only. It did not create a source archive or publish a GitHub Release. Full CEF browser-to-UObject coverage remains a separately reported validation boundary."
+            echo "This workflow created a short-lived candidate artifact only. It did not create a source archive or publish a GitHub Release. The selected UE validation includes the GUI CEF browser-to-UObject and task DOM-event round trip."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,6 @@
 # unreal-editor-webui
 
-Build Unreal Engine 5.5 editor Web UI tools with WebBrowser/SWebBrowser, Python automation, and C++ extension hooks.
+Build Unreal Engine editor Web UI tools with WebBrowser/SWebBrowser, Python automation, and C++ extension hooks.
 
 ## What This Is
 
@@ -13,7 +13,7 @@ Build Unreal Engine 5.5 editor Web UI tools with WebBrowser/SWebBrowser, Python 
 
 This project targets editor tooling, not packaged runtime/game UI.
 
-The current automated build and release target is Unreal Engine 5.5 on Windows. Historical smoke results for other engine versions or platforms are not a maintained compatibility guarantee; revalidate and document another target before distributing it as supported.
+The current automated build and release target is Unreal Engine 5.8 on Windows. Release eligibility requires successful exact-commit UE 5.8 validation. Results from UE 5.3, UE 5.5, or other platforms are point-in-time evidence only unless they are revalidated for the current commit.
 
 ## Current Features
 
@@ -63,7 +63,7 @@ The current automated build and release target is Unreal Engine 5.5 on Windows. 
    - `WebBrowserWidget`
    - `PythonScriptPlugin`
 4. Regenerate project files.
-5. Build the Unreal Engine 5.5 editor target.
+5. Build the Unreal Engine 5.8 editor target.
 6. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
 
 ## Frontend Development
@@ -102,7 +102,7 @@ Use the repository scripts when packaging. They install the locked frontend depe
 
 ```sh
 bash scripts/package-plugin.sh \
-  "/path/to/UE_5.5/Engine/Build/BatchFiles/RunUAT.sh" \
+  "/path/to/UE_5.8/Engine/Build/BatchFiles/RunUAT.sh" \
   /tmp/UnrealEditorWebUI-Package
 ```
 
@@ -110,7 +110,7 @@ On Windows, use the PowerShell script with `RunUAT.bat`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
-  "C:\Program Files\Epic Games\UE_5.5\Engine\Build\BatchFiles\RunUAT.bat" `
+  "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat" `
   "$env:TEMP\UnrealEditorWebUI-Package"
 ```
 
@@ -258,7 +258,7 @@ The frontend renders those asset results as tables instead of raw JSON, while ot
 ## Roadmap
 
 - Add more command-specific result views and production editor workflows.
-- Add GUI-capable CEF automation for the JavaScript binding and task-event hops.
+- Expand the GUI CEF automation matrix when additional engine/platform targets are intentionally maintained.
 
 ## License
 

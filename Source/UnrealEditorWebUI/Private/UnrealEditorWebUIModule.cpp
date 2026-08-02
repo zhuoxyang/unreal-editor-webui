@@ -110,9 +110,15 @@ private:
     void HandleBrowserUrlChanged(const FText& NewUrlText)
     {
         const FString NewUrl = NewUrlText.ToString();
+        if (bLoadingBootstrapPage && NewUrl.Equals(TEXT("about:blank"), ESearchCase::IgnoreCase))
+        {
+            return;
+        }
+
         FString Error;
         if (UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(NewUrl, TrustedStartupURL, Error))
         {
+            bLoadingBootstrapPage = false;
             if (!LastAllowedURL.IsEmpty() && !NewUrl.Equals(LastAllowedURL, ESearchCase::CaseSensitive) && Bridge.Get() != nullptr)
             {
                 Bridge->ResetPrivilegedCommandApprovals();
@@ -134,6 +140,11 @@ private:
 
     bool HandleBeforeNavigation(const FString& URL, const FWebNavigationRequest&)
     {
+        if (bLoadingBootstrapPage && URL.Equals(TEXT("about:blank"), ESearchCase::IgnoreCase))
+        {
+            return false;
+        }
+
         FString Error;
         if (UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(URL, TrustedStartupURL, Error))
         {
@@ -152,6 +163,12 @@ private:
     {
         if (Bridge.Get() != nullptr && BrowserWidget.IsValid())
         {
+            if (bLoadingBootstrapPage
+                && BrowserWidget->GetUrl().Equals(TEXT("about:blank"), ESearchCase::IgnoreCase))
+            {
+                return;
+            }
+
             Bridge->BeginDocumentSession(
                 LastAllowedURL.IsEmpty() ? TrustedStartupURL : LastAllowedURL);
             // Temporary bindings are destroyed with their document context.
@@ -159,6 +176,52 @@ private:
             // bridge after a new document session has begun.
             BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), false);
         }
+    }
+
+    void HandleBrowserLoadCompleted()
+    {
+        if (Bridge.Get() == nullptr || !BrowserWidget.IsValid())
+        {
+            return;
+        }
+
+        const FString LoadedURL = BrowserWidget->GetUrl();
+        if (bLoadingBootstrapPage && LoadedURL.Equals(TEXT("about:blank"), ESearchCase::IgnoreCase))
+        {
+            return;
+        }
+
+        FString Error;
+        if (!UnrealEditorWebUISettings::IsBridgeURLAllowedForStartupScope(
+                LoadedURL,
+                TrustedStartupURL,
+                Error))
+        {
+            UE_LOG(
+                LogUnrealEditorWebUI,
+                Warning,
+                TEXT("Refused to bind the WebUI bridge after loading unsafe URL '%s': %s"),
+                *LoadedURL,
+                *Error);
+            return;
+        }
+        bLoadingBootstrapPage = false;
+
+        // UE 5.8 can deliver the Loading notification before the new renderer
+        // context accepts a temporary binding. Replace it once the validated
+        // document is ready, then notify clients that support delayed binding.
+        BrowserWidget->UnbindUObject(TEXT("editorwebui"), Bridge.Get(), false);
+        BrowserWidget->BindUObject(TEXT("editorwebui"), Bridge.Get(), false);
+        BrowserWidget->ExecuteJavascript(TEXT(
+            "(function(){"
+            "var attempts=0;"
+            "function signal(){"
+            "if(window.ue&&window.ue.editorwebui){"
+            "document.dispatchEvent(new CustomEvent('ue:ready',{detail:window.ue}));"
+            "}else if(++attempts<500){setTimeout(signal,10);}"
+            "}"
+            "signal();"
+            "})();"));
     }
 
     TSharedRef<SDockTab> SpawnWebUITab(const FSpawnTabArgs& SpawnTabArgs)
@@ -176,21 +239,27 @@ private:
         Bridge = TStrongObjectPtr<UUnrealEditorWebUIBridge>(NewObject<UUnrealEditorWebUIBridge>());
         LastAllowedURL = GetInitialURL();
         TrustedStartupURL = LastAllowedURL;
+        bLoadingBootstrapPage = true;
         Bridge->BeginDocumentSession(TrustedStartupURL);
 
-        BrowserWidget =
-            SNew(SWebBrowser)
-            .InitialURL(LastAllowedURL)
+        SAssignNew(BrowserWidget, SWebBrowser)
+            // SWebBrowserView creates its browser window before subscribing to
+            // document-state changes. A disposable first page ensures the
+            // trusted load reaches the registered completion callback, where
+            // UE 5.8's renderer binding is refreshed for that document.
+            .InitialURL(TEXT("about:blank"))
             .ShowControls(false)
             .SupportsTransparency(true)
             .OnBeforeNavigation(SWebBrowser::FOnBeforeBrowse::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBeforeNavigation))
             .OnLoadStarted(FSimpleDelegate::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserLoadStarted))
+            .OnLoadCompleted(FSimpleDelegate::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserLoadCompleted))
             .OnUrlChanged(FOnTextChanged::CreateRaw(this, &FUnrealEditorWebUIModule::HandleBrowserUrlChanged));
 
         Bridge->SetEventDispatcher([this](const FString& EventJson)
         {
             DispatchWebUIEvent(EventJson);
         });
+        BrowserWidget->LoadURL(LastAllowedURL);
 
         return SNew(SDockTab)
             .TabRole(ETabRole::NomadTab)
@@ -209,6 +278,7 @@ private:
     TStrongObjectPtr<UUnrealEditorWebUIBridge> Bridge;
     FString LastAllowedURL;
     FString TrustedStartupURL;
+    bool bLoadingBootstrapPage = false;
 };
 
 IMPLEMENT_MODULE(FUnrealEditorWebUIModule, UnrealEditorWebUI)

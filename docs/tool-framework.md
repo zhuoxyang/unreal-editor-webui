@@ -48,7 +48,8 @@ requires a Windows self-hosted runner with labels:
 
 - `self-hosted`
 - `windows`
-- `ue-5.5` for automatic `main` and release validation, or `ue-5.3` for an explicitly selected manual compatibility run.
+- `gui`
+- `ue-5.8` for automatic `main` and release validation, or `ue-5.3` for an explicitly selected manual compatibility run.
 
 Runner prerequisites:
 
@@ -57,6 +58,6 @@ Runner prerequisites:
 - Network access so the pinned `actions/setup-node` step can provision Node.js/npm for frontend packaging.
 - No user-global Unreal Python startup script that logs errors during commandlets.
 
-Public pull requests use only the required GitHub-hosted checks. The persistent licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it.
+Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions each registration from a clean root and uses an ephemeral one-job runner.
 
 See `docs/ue-ci-runner.md` for the pinned runner setup, trust boundary, branch protection checklist, and artifact policy. See `docs/release-process.md` for exact-commit release candidate verification.

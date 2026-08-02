@@ -741,6 +741,61 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(executed["error"]["code"], "invalid_request")
 
     def test_request_complexity_and_response_size_are_bounded(self):
+        exact_request_document = (
+            '"' + "x" * (self.registry.MAX_REQUEST_BYTES - 2) + '"'
+        )
+        self.assertEqual(
+            len(exact_request_document.encode("utf-8")),
+            self.registry.MAX_REQUEST_BYTES,
+        )
+        self.assertEqual(
+            len(self.registry.parse_json_document(exact_request_document)),
+            self.registry.MAX_REQUEST_BYTES - 2,
+        )
+
+        exact_depth_document = (
+            "[" * self.registry.MAX_JSON_DEPTH
+            + "0"
+            + "]" * self.registry.MAX_JSON_DEPTH
+        )
+        self.registry.parse_json_document(exact_depth_document)
+
+        exact_node_document = json.dumps(
+            [0] * (self.registry.MAX_JSON_NODES - 1)
+        )
+        self.assertEqual(
+            len(self.registry.parse_json_document(exact_node_document)),
+            self.registry.MAX_JSON_NODES - 1,
+        )
+
+        exact_response_envelope = {
+            "id": "boundary",
+            "ok": True,
+            "result": {"value": ""},
+        }
+        response_overhead = len(
+            json.dumps(exact_response_envelope, ensure_ascii=False).encode("utf-8")
+        )
+        exact_response_envelope["result"]["value"] = "x" * (
+            self.registry.MAX_RESPONSE_BYTES - response_overhead
+        )
+        exact_response = self.registry._serialize_response(
+            "boundary", exact_response_envelope
+        )
+        self.assertEqual(
+            len(exact_response.encode("utf-8")),
+            self.registry.MAX_RESPONSE_BYTES,
+        )
+        self.assertTrue(parse_response(exact_response)["ok"])
+
+        exact_response_envelope["result"]["value"] += "x"
+        over_limit_response = parse_response(
+            self.registry._serialize_response("boundary", exact_response_envelope)
+        )
+        self.assertEqual(
+            over_limit_response["error"]["code"], "response_too_large"
+        )
+
         oversized = request("editor.log", {"message": "x" * (257 * 1024)})
         too_large = parse_response(self.registry.inspect_command(oversized))
         too_deep = parse_response(

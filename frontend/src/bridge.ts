@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { BridgeResponse } from './types/bridge'
 
 export type { BridgeResponse, ProjectContext, TaskResult, TaskStatus, WebUISettings } from './types/bridge'
@@ -172,8 +172,18 @@ export function createRequestId() {
 }
 
 export function useEditorBridge(log?: (message: string) => void) {
-  const bridge = window.ue?.editorwebui
+  const [bridge, setBridge] = useState<EditorWebUIBridge | undefined>(() => window.ue?.editorwebui)
   const bridgeReady = Boolean(bridge)
+
+  useEffect(() => {
+    function refreshBridge() {
+      setBridge(window.ue?.editorwebui)
+    }
+
+    refreshBridge()
+    document.addEventListener('ue:ready', refreshBridge)
+    return () => document.removeEventListener('ue:ready', refreshBridge)
+  }, [])
 
   const invokeBridge = useCallback(async <T,>(
     methodName: BridgeMethodName,

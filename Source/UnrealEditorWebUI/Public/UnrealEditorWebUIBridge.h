@@ -84,7 +84,21 @@ public:
         const FString& RequestId,
         const FString& PreflightJson) const;
     FString TestOnlyBuildProjectStorageNamespace(const FString& ProjectIdentity) const;
-    void TestOnlyCompleteTaskWithResponse(const FString& TaskId, const FString& ResponseJson);
+    void TestOnlyCompleteTaskWithResponse(
+        const FString& TaskId,
+        const FString& ResponseJson,
+        const FString& LogLine = TEXT("Task completed."));
+    bool TestOnlySetTaskCreatedAt(const FString& TaskId, const FDateTime& CreatedAt);
+    void TestOnlyRunTask(
+        const FString& TaskId,
+        const FString& RequestJson,
+        const FString& PermissionPolicyJson = TEXT("{}"));
+    void TestOnlySetPrivilegedCommandConfirmation(
+        TFunction<bool(const FString&, const FString&, const FString&)> InConfirmation);
+    FString TestOnlyBuildPrivilegedCommandMessage(
+        const FString& CommandName,
+        const FString& Permission,
+        const FString& PayloadSummary) const;
     int32 TestOnlyStoredTaskCount() const;
 #endif
 
@@ -127,4 +141,7 @@ private:
     FString CurrentDocumentSessionId = TEXT("initial-session");
     TFunction<void(const FString&)> EventDispatcher;
     FTSTicker::FDelegateHandle CooperativeTaskTickerHandle;
+#if WITH_DEV_AUTOMATION_TESTS
+    TFunction<bool(const FString&, const FString&, const FString&)> TestPrivilegedCommandConfirmation;
+#endif
 };

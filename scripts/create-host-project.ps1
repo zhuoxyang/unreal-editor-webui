@@ -6,7 +6,7 @@ param(
     [string]$PluginSourceDir,
 
     [ValidatePattern("^5\.\d+$")]
-    [string]$EngineAssociation = "5.5"
+    [string]$EngineAssociation = "5.8"
 )
 
 Set-StrictMode -Version Latest

@@ -109,6 +109,7 @@ jobs:
           assert plugins.get("WebBrowserWidget", {}).get("Enabled") is True, "WebBrowserWidget must be enabled"
           assert (root / "Source/UnrealEditorWebUI/UnrealEditorWebUI.Build.cs").is_file(), "Build.cs missing"
           assert (root / "Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp").is_file(), "Bridge source missing"
+          assert (root / "Source/UnrealEditorWebUI/Private/Tests/UnrealEditorWebUIBrowserTests.cpp").is_file(), "GUI CEF automation test missing"
           assert (root / "Python/unreal_editor_webui_bridge_entry.py").is_file(), "Python bridge entry missing"
           assert (root / "Python/unreal_editor_webui_registry.py").is_file(), "Python registry missing"
           assert (root / "scripts/validate-packaged-bridge-smoke.py").is_file(), "Packaged bridge smoke missing"
@@ -144,6 +145,7 @@ jobs:
           node --check scripts/resolve-ue-release-artifact.mjs
           node --check scripts/export-npm-dependencies.mjs
           node --test tests/download-verified-github-artifact.test.mjs
+          node --test tests/resolve-ue-release-candidate.test.mjs
 
       - name: Check tracked-file whitespace
         shell: bash
