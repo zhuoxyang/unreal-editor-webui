@@ -36,6 +36,16 @@ if ($InstallService -and $NormalizedLabels -contains "gui") {
     throw "GUI-labelled runners must run interactively in a logged-in desktop session; do not install them as a Windows service."
 }
 
+$GitCacheToolsValidator = Join-Path $PSScriptRoot "validate-git-cache-tools.ps1"
+if (-not (Test-Path -LiteralPath $GitCacheToolsValidator -PathType Leaf)) {
+    throw "Git cache tool validator not found: $GitCacheToolsValidator"
+}
+$GitUsrBinOutput = @(& $GitCacheToolsValidator)
+if ($GitUsrBinOutput.Count -ne 1) {
+    throw "Git cache tool validation returned $($GitUsrBinOutput.Count) output lines; expected exactly one tools directory."
+}
+$GitUsrBin = $GitUsrBinOutput[0]
+
 $RunUAT = Join-Path $UERoot "Engine/Build/BatchFiles/RunUAT.bat"
 $EditorCmd = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
 $Editor = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor.exe"
@@ -199,4 +209,4 @@ finally {
     Pop-Location
 }
 
-Write-Output "Configured verified GitHub Actions runner v$RunnerVersion '$RunnerName' at $RunnerRootPath with labels: $Labels"
+Write-Output "Configured verified GitHub Actions runner v$RunnerVersion '$RunnerName' at $RunnerRootPath with labels: $Labels; Git cache tools: $GitUsrBin"
