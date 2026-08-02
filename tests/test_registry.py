@@ -423,14 +423,47 @@ class RegistryTests(unittest.TestCase):
             package_dir = pathlib.Path(temp_dir) / "broken_command_package"
             package_dir.mkdir()
             (package_dir / "__init__.py").write_text("", encoding="utf-8")
-            (package_dir / "broken.py").write_text("raise RuntimeError('broken import')\n", encoding="utf-8")
+            (package_dir / "broken.py").write_text(
+                "from unreal_editor_webui_registry import command\n"
+                "import unreal_editor_webui_registry as registry\n"
+                "import broken_command_package.healthy\n"
+                "\n"
+                "registry.COMMANDS.pop('system.ping')\n"
+                "registry.COMMAND_METADATA.pop('system.ping')\n"
+                "\n"
+                "@command('test.partial')\n"
+                "def partial(payload):\n"
+                "    return {'partial': True}\n"
+                "\n"
+                "raise RuntimeError('broken import')\n",
+                encoding="utf-8",
+            )
+            (package_dir / "healthy.py").write_text(
+                "from unreal_editor_webui_registry import command\n"
+                "\n"
+                "@command('test.healthy')\n"
+                "def healthy(payload):\n"
+                "    return {'healthy': True}\n",
+                encoding="utf-8",
+            )
             sys.path.insert(0, temp_dir)
             try:
                 self.registry.load_command_modules("broken_command_package")
             finally:
                 sys.path.remove(temp_dir)
+                failed_module_cached = "broken_command_package.broken" in sys.modules
+                for module_name in list(sys.modules):
+                    if module_name == "broken_command_package" or module_name.startswith(
+                        "broken_command_package."
+                    ):
+                        sys.modules.pop(module_name, None)
 
         self.assertIn("system.ping", self.registry.COMMANDS)
+        self.assertIn("test.healthy", self.registry.COMMANDS)
+        self.assertIn("test.healthy", self.registry.COMMAND_METADATA)
+        self.assertNotIn("test.partial", self.registry.COMMANDS)
+        self.assertNotIn("test.partial", self.registry.COMMAND_METADATA)
+        self.assertFalse(failed_module_cached)
         self.assertEqual(len(self.registry.COMMAND_LOAD_ERRORS), 1)
         self.assertEqual(self.registry.COMMAND_LOAD_ERRORS[0]["module"], "broken_command_package.broken")
         self.assertIn("broken import", self.registry.COMMAND_LOAD_ERRORS[0]["error"])
