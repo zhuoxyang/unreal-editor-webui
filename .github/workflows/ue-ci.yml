@@ -126,7 +126,8 @@ jobs:
           $Scripts = @(
             "scripts/package-plugin.ps1",
             "scripts/create-host-project.ps1",
-            "scripts/setup-ue-runner.ps1"
+            "scripts/setup-ue-runner.ps1",
+            "scripts/validate-git-cache-tools.ps1"
           )
           foreach ($Script in $Scripts) {
             $Tokens = $null
@@ -157,6 +158,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Expose and validate Git cache tools
+        shell: powershell
+        run: |
+          $GitUsrBinOutput = @(powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-git-cache-tools.ps1 -ExportToGitHubPath)
+          if ($LASTEXITCODE -ne 0) { throw "Git cache tool validation failed with exit code $LASTEXITCODE." }
+          if ($GitUsrBinOutput.Count -ne 1) { throw "Git cache tool validation returned $($GitUsrBinOutput.Count) output lines; expected one." }
+          Write-Host "Validated Git cache tools and exported: $($GitUsrBinOutput[0])"
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

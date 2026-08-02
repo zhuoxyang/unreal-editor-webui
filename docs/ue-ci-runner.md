@@ -33,7 +33,7 @@ Install these before registering the runner:
 
 - Unreal Engine at the matching standard path, for example UE 5.3 at `C:\Program Files\Epic Games\UE_5.3` or UE 5.8 at `C:\Program Files\Epic Games\UE_5.8`.
 - Visual Studio C++ toolchain and Windows SDK. This repository's maintained UE 5.8 runner baseline accepts Visual Studio 2022 17.14 with an MSVC compiler product version of 14.44.35211 or later within the 14.44 family, or Visual Studio 2026 18.x with 14.50.35723 or later within the 14.50 family. Like UnrealBuildTool, setup reads the `cl.exe` product version instead of treating the servicing toolset's family directory name as the compiler version. UE 5.8 rejects MSVC 14.39 and the early portions of those newer families according to the engine's own Windows SDK configuration.
-- Git.
+- 64-bit Git for Windows installed under the system's standard 64-bit Program Files directory (normally `C:\Program Files\Git`), including `usr\bin\tar.exe` and `usr\bin\gzip.exe`. The setup script requires both tools and proves that `tar` can create and read a gzip-compressed archive before it downloads or registers a runner.
 - PowerShell 7 or Windows PowerShell 5.1.
 - Network access for the pinned `actions/setup-node` step; the UE job installs the repository's required Node.js/npm version before validation.
 - A clean Unreal Python startup environment. User-global `Documents/UnrealEngine/Python/init_unreal.py` scripts should not log errors during commandlets.
@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File scripts/setup-ue-runner.ps1 `
   -Ephemeral
 ```
 
-The script requires a new or empty runner root, downloads an explicitly pinned Windows x64 runner, verifies its SHA-256 before extraction, validates the standard-path UE installation, and configures labels `self-hosted,windows,gui,ue-5.8`. Reusing a previously populated root is intentionally rejected because a version string cannot establish the integrity of all runner files. Start this GUI runner interactively from the logged-in console session; a Windows service runs in Session 0 and cannot provide valid CEF coverage. The workflow also verifies that its process and an Explorer desktop share a nonzero Windows session before claiming GUI coverage. The checked-in defaults are:
+The script requires a new or empty runner root, downloads an explicitly pinned Windows x64 runner, verifies its SHA-256 before extraction, validates the standard-path UE installation and Git cache compression tools, and configures labels `self-hosted,windows,gui,ue-5.8`. Reusing a previously populated root is intentionally rejected because a version string cannot establish the integrity of all runner files. Start this GUI runner interactively from the logged-in console session; a Windows service runs in Session 0 and cannot provide valid CEF coverage. The workflow also verifies that its process and an Explorer desktop share a nonzero Windows session before claiming GUI coverage. The checked-in defaults are:
 
 - Runner version: `2.336.0`.
 - Official Windows x64 SHA-256: `d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162`.
@@ -82,6 +82,16 @@ The `gui` runner must run interactively. Omit `-InstallService` and start:
 ```powershell
 C:\actions-runner-unreal-editor-webui-ue58\run.cmd
 ```
+
+Do not prepend Git paths manually in the shell that starts `run.cmd`, and do not add Git's Unix tools to the machine-wide PATH. Before `actions/setup-node`, the trusted UE job runs `scripts/validate-git-cache-tools.ps1`, temporarily verifies the exact standard-path executables with a gzip archive round trip, and writes the resolved 64-bit Git `usr\bin` directory to [`GITHUB_PATH`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands-for-github-actions#adding-a-system-path). GitHub then prepends that directory for all later actions in the job, including the `setup-node` post-job npm cache save. This workflow-level export also repairs already-registered runners without freezing a copy of the machine PATH in the runner's `.env` file.
+
+To diagnose a cache warning on the runner, run the same validator from a repository checkout:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-git-cache-tools.ps1
+```
+
+It must print the standard 64-bit Git tools path, normally `C:\Program Files\Git\usr\bin`. If either executable is absent or the round trip fails, repair or reinstall 64-bit Git for Windows at the standard path before registering or restarting the runner. After a trusted run, inspect the `Post Set up Node.js` log: cache restore/save must complete without `gzip: command not found`, `Failed to save`, or a cache-save warning.
 
 ## Branch Protection
 

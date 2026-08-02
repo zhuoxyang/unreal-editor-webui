@@ -157,7 +157,8 @@ jobs:
           $Scripts = @(
             "scripts/package-plugin.ps1",
             "scripts/create-host-project.ps1",
-            "scripts/setup-ue-runner.ps1"
+            "scripts/setup-ue-runner.ps1",
+            "scripts/validate-git-cache-tools.ps1"
           )
           foreach ($Script in $Scripts) {
             $Tokens = $null
