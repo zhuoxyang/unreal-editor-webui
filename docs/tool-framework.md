@@ -48,13 +48,13 @@ requires a Windows self-hosted runner with labels:
 
 - `self-hosted`
 - `windows`
-- `ue-5.5`
+- `ue-5.5` for automatic `main` and release validation, or `ue-5.3` for an explicitly selected manual compatibility run.
 
 Runner prerequisites:
 
-- Unreal Engine 5.5 at `C:\Program Files\Epic Games\UE_5.5`.
+- The selected Unreal Engine version at its standard `C:\Program Files\Epic Games\UE_...` path.
 - Visual Studio 2022 C++ toolchain and Windows SDK.
-- Node.js/npm for frontend packaging.
+- Network access so the pinned `actions/setup-node` step can provision Node.js/npm for frontend packaging.
 - No user-global Unreal Python startup script that logs errors during commandlets.
 
 Public pull requests use only the required GitHub-hosted checks. The persistent licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it.

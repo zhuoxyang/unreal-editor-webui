@@ -8,6 +8,14 @@ on:
         required: true
         default: false
         type: boolean
+      ue_version:
+        description: Engine version for this trusted run (UE 5.3 is compatibility-only; releases require UE 5.5)
+        required: true
+        default: "5.5"
+        type: choice
+        options:
+          - "5.5"
+          - "5.3"
   push:
     branches:
       - main
@@ -124,17 +132,18 @@ jobs:
           }
 
   buildplugin-and-automation:
-    name: UE 5.5 BuildPlugin and automation
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UE 5.3 BuildPlugin and automation (compatibility only)' || 'UE 5.5 BuildPlugin and automation' }}
     needs: [fast-checks, ue-config-validation]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
-    runs-on: [self-hosted, windows, ue-5.5]
+    runs-on: [self-hosted, windows, "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'ue-5.3' || 'ue-5.5' }}"]
     timeout-minutes: 90
     environment:
       name: ue-self-hosted
     env:
-      UE_ROOT: C:\Program Files\Epic Games\UE_5.5
+      UE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && '5.3' || '5.5' }}
+      UE_ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'C:\Program Files\Epic Games\UE_5.3' || 'C:\Program Files\Epic Games\UE_5.5' }}
 
     steps:
       - name: Check out repository
@@ -142,8 +151,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Validate runner prerequisites
-        shell: pwsh
+        shell: powershell
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
@@ -154,7 +170,7 @@ jobs:
           npm --version
 
       - name: Build packaged plugin
-        shell: pwsh
+        shell: powershell
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
           $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
@@ -174,15 +190,15 @@ jobs:
           }
 
       - name: Create temporary host project
-        shell: pwsh
+        shell: powershell
         run: |
           $ProjectDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-HostProject"
           $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
-          $ProjectPath = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir
-          "HOST_PROJECT=$ProjectPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $ProjectPath = powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION
+          "HOST_PROJECT=$ProjectPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run UE automation tests
-        shell: pwsh
+        shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation.log"
@@ -192,7 +208,7 @@ jobs:
           }
 
       - name: Run packaged bridge smoke
-        shell: pwsh
+        shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke.log"
@@ -211,7 +227,7 @@ jobs:
           }
 
       - name: Run native settings smoke
-        shell: pwsh
+        shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke.log"
@@ -221,7 +237,7 @@ jobs:
           }
 
       - name: Collect AutomationTool logs
-        shell: pwsh
+        shell: powershell
         if: always()
         run: |
           $Source = Join-Path $env:APPDATA "Unreal Engine/AutomationTool/Logs"
@@ -248,7 +264,7 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: success()
         with:
-          name: UnrealEditorWebUI-Package-UE55
+          name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE55' }}
           path: ${{ runner.temp }}/UnrealEditorWebUI-Package
           if-no-files-found: error
           retention-days: 14

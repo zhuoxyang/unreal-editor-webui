@@ -19,11 +19,17 @@ param(
 
     [string]$Labels = "self-hosted,windows,ue-5.5",
 
+    [switch]$Ephemeral,
+
     [switch]$InstallService
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if ($Ephemeral -and $InstallService) {
+    throw "Ephemeral runners must be started interactively; do not combine -Ephemeral with -InstallService."
+}
 
 $RunUAT = Join-Path $UERoot "Engine/Build/BatchFiles/RunUAT.bat"
 $EditorCmd = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
@@ -33,18 +39,6 @@ if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $EditorCmd -PathType Leaf)) {
     throw "UnrealEditor-Cmd not found: $EditorCmd"
 }
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    throw "Node.js is required on the runner PATH."
-}
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-    throw "npm is required on the runner PATH."
-}
-
-& node (Join-Path $PSScriptRoot "validate-node-version.mjs")
-if ($LASTEXITCODE -ne 0) {
-    throw "The runner Node.js version does not satisfy frontend/package.json."
-}
-
 New-Item -ItemType Directory -Path $RunnerRoot -Force | Out-Null
 $RunnerRootPath = (Resolve-Path -LiteralPath $RunnerRoot).Path
 
@@ -97,14 +91,20 @@ if (-not $InstalledVersionMatch.Success -or $InstalledVersionMatch.Value -ne $Ru
 
 Push-Location $RunnerRootPath
 try {
-    & .\config.cmd `
-        --url $RepoUrl `
-        --token $Token `
-        --name $RunnerName `
-        --labels $Labels `
-        --work "_work" `
-        --unattended `
-        --replace
+    $ConfigArguments = @(
+        "--url", $RepoUrl,
+        "--token", $Token,
+        "--name", $RunnerName,
+        "--labels", $Labels,
+        "--work", "_work",
+        "--unattended",
+        "--replace"
+    )
+    if ($Ephemeral) {
+        $ConfigArguments += "--ephemeral"
+    }
+
+    & .\config.cmd @ConfigArguments
 
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub runner config failed with exit code $LASTEXITCODE"

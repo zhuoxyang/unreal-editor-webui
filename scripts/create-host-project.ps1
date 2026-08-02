@@ -3,7 +3,10 @@ param(
     [string]$ProjectDir,
 
     [Parameter(Mandatory = $true)]
-    [string]$PluginSourceDir
+    [string]$PluginSourceDir,
+
+    [ValidatePattern("^5\.\d+$")]
+    [string]$EngineAssociation = "5.5"
 )
 
 Set-StrictMode -Version Latest
@@ -26,7 +29,7 @@ if ($LASTEXITCODE -gt 7) {
 
 $ProjectJson = [ordered]@{
     FileVersion = 3
-    EngineAssociation = "5.5"
+    EngineAssociation = $EngineAssociation
     Category = ""
     Description = "Temporary host project for UnrealEditorWebUI CI validation"
     Plugins = @(

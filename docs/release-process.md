@@ -19,6 +19,8 @@ Before downloading anything, the workflow resolves the checked-out commit and ve
 
 A tag push searches for an eligible UE run for that exact commit. A manual run requires the operator to select the release commit and provide the exact trusted UE workflow run id. A run id for a different commit, a skipped UE job, a partial/expired artifact, or a hosted-only validation cannot be promoted.
 
+Manually dispatched UE 5.3 compatibility runs are intentionally ineligible: they use the job name `UE 5.3 BuildPlugin and automation (compatibility only)`, the runner label `ue-5.3`, and the artifact name `UnrealEditorWebUI-Package-UE53`. The release verifier accepts only the corresponding UE 5.5 job, label, and `UE55` artifact.
+
 ## Candidate Outputs
 
 The workflow uploads one short-lived `release-candidate-v...` Actions artifact containing:

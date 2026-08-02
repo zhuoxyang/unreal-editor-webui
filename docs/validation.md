@@ -38,16 +38,16 @@ CI coverage added in `.github/workflows/ci.yml`:
 UE CI coverage is defined in `.github/workflows/ue-ci.yml`:
 
 - The UE workflow has no `pull_request` trigger. Automatic pull-request validation is provided entirely by the GitHub-hosted jobs in `.github/workflows/ci.yml`, including equivalent descriptor/module-wiring and script-syntax checks.
-- The UE workflow's hosted prerequisite jobs run only on its trusted events. `UE 5.5 BuildPlugin and automation` is eligible only for a push to `main`, or an explicit trusted `workflow_dispatch` with the self-hosted validation input enabled, and it is gated by the protected `ue-self-hosted` environment.
-- Runner labels: `self-hosted`, `windows`, `ue-5.5`.
-- Runner environment variable: `UE_ROOT=C:\Program Files\Epic Games\UE_5.5`.
-- Required software: Unreal Engine 5.5, Visual Studio 2022 C++ toolchain, Windows SDK, Node.js/npm, Git, PowerShell.
+- The UE workflow's hosted prerequisite jobs run only on its trusted events. A push to `main` always selects `UE 5.5 BuildPlugin and automation`; an explicit trusted `workflow_dispatch` can select UE 5.3 compatibility validation or UE 5.5 release validation, and the self-hosted job is gated by the protected `ue-self-hosted` environment.
+- Runner labels: `self-hosted`, `windows`, plus the selected `ue-5.3` or `ue-5.5` engine label.
+- Runner environment variable: `UE_ROOT` resolves to the matching standard Epic installation path.
+- Required software: the selected Unreal Engine version, Visual Studio 2022 C++ toolchain, Windows SDK, Git, and PowerShell. The pinned `actions/setup-node` step provisions the repository-compatible Node.js/npm toolchain.
 - The self-hosted job runs `scripts/package-plugin.ps1`, verifies the packaged `Web/dist/index.html` and exact repository `LICENSE`, creates a temporary host project with `scripts/create-host-project.ps1`, runs the `UnrealEditorWebUI.` automation test filter, executes the packaged bridge smoke, and runs `scripts/validate-settings-smoke.py`.
 - UE logs upload with `if: always()` so failed runs keep diagnostics when files exist. The HostProject log glob points to the temporary host project directory.
 - The packaged plugin uploads only when the full UE job succeeds; missing package output is an artifact error.
 - Keep self-hosted runner user Python startup scripts clean or isolated. A global `Documents/UnrealEngine/Python/init_unreal.py` can pollute settings-smoke commandlet exit status.
 
-Unreal validation depends on an external licensed runner. If no correctly labelled runner is online, or the protected environment is not approved, the trusted UE job remains queued. Hosted checks do not compile the C++ module or replace a successful UE run for the exact commit being promoted.
+Unreal validation depends on an external licensed runner. If no correctly labelled runner is online, or the protected environment is not approved, the trusted UE job remains queued. Hosted checks do not compile the C++ module. A successful UE 5.3 run is compatibility evidence but cannot replace the successful exact-commit UE 5.5 run required for release promotion.
 
 ## Packaged Bridge Smoke
 
