@@ -53,6 +53,7 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 2. Build the complete React UI before opening the plugin:
 
    ```sh
+   node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
    cd frontend
    npm ci
    npm run build
@@ -75,6 +76,7 @@ Use Node.js 24 from 24.18.1 onward (recommended), or Node.js 22 from 22.22.2 onw
 Node.js 20 is excluded because it is upstream end-of-life, while Node.js 26 remains excluded until it is intentionally added to the CI matrix. Raising the maintained floors also permits the jsdom 30 and jest-dom 7 test stack; `@types/node` stays pinned to the Node 22 line so compiled tooling cannot accidentally depend on Node 24-only APIs.
 
 ```sh
+node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
 cd frontend
 npm ci
 npm run dev
@@ -101,6 +103,7 @@ The build output is written to `Web/dist`. If that folder is missing, the plugin
 Repository governance tools use the small root lockfile separately from the frontend. To run the immutable GitHub Actions reference check locally:
 
 ```sh
+node scripts/validate-npm-lock-registry.mjs package-lock.json
 npm ci --ignore-scripts --include=dev --no-audit --no-fund
 node --test tests/validate-github-action-references.test.mjs
 node scripts/validate-github-action-references.mjs

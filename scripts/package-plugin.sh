@@ -10,10 +10,9 @@ RUN_UAT="$1"
 PACKAGE_DIR="$2"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FRONTEND_DIR="$ROOT_DIR/frontend"
+FRONTEND_LOCKFILE="$FRONTEND_DIR/package-lock.json"
 FRONTEND_ENTRY="$ROOT_DIR/Web/dist/index.html"
 LICENSE_FILE="$ROOT_DIR/LICENSE"
-STAGING_DIR="$(mktemp -d)"
-PLUGIN_STAGE="$STAGING_DIR/UnrealEditorWebUI"
 
 if [[ ! -f "$RUN_UAT" ]]; then
   echo "RunUAT path not found: $RUN_UAT" >&2
@@ -31,11 +30,7 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 node "$ROOT_DIR/scripts/validate-node-version.mjs"
-
-cleanup() {
-  rm -rf "$STAGING_DIR"
-}
-trap cleanup EXIT
+node "$ROOT_DIR/scripts/validate-npm-lock-registry.mjs" "$FRONTEND_LOCKFILE"
 
 (
   cd "$FRONTEND_DIR"
@@ -51,6 +46,13 @@ if [[ ! -f "$LICENSE_FILE" ]]; then
   echo "Repository license not found: $LICENSE_FILE" >&2
   exit 1
 fi
+
+STAGING_DIR="$(mktemp -d)"
+cleanup() {
+  rm -rf "$STAGING_DIR"
+}
+trap cleanup EXIT
+PLUGIN_STAGE="$STAGING_DIR/UnrealEditorWebUI"
 
 mkdir -p "$PLUGIN_STAGE"
 cp "$ROOT_DIR/UnrealEditorWebUI.uplugin" "$PLUGIN_STAGE/UnrealEditorWebUI.uplugin"
