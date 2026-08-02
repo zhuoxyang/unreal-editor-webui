@@ -53,8 +53,14 @@ jobs:
         run: npm run lint
 
       - name: Test frontend
+        if: matrix.node-version == '22.22.2'
         working-directory: frontend
         run: npm test
+
+      - name: Test frontend with coverage
+        if: matrix.node-version == '24.18.1'
+        working-directory: frontend
+        run: npm run test:coverage
 
   python:
     name: Python registry (Python ${{ matrix.python-version }})
