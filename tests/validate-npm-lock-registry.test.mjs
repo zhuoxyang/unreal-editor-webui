@@ -45,7 +45,7 @@ test('rejects unsafe or unexpected resolved URLs without echoing credentials', (
   for (const [label, resolved, expected] of cases) {
     const result = validateNpmLockRegistry(lockfileWith(resolved))
     assert.equal(result.errors.length, 1, label)
-    assert.match(result.errors[0], new RegExp(expected), label)
+    assert.ok(result.errors[0].includes(expected), label)
     assert.doesNotMatch(result.errors[0], /secret/, label)
   }
 })
