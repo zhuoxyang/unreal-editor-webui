@@ -41,6 +41,9 @@ jobs:
         with:
           node-version-file: ".nvmrc"
 
+      - name: Validate Node.js version
+        run: node scripts/validate-node-version.mjs
+
       - name: Resolve and validate release context
         id: release
         shell: bash

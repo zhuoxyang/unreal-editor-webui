@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["20.19", "22.13"]
+        node-version: ["22.22.2", "24.18.1"]
 
     steps:
       - name: Check out repository
@@ -30,6 +30,9 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+
+      - name: Validate Node.js version
+        run: node scripts/validate-node-version.mjs
 
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
@@ -96,6 +99,14 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Validate Node.js version
+        run: node scripts/validate-node-version.mjs
+
       - name: Validate plugin descriptor and module wiring
         shell: python
         run: |
@@ -159,6 +170,7 @@ jobs:
           node --check scripts/validate-npm-lock-registry.mjs
           node --test tests/download-verified-github-artifact.test.mjs
           node --test tests/resolve-ue-release-candidate.test.mjs
+          node --test tests/validate-node-version.test.mjs
           node --test tests/validate-npm-lock-registry.test.mjs
           node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
 

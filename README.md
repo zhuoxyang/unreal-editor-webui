@@ -70,7 +70,9 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 
 The React app lives in `frontend/`.
 
-Use Node.js 22.13.x (recommended), Node.js 20 from 20.19 onward, or Node.js 24 and newer. Node.js 21 and 23 are not accepted by the repository engine policy. The repository includes an `.nvmrc` pinned to Node.js 22.13.0 for local development.
+Use Node.js 24 from 24.18.1 onward (recommended), or Node.js 22 from 22.22.2 onward. Other Node.js major versions are not accepted by the repository engine policy. The repository includes an `.nvmrc` pinned to Node.js 24.18.1 for local development, packaging, and release tooling.
+
+Node.js 20 is excluded because it is upstream end-of-life, while Node.js 26 remains excluded until it is intentionally added to the CI matrix. Raising the maintained floors also permits the jsdom 30 and jest-dom 7 test stack; `@types/node` stays pinned to the Node 22 line so compiled tooling cannot accidentally depend on Node 24-only APIs.
 
 ```sh
 cd frontend
