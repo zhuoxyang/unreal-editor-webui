@@ -7,6 +7,7 @@ import json
 import math
 import pkgutil
 import re
+import sys
 import traceback
 from dataclasses import dataclass
 from types import GeneratorType
@@ -277,11 +278,28 @@ def _validate_execution_metadata(
         )
 
 
+def _import_command_module(module_name: str, package_name: str) -> Any:
+    handlers_before = dict(COMMANDS)
+    metadata_before = copy.deepcopy(COMMAND_METADATA)
+    modules_before = set(sys.modules)
+    try:
+        return importlib.import_module(module_name)
+    except Exception:
+        COMMANDS.clear()
+        COMMANDS.update(handlers_before)
+        COMMAND_METADATA.clear()
+        COMMAND_METADATA.update(metadata_before)
+        for loaded_module in set(sys.modules).difference(modules_before):
+            if loaded_module == package_name or loaded_module.startswith(f"{package_name}."):
+                sys.modules.pop(loaded_module, None)
+        raise
+
+
 def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> None:
     COMMAND_LOAD_ERRORS.clear()
 
     try:
-        package = importlib.import_module(package_name)
+        package = _import_command_module(package_name, package_name)
     except Exception as exc:
         COMMAND_LOAD_ERRORS.append(
             {
@@ -304,7 +322,7 @@ def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> 
     for module_info in sorted(pkgutil.iter_modules(package_paths), key=lambda item: item.name):
         module_name = f"{package_name}.{module_info.name}"
         try:
-            importlib.import_module(module_name)
+            _import_command_module(module_name, package_name)
         except Exception as exc:
             COMMAND_LOAD_ERRORS.append(
                 {
