@@ -2,6 +2,13 @@
 
 ## Latest Local Validation
 
+Frontend coverage validation on 2026-08-03 with Node 24.18.1:
+
+- `npm ci`, `npm run test:coverage`, `npm run build`, and `npm run lint` passed; the dependency audit reported 0 vulnerabilities.
+- All 134 tests in 19 files passed. The measured production-source baseline was 78.05% statements, 74.56% branches, 77.71% functions, and 78.73% lines.
+- The enforced global floors are 75% statements, 72% branches, 75% functions, and 76% lines, leaving approximately 2.5-3 percentage points of headroom from the measured baseline.
+- Coverage includes production `src` TypeScript and TSX, including runtime helpers under `src/types`; test files, test setup, `main.tsx`, and declaration files are excluded. Reports are written under the ignored `Saved/FrontendCoverage` directory.
+
 Windows source validation on 2026-08-02:
 
 - Frontend build: passed with `npm run build`.
@@ -32,7 +39,7 @@ Historical local UE 5.5 evidence from 2026-06-20 (before the current changes):
 
 CI coverage added in `.github/workflows/ci.yml`:
 
-- Node 22.22.2 and 24.18.1 frontend install/build/lint/test and packaged frontend entry-point validation on GitHub-hosted runners. Node 24.18.1 is also pinned for local packaging, Unreal validation, and release tooling through `.nvmrc`.
+- Node 22.22.2 and 24.18.1 frontend install/build/lint and packaged frontend entry-point validation on GitHub-hosted runners. Node 22.22.2 runs the ordinary test command, while Node 24.18.1 runs the complete suite once with the production-source coverage gates; Node 24.18.1 is also pinned for local packaging, Unreal validation, and release tooling through `.nvmrc`.
 - Python 3.9 and 3.11 descriptor, syntax, and registry unit tests on GitHub-hosted runners.
 - Repository descriptor/module-wiring, script-syntax, and tracked-file whitespace checks on a GitHub-hosted runner. The whitespace check compares Git's empty tree with `HEAD`, so it covers every tracked file even on a clean checkout and works for an initial commit; legacy extra blank lines at EOF remain tolerated.
 - Workflow-level `contents: read` permission and checkout with persisted GitHub credentials disabled.
