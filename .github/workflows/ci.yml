@@ -31,6 +31,9 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Validate frontend dependency sources
+        run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
+
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
@@ -153,8 +156,11 @@ jobs:
         run: |
           node --check scripts/resolve-ue-release-artifact.mjs
           node --check scripts/export-npm-dependencies.mjs
+          node --check scripts/validate-npm-lock-registry.mjs
           node --test tests/download-verified-github-artifact.test.mjs
           node --test tests/resolve-ue-release-candidate.test.mjs
+          node --test tests/validate-npm-lock-registry.test.mjs
+          node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
 
       - name: Check tracked-file whitespace
         shell: bash
