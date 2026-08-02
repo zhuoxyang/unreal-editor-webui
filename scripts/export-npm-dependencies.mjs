@@ -3,6 +3,8 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { basename } from 'node:path'
 
+import { validateNpmLockRegistry } from './validate-npm-lock-registry.mjs'
+
 const [lockfilePath, outputPath] = process.argv.slice(2)
 if (!lockfilePath || !outputPath) {
   console.error('Usage: node scripts/export-npm-dependencies.mjs <package-lock.json> <output.json>')
@@ -10,6 +12,14 @@ if (!lockfilePath || !outputPath) {
 }
 
 const lockfile = JSON.parse(readFileSync(lockfilePath, 'utf8'))
+const registryValidation = validateNpmLockRegistry(lockfile)
+if (registryValidation.errors.length > 0) {
+  throw new Error(
+    `Refusing to export dependencies from an untrusted npm lockfile:\n${registryValidation.errors
+      .map((error) => `- ${error}`)
+      .join('\n')}`,
+  )
+}
 if (!lockfile.packages || typeof lockfile.packages !== 'object' || Array.isArray(lockfile.packages)) {
   throw new Error('Expected an npm package-lock file with a packages object.')
 }

@@ -47,6 +47,11 @@ jobs:
           node --test tests/validate-github-action-references.test.mjs
           node scripts/validate-github-action-references.mjs
 
+      - name: Test npm registry entrypoint guards
+        run: |
+          node --test tests/npm-registry-entrypoints.test.mjs
+          node --test tests/package-plugin-registry-guard.test.mjs
+
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
 
@@ -201,6 +206,8 @@ jobs:
           node --test tests/validate-github-action-references.test.mjs
           node --test tests/validate-node-version.test.mjs
           node --test tests/validate-npm-lock-registry.test.mjs
+          node --test tests/npm-registry-entrypoints.test.mjs
+          node --test tests/package-plugin-registry-guard.test.mjs
           node scripts/validate-npm-lock-registry.mjs package-lock.json
           node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
 

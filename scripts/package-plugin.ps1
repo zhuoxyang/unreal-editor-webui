@@ -16,6 +16,8 @@ if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) {
 $RunUATPath = (Resolve-Path -LiteralPath $RunUAT).Path
 $RootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $FrontendDir = Join-Path $RootDir "frontend"
+$FrontendLockfile = Join-Path $FrontendDir "package-lock.json"
+$RegistryValidator = Join-Path $PSScriptRoot "validate-npm-lock-registry.mjs"
 $FrontendEntry = Join-Path $RootDir "Web/dist/index.html"
 $LicenseFile = Join-Path $RootDir "LICENSE"
 $StagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ("UnrealEditorWebUI-" + [System.Guid]::NewGuid().ToString("N"))
@@ -30,6 +32,12 @@ try {
     & node (Join-Path $PSScriptRoot "validate-node-version.mjs")
     if ($LASTEXITCODE -ne 0) {
         throw "The installed Node.js version does not satisfy frontend/package.json."
+    }
+
+    & node $RegistryValidator $FrontendLockfile
+    $RegistryGuardExitCode = $LASTEXITCODE
+    if ($RegistryGuardExitCode -ne 0) {
+        exit $RegistryGuardExitCode
     }
 
     Push-Location $FrontendDir
