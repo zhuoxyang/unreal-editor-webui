@@ -241,7 +241,11 @@ jobs:
           UE_BUILDPLUGIN_CONSOLE_LOG: ${{ steps.automation_tool_logs.outputs.console_log }}
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
-          $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"
+          if (Test-Path -LiteralPath $PackageDir) {
+            throw "Package directory is not fresh: $PackageDir"
+          }
           $AutomationToolLogDir = $env:uebp_LogFolder
           if ([string]::IsNullOrWhiteSpace($AutomationToolLogDir) -or
               $AutomationToolLogDir -ne $env:uebp_FinalLogFolder) {
@@ -250,28 +254,13 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:UE_BUILDPLUGIN_CONSOLE_LOG)) {
             throw "BuildPlugin console log path is missing."
           }
-          $CommittedLicenseOutput = @(& git rev-parse "$($env:GITHUB_SHA):LICENSE")
-          $CommittedLicenseExitCode = $LASTEXITCODE
-          if ($CommittedLicenseExitCode -ne 0 -or $CommittedLicenseOutput.Count -ne 1) {
-            throw "Could not resolve the committed LICENSE blob for $($env:GITHUB_SHA)."
-          }
-          $CommittedLicenseObject = $CommittedLicenseOutput[0].Trim()
-          $WorkingLicenseOutput = @(& git hash-object --no-filters LICENSE)
-          $WorkingLicenseExitCode = $LASTEXITCODE
-          if ($WorkingLicenseExitCode -ne 0 -or $WorkingLicenseOutput.Count -ne 1) {
-            throw "Could not hash the working-tree LICENSE bytes."
-          }
-          $WorkingLicenseObject = $WorkingLicenseOutput[0].Trim()
-          if ($WorkingLicenseObject -ne $CommittedLicenseObject) {
-            throw "Working-tree LICENSE bytes differ from the exact commit; check .gitattributes and checkout conversion."
-          }
           $PreviousErrorActionPreference = $ErrorActionPreference
           try {
             # Windows PowerShell 5.1 turns redirected native stderr into non-terminating
             # error records. Continue lets Tee-Object retain those records without
             # obscuring the child process exit code.
             $ErrorActionPreference = "Continue"
-            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 $RunUAT $PackageDir 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 -RunUAT $RunUAT -PackageDir $PackageDir -SourceCommit $env:GITHUB_SHA 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG
             $PackageExitCode = $LASTEXITCODE
           }
           finally {
@@ -301,12 +290,51 @@ jobs:
           if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "Web/dist/index.html") -PathType Leaf)) {
             throw "Packaged React frontend entry point missing."
           }
+          $SourceManifestPath = Join-Path $PackageDir "SourceManifest.json"
+          if (-not (Test-Path -LiteralPath $SourceManifestPath -PathType Leaf)) {
+            throw "Packaged source manifest missing."
+          }
+          try {
+            $SourceManifest = Get-Content -LiteralPath $SourceManifestPath -Raw | ConvertFrom-Json
+          }
+          catch {
+            throw "Packaged source manifest is not valid JSON: $($_.Exception.Message)"
+          }
+          if ([string]$SourceManifest.sourceCommit -cne $env:GITHUB_SHA) {
+            throw "Packaged source manifest commit '$($SourceManifest.sourceCommit)' does not match GITHUB_SHA '$($env:GITHUB_SHA)'."
+          }
+          if ([int]$SourceManifest.schemaVersion -ne 1) {
+            throw "Packaged source manifest uses an unsupported schema."
+          }
+          $ManifestFiles = @($SourceManifest.files)
+          $ManifestFrontend = @($ManifestFiles | Where-Object {
+            [string]$_.path -ceq "Web/dist/index.html" -and [string]$_.source -ceq "generated"
+          })
+          $ManifestLicense = @($ManifestFiles | Where-Object {
+            [string]$_.path -ceq "LICENSE" -and [string]$_.source -ceq "tracked"
+          })
+          if ($ManifestFrontend.Count -ne 1 -or $ManifestLicense.Count -ne 1) {
+            throw "Packaged source manifest lacks the unique generated frontend or tracked license entry."
+          }
           $PackagedLicense = Join-Path $PackageDir "LICENSE"
           if (-not (Test-Path -LiteralPath $PackagedLicense -PathType Leaf)) {
             throw "Packaged plugin license missing."
           }
-          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedLicense).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath "LICENSE").Hash) {
-            throw "Packaged plugin license does not match the repository license."
+          $CommittedLicenseOutput = @(& git --no-replace-objects rev-parse "$($env:GITHUB_SHA):LICENSE")
+          $CommittedLicenseExitCode = $LASTEXITCODE
+          if ($CommittedLicenseExitCode -ne 0 -or $CommittedLicenseOutput.Count -ne 1) {
+            throw "Could not resolve the committed LICENSE blob for $($env:GITHUB_SHA)."
+          }
+          if ([string]$ManifestLicense[0].gitObject -cne $CommittedLicenseOutput[0].Trim()) {
+            throw "Packaged source manifest LICENSE blob does not match the exact commit."
+          }
+          $PackagedLicenseOutput = @(& git --no-replace-objects hash-object --no-filters $PackagedLicense)
+          $PackagedLicenseExitCode = $LASTEXITCODE
+          if ($PackagedLicenseExitCode -ne 0 -or $PackagedLicenseOutput.Count -ne 1) {
+            throw "Could not hash the packaged LICENSE bytes."
+          }
+          if ($PackagedLicenseOutput[0].Trim() -ne $CommittedLicenseOutput[0].Trim()) {
+            throw "Packaged plugin license does not match the exact commit."
           }
 
       - name: Create temporary host project
@@ -314,7 +342,8 @@ jobs:
         run: |
           $ProjectDirName = "UnrealEditorWebUI-HostProject-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
           $ProjectDir = Join-Path $env:RUNNER_TEMP $ProjectDirName
-          $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"
           $ProjectOutput = @(powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION)
           if ($LASTEXITCODE -ne 0) { throw "Host project creation failed with exit code $LASTEXITCODE." }
           if ($ProjectOutput.Count -ne 1) { throw "Host project creation returned $($ProjectOutput.Count) output lines; expected exactly one project path." }
@@ -428,7 +457,7 @@ jobs:
         if: success()
         with:
           name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE58' }}
-          path: ${{ runner.temp }}/UnrealEditorWebUI-Package
+          path: ${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 14
 

@@ -3,104 +3,143 @@ param(
     [string]$RunUAT,
 
     [Parameter(Mandatory = $true)]
-    [string]$PackageDir
+    [string]$PackageDir,
+
+    [Parameter(Mandatory = $true)]
+    [string]$SourceCommit
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Test-FileSystemEntry {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    try {
+        Get-Item -LiteralPath $LiteralPath -Force -ErrorAction Stop | Out-Null
+        return $true
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        return $false
+    }
+}
+
+if ($SourceCommit.Length -ne 40 -or $SourceCommit -notmatch "\A[0-9a-fA-F]{40}\z") {
+    throw "SourceCommit must be a full 40-character Git commit SHA."
+}
 if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) {
     throw "RunUAT path not found: $RunUAT"
 }
+$PackageFullPath = [System.IO.Path]::GetFullPath($PackageDir)
+$PackageParent = [System.IO.Path]::GetDirectoryName($PackageFullPath)
+if ([string]::IsNullOrWhiteSpace($PackageParent) -or -not (Test-Path -LiteralPath $PackageParent -PathType Container)) {
+    throw "PackageDir parent directory does not exist: $PackageParent"
+}
+if (Test-FileSystemEntry -LiteralPath $PackageFullPath) {
+    throw "PackageDir must not already exist: $PackageFullPath"
+}
 
 $RunUATPath = (Resolve-Path -LiteralPath $RunUAT).Path
-$RootDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-$FrontendDir = Join-Path $RootDir "frontend"
-$FrontendLockfile = Join-Path $FrontendDir "package-lock.json"
-$RegistryValidator = Join-Path $PSScriptRoot "validate-npm-lock-registry.mjs"
-$FrontendEntry = Join-Path $RootDir "Web/dist/index.html"
-$LicenseFile = Join-Path $RootDir "LICENSE"
+$StageScript = Join-Path $PSScriptRoot "stage-plugin-from-commit.mjs"
 $StagingDir = Join-Path ([System.IO.Path]::GetTempPath()) ("UnrealEditorWebUI-" + [System.Guid]::NewGuid().ToString("N"))
 $PluginStage = Join-Path $StagingDir "UnrealEditorWebUI"
+$SourceManifest = Join-Path $StagingDir "SourceManifest.json"
 $PluginDescriptor = Join-Path $PluginStage "UnrealEditorWebUI.uplugin"
+$BuildPackageDir = $null
+$PrimaryError = $null
+$ExternalExitCode = $null
+$CleanupErrors = @()
 
 try {
-    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-        throw "npm is required to build the React frontend before packaging."
+    New-Item -ItemType Directory -Path $StagingDir | Out-Null
+
+    & node $StageScript $SourceCommit $PluginStage $SourceManifest
+    $StageExitCode = $LASTEXITCODE
+    if ($StageExitCode -ne 0) {
+        $ExternalExitCode = $StageExitCode
+        throw "Exact-commit staging failed with exit code $StageExitCode."
     }
 
-    & node (Join-Path $PSScriptRoot "validate-node-version.mjs")
-    if ($LASTEXITCODE -ne 0) {
-        throw "The installed Node.js version does not satisfy frontend/package.json."
+    if (-not (Test-Path -LiteralPath $PluginDescriptor -PathType Leaf)) {
+        throw "Exact-commit staging did not create the plugin descriptor."
     }
-
-    & node $RegistryValidator $FrontendLockfile
-    $RegistryGuardExitCode = $LASTEXITCODE
-    if ($RegistryGuardExitCode -ne 0) {
-        exit $RegistryGuardExitCode
+    if (-not (Test-Path -LiteralPath (Join-Path $PluginStage "Web/dist/index.html") -PathType Leaf)) {
+        throw "Exact-commit frontend build did not create Web/dist/index.html."
     }
-
-    Push-Location $FrontendDir
-    try {
-        & npm ci
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm ci failed with exit code $LASTEXITCODE"
-        }
-
-        & npm run build
-        if ($LASTEXITCODE -ne 0) {
-            throw "npm run build failed with exit code $LASTEXITCODE"
-        }
+    if (-not (Test-Path -LiteralPath $SourceManifest -PathType Leaf)) {
+        throw "Exact-commit staging did not create SourceManifest.json."
     }
-    finally {
-        Pop-Location
+    if (Test-FileSystemEntry -LiteralPath $PackageFullPath) {
+        throw "PackageDir was created while exact-commit staging ran: $PackageFullPath"
     }
-
-    if (-not (Test-Path -LiteralPath $FrontendEntry -PathType Leaf)) {
-        throw "Frontend build did not create the expected entry point: $FrontendEntry"
-    }
-    if (-not (Test-Path -LiteralPath $LicenseFile -PathType Leaf)) {
-        throw "Repository license not found: $LicenseFile"
-    }
-
-    New-Item -ItemType Directory -Path $PluginStage -Force | Out-Null
-
-    Copy-Item -LiteralPath (Join-Path $RootDir "UnrealEditorWebUI.uplugin") -Destination $PluginDescriptor
-    Copy-Item -LiteralPath $LicenseFile -Destination (Join-Path $PluginStage "LICENSE")
-
-    $pluginDirectories = @("Config", "Content", "Platforms", "Python", "Resources", "Shaders", "Source", "Web")
-    foreach ($directoryName in $pluginDirectories) {
-        $sourceDirectory = Join-Path $RootDir $directoryName
-        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container)) {
-            continue
-        }
-
-        $destinationDirectory = Join-Path $PluginStage $directoryName
-        & robocopy $sourceDirectory $destinationDirectory /MIR /XD "__pycache__" /XF ".DS_Store" "*.pyc" "*.pyo" | Out-Host
-        if ($LASTEXITCODE -gt 7) {
-            throw "robocopy failed for $directoryName with exit code $LASTEXITCODE"
-        }
-    }
+    $BuildPackageDir = Join-Path $PackageParent (".unreal-editor-webui-package-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $BuildPackageDir | Out-Null
 
     & $RunUATPath BuildPlugin `
         "-Plugin=$PluginDescriptor" `
-        "-Package=$PackageDir" `
+        "-Package=$BuildPackageDir" `
         -Rocket
 
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+    $RunUATExitCode = $LASTEXITCODE
+    if ($RunUATExitCode -ne 0) {
+        $ExternalExitCode = $RunUATExitCode
+        throw "RunUAT BuildPlugin failed with exit code $RunUATExitCode."
     }
 
-    $PackagedLicense = Join-Path $PackageDir "LICENSE"
+    $PackagedDescriptor = Join-Path $BuildPackageDir "UnrealEditorWebUI.uplugin"
+    $PackagedFrontend = Join-Path $BuildPackageDir "Web/dist/index.html"
+    $PackagedLicense = Join-Path $BuildPackageDir "LICENSE"
+    if (-not (Test-Path -LiteralPath $PackagedDescriptor -PathType Leaf)) {
+        throw "Packaged plugin descriptor missing: $PackagedDescriptor"
+    }
+    if (-not (Test-Path -LiteralPath $PackagedFrontend -PathType Leaf)) {
+        throw "Packaged frontend entry point missing: $PackagedFrontend"
+    }
     if (-not (Test-Path -LiteralPath $PackagedLicense -PathType Leaf)) {
         throw "Packaged plugin license missing: $PackagedLicense"
     }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedLicense).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $LicenseFile).Hash) {
-        throw "Packaged plugin license does not match the repository license."
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedLicense).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PluginStage "LICENSE")).Hash) {
+        throw "Packaged plugin license does not match the selected commit."
     }
+
+    Copy-Item -LiteralPath $SourceManifest -Destination (Join-Path $BuildPackageDir "SourceManifest.json")
+    if (Test-FileSystemEntry -LiteralPath $PackageFullPath) {
+        throw "PackageDir was created before exact package publication: $PackageFullPath"
+    }
+    [System.IO.Directory]::Move($BuildPackageDir, $PackageFullPath)
+    $BuildPackageDir = $null
+}
+catch {
+    $PrimaryError = $_
 }
 finally {
-    if (Test-Path -LiteralPath $StagingDir) {
-        Remove-Item -LiteralPath $StagingDir -Recurse -Force
+    try {
+        if ($null -ne $BuildPackageDir -and (Test-FileSystemEntry -LiteralPath $BuildPackageDir)) {
+            Remove-Item -LiteralPath $BuildPackageDir -Recurse -Force -ErrorAction Stop
+        }
     }
+    catch {
+        $CleanupErrors += $_
+    }
+    try {
+        if (Test-FileSystemEntry -LiteralPath $StagingDir) {
+            Remove-Item -LiteralPath $StagingDir -Recurse -Force -ErrorAction Stop
+        }
+    }
+    catch {
+        $CleanupErrors += $_
+    }
+}
+
+if ($null -ne $PrimaryError) {
+    Write-Error -ErrorRecord $PrimaryError -ErrorAction Continue
+}
+foreach ($CleanupError in $CleanupErrors) {
+    Write-Error -Message ("Packaging cleanup failed: " + $CleanupError.Exception.Message) -ErrorAction Continue
+}
+if ($null -ne $ExternalExitCode) {
+    exit $ExternalExitCode
+}
+if ($null -ne $PrimaryError -or $CleanupErrors.Count -gt 0) {
+    exit 1
 }

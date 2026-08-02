@@ -192,6 +192,10 @@ function scanCommandConsumers(source) {
 
   const javascriptInstallPatterns = [
     new RegExp(
+      String.raw`\brunNpm\s*\(\s*\[\s*['"\x60](?:${NPM_INSTALL_SUBCOMMAND_PATTERN})['"\x60]`,
+      'gu',
+    ),
+    new RegExp(
       String.raw`\b(?:spawn|spawnSync|execFile|execFileSync|run|call|check_call|check_output|Popen)\s*\(\s*\[?\s*['"\x60]npm(?:\.cmd|\.exe)?['"\x60][^\]]*?['"\x60](?:${NPM_INSTALL_SUBCOMMAND_PATTERN})['"\x60]`,
       'gu',
     ),
@@ -390,7 +394,7 @@ test('every executable npm lockfile consumer has an earlier fail-closed guard', 
 
   assert.deepEqual(
     enumerateTrackedEntrypointConsumers(),
-    ['scripts/package-plugin.ps1#npm-install#1', 'scripts/package-plugin.sh#npm-install#1'],
+    ['scripts/stage-plugin-from-commit.mjs#npm-install#1'],
     'script lockfile consumers changed; classify the new entrypoint and add its guard',
   )
 })
@@ -407,6 +411,7 @@ test('entrypoint discovery recognizes alternate install forms without matching d
     'cd frontend && npm ci',
     'npm \\\n      ci',
     "spawnSync('npm', ['ci'])",
+    "runNpm(['ci'], frontendDirectory, 'exact install')",
     "exec('npm install')",
     "subprocess.run(['npm', 'ci'])",
     "Start-Process 'npm' -ArgumentList 'ci'",
@@ -478,37 +483,52 @@ test('release dependency validation is immediately before metadata generation', 
   assert.ok(guardIndex < archiveIndex, 'release lock guard must run before candidate assembly')
 })
 
-test('packaging scripts guard the consumed lock before install, build, and RunUAT', () => {
+test('exact-commit staging guards the consumed lock before install, build, and RunUAT', () => {
   const powershell = readRepositoryFile('scripts/package-plugin.ps1')
-  assert.match(
-    powershell,
-    /\$FrontendLockfile = Join-Path \$FrontendDir "package-lock\.json"/u,
-  )
-  assert.match(
-    powershell,
-    /\$RegistryValidator = Join-Path \$PSScriptRoot "validate-npm-lock-registry\.mjs"/u,
-  )
   assertOrdered(powershell, [
-    ['PowerShell registry guard', '& node $RegistryValidator $FrontendLockfile'],
-    ['PowerShell guard exit-code capture', '$RegistryGuardExitCode = $LASTEXITCODE'],
-    ['PowerShell guard failure check', 'if ($RegistryGuardExitCode -ne 0)'],
-    ['PowerShell npm install', '& npm ci'],
-    ['PowerShell frontend build', '& npm run build'],
+    ['PowerShell exact-commit stage helper', '& node $StageScript $SourceCommit $PluginStage $SourceManifest'],
+    ['PowerShell stage exit-code capture', '$StageExitCode = $LASTEXITCODE'],
+    ['PowerShell stage failure check', 'if ($StageExitCode -ne 0)'],
     ['PowerShell RunUAT', '& $RunUATPath BuildPlugin'],
   ])
+  assert.doesNotMatch(powershell, /\$FrontendDir|robocopy|Copy-Item -LiteralPath \$LicenseFile/u)
 
   const bash = readRepositoryFile('scripts/package-plugin.sh')
   assert.match(bash, /^set -euo pipefail$/mu)
-  assert.match(bash, /^FRONTEND_LOCKFILE="\$FRONTEND_DIR\/package-lock\.json"$/mu)
   assertOrdered(bash, [
-    [
-      'Bash registry guard',
-      'node "$ROOT_DIR/scripts/validate-npm-lock-registry.mjs" "$FRONTEND_LOCKFILE"',
-    ],
-    ['Bash npm install', 'npm ci'],
-    ['Bash frontend build', 'npm run build'],
     ['Bash staging allocation', 'STAGING_DIR="$(mktemp -d)"'],
+    ['Bash exact-commit stage helper', 'node "$STAGE_SCRIPT" "$SOURCE_COMMIT" "$PLUGIN_STAGE" "$SOURCE_MANIFEST"'],
     ['Bash RunUAT', '"$RUN_UAT" BuildPlugin'],
+  ])
+  assert.doesNotMatch(bash, /FRONTEND_DIR|rsync|cp "\$ROOT_DIR\/LICENSE"/u)
+
+  const staging = readRepositoryFile('scripts/stage-plugin-from-commit.mjs')
+  assertOrdered(staging, [
+    [
+      'exact-commit registry validator',
+      'const registryValidator = await import(pathToFileURL(registryValidatorPath).href)',
+    ],
+    ['exact-commit lockfile', "filesystemPath(buildRoot, 'frontend/package-lock.json')"],
+    [
+      'exact-commit npm install',
+      "runNpm(['ci'], frontendDirectory, 'Exact-commit dependency installation')",
+    ],
+    [
+      'post-install generated-output gate',
+      'must be created by the frontend build, not dependency installation',
+    ],
+    [
+      'exact-commit frontend build',
+      "runNpm(['run', 'build'], frontendDirectory, 'Exact-commit frontend build')",
+    ],
+    [
+      'fresh tracked plugin materialization',
+      'const trackedFiles = materializeEntries(pluginEntries, pluginStage)',
+    ],
+    [
+      'generated dist overlay',
+      'const generatedFiles = overlayGeneratedWeb(buildRoot, pluginStage)',
+    ],
   ])
 })
 
