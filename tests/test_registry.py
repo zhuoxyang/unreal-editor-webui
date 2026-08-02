@@ -521,8 +521,18 @@ class RegistryTests(unittest.TestCase):
 
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "batch_failed")
-        self.assertEqual(response["error"]["details"]["summary"]["status"], "failed")
-        self.assertEqual(response["error"]["details"]["summary"]["failed"], 1)
+        self.assertNotIn("details", response["error"])
+        error_data = response["error"]["data"]
+        self.assertEqual(
+            set(error_data),
+            {"protocolVersion", "view", "summary", "changeSet"},
+        )
+        self.assertEqual(error_data["summary"]["status"], "failed")
+        self.assertEqual(error_data["summary"]["failed"], 1)
+        self.assertEqual(
+            error_data["changeSet"][0]["message"],
+            "Unreal rejected the asset rename.",
+        )
 
     def test_batch_rename_save_failure_is_changed_unsaved_partial(self):
         class EditorAssetLibrary:

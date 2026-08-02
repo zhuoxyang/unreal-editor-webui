@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { BridgeCaller } from '../bridge'
+import { BridgeCallError, type BridgeCaller } from '../bridge'
+import type { ChangeSetErrorData } from '../types/bridge'
 import type { CommandMetadata } from '../types/command'
 import { useCommandRunner } from './useCommandRunner'
 
@@ -71,6 +72,54 @@ describe('useCommandRunner', () => {
       status: 'error',
       stale: true,
       error: 'second run failed',
+    })
+  })
+
+  it('renders structured command failure data instead of keeping a stale success', async () => {
+    const failureData: ChangeSetErrorData = {
+      protocolVersion: 1,
+      view: 'changeSet',
+      summary: {
+        label: 'asset.renameBatch',
+        dryRun: false,
+        save: false,
+        status: 'failed',
+        changed: 0,
+        changedUnsaved: 0,
+        skipped: 0,
+        failed: 1,
+        total: 1,
+      },
+      changeSet: [{
+        assetPath: '/Game/Props/SM_OldChair',
+        propertyPath: 'objectPath',
+        before: '/Game/Props/SM_OldChair',
+        after: '/Game/Props/SM_NewChair',
+        action: 'rename',
+        status: 'failed',
+        message: 'Unreal rejected the asset rename.',
+      }],
+    }
+    const callBridge = vi.fn()
+      .mockResolvedValueOnce({ value: 'first' })
+      .mockRejectedValueOnce(new BridgeCallError(
+        'executecommand',
+        'batch_failed',
+        'No asset could be changed.',
+        undefined,
+        'req-4',
+        failureData,
+      )) as BridgeCaller
+    const { result } = renderRunner(callBridge)
+
+    await act(async () => result.current.runCommandFromMetadata(command))
+    await act(async () => result.current.runCommandFromMetadata(command))
+
+    expect(result.current.commandResults[command.name]).toEqual(failureData)
+    expect(result.current.commandInvocations[command.name]).toMatchObject({
+      status: 'error',
+      stale: false,
+      error: expect.stringContaining('/Game/Props/SM_OldChair'),
     })
   })
 

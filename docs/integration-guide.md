@@ -196,6 +196,13 @@ Common codes:
 
 Show the bounded `message` to users and log request ids/error metadata rather than complete successful payloads. Handler tracebacks are written to Unreal logs, not returned to the browser.
 
+Command failures may also include two optional, distinct fields:
+
+- `error.details` is a list of human-readable strings for compact validation or diagnostic context.
+- `error.data` is a versioned, discriminated object intended for structured rendering. Protocol version 1 currently accepts only `view: "changeSet"`, with a complete `summary` and at most 200 normalized change operations. Unknown versions, views, or malformed operations must not be passed to UI renderers.
+
+An applied `asset.renameBatch` in which no asset can be changed returns `code: "batch_failed"` and a compact change-set in `error.data`. Direct and task responses use the same shape, so clients can show the per-asset failure table while retaining the error state. The normal 4 MiB direct-response and 1.5 MiB stored-task-response limits still apply.
+
 ## Settings From JavaScript
 
 Settings calls are useful for local tool development:

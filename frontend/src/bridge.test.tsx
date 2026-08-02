@@ -7,6 +7,32 @@ import {
   parseBridgeResponse,
   useEditorBridge,
 } from './bridge'
+import type { ChangeSetErrorData } from './types/bridge'
+
+const changeSetErrorData: ChangeSetErrorData = {
+  protocolVersion: 1,
+  view: 'changeSet',
+  summary: {
+    label: 'asset.renameBatch',
+    dryRun: false,
+    save: false,
+    status: 'failed',
+    changed: 0,
+    changedUnsaved: 0,
+    skipped: 0,
+    failed: 1,
+    total: 1,
+  },
+  changeSet: [{
+    assetPath: '/Game/Props/SM_OldChair',
+    propertyPath: 'objectPath',
+    before: '/Game/Props/SM_OldChair',
+    after: '/Game/Props/SM_NewChair',
+    action: 'rename',
+    status: 'failed',
+    message: 'Unreal rejected the asset rename.',
+  }],
+}
 
 afterEach(() => {
   delete window.ue
@@ -64,6 +90,33 @@ describe('parseBridgeResponse', () => {
       '"error.details" must be an array of strings',
     ],
     [
+      'invalid error data',
+      { id: null, ok: false, error: { code: 'bad', message: 'failed', data: [] } },
+      '"error.data" must be a supported changeSet v1 object',
+    ],
+    [
+      'unknown error data version',
+      {
+        id: null,
+        ok: false,
+        error: { code: 'bad', message: 'failed', data: { ...changeSetErrorData, protocolVersion: 2 } },
+      },
+      '"error.data" must be a supported changeSet v1 object',
+    ],
+    [
+      'malformed change-set operation',
+      {
+        id: null,
+        ok: false,
+        error: {
+          code: 'bad',
+          message: 'failed',
+          data: { ...changeSetErrorData, changeSet: [{ status: 'failed' }] },
+        },
+      },
+      '"error.data" contains an invalid change-set operation',
+    ],
+    [
       'invalid traceback',
       { id: null, ok: false, error: { code: 'bad', message: 'failed', traceback: [] } },
       '"error.traceback" must be a string',
@@ -71,6 +124,21 @@ describe('parseBridgeResponse', () => {
   ])('rejects a malformed envelope: %s', (_label, response, expectedMessage) => {
     const rawResponse = response === undefined ? response : JSON.stringify(response)
     expect(() => parseBridgeResponse('gettask', rawResponse)).toThrow(expectedMessage)
+  })
+
+  it('rejects structured error data above the command batch limit', () => {
+    const operation = changeSetErrorData.changeSet[0]
+    const changeSet = Array.from({ length: 201 }, () => operation)
+    const data = {
+      ...changeSetErrorData,
+      summary: { ...changeSetErrorData.summary, failed: changeSet.length, total: changeSet.length },
+      changeSet,
+    }
+    expect(() => parseBridgeResponse('gettask', JSON.stringify({
+      id: null,
+      ok: false,
+      error: { code: 'batch_failed', message: 'failed', data },
+    }))).toThrow('"error.data" contains more than 200 change-set operations')
   })
 })
 
@@ -105,7 +173,16 @@ describe('useEditorBridge', () => {
         executecommand: vi.fn(async () => JSON.stringify({
           id: 'req-1',
           ok: false,
-          error: { code: 'invalid_payload', message: 'Payload failed.', details: ['name is required'] },
+          error: {
+            code: 'batch_failed',
+            message: 'No asset could be changed.',
+            details: ['rename failed'],
+            data: {
+              ...changeSetErrorData,
+              failed: changeSetErrorData.changeSet,
+              ignored: 'not forwarded to the renderer',
+            },
+          },
         })),
         startcommand: vi.fn(async () => '{not json'),
         gettask: vi.fn(),
@@ -131,12 +208,14 @@ describe('useEditorBridge', () => {
     expect(callError).toBeInstanceOf(BridgeCallError)
     expect(callError).toMatchObject({
       methodName: 'executecommand',
-      code: 'invalid_payload',
-      details: ['name is required'],
+      code: 'batch_failed',
+      details: ['rename failed'],
+      data: changeSetErrorData,
       requestId: 'req-1',
     })
+    expect((callError as BridgeCallError).data).toEqual(changeSetErrorData)
     expect(log).toHaveBeenCalledOnce()
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('error id=req-1 code=invalid_payload'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('error id=req-1 code=batch_failed'))
 
     await expect(result.current.callBridgeQuiet('startcommand', '{}')).rejects.toMatchObject({
       name: 'BridgeProtocolError',
@@ -175,6 +254,19 @@ describe('formatBridgeError', () => {
   it('includes structured error context for user-visible failures', () => {
     expect(formatBridgeError(new BridgeCallError('executecommand', 'invalid_payload', 'Payload failed.', ['name is required'], 'req-3'))).toBe(
       '[invalid_payload] Payload failed. — name is required (request req-3)',
+    )
+  })
+
+  it('summarizes bounded change-set failures from structured error data', () => {
+    expect(formatBridgeError(new BridgeCallError(
+      'executecommand',
+      'batch_failed',
+      'No asset could be changed.',
+      undefined,
+      'req-4',
+      changeSetErrorData,
+    ))).toBe(
+      '[batch_failed] No asset could be changed. — /Game/Props/SM_OldChair: Unreal rejected the asset rename. (request req-4)',
     )
   })
 })

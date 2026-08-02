@@ -39,10 +39,27 @@ DEFAULT_PERMISSION_POLICY = {
 class CommandExecutionError(RuntimeError):
     """A command failure that can be returned as a stable, structured envelope."""
 
-    def __init__(self, code: str, message: str, *, details: Any = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: list[str] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.details = details
+        self.data = data
+
+
+def _command_error_extra(error: CommandExecutionError) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    if error.details is not None:
+        extra["details"] = error.details
+    if error.data is not None:
+        extra["data"] = error.data
+    return extra
 
 
 class ProtocolValidationError(ValueError):
@@ -744,8 +761,7 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
         return _error(request_id, "invalid_json", str(exc))
     except CommandExecutionError as exc:
         _log_exception("Unreal Editor WebUI command execution failed.")
-        extra = {"details": exc.details} if exc.details is not None else {}
-        return _error(request_id, exc.code, str(exc), **extra)
+        return _error(request_id, exc.code, str(exc), **_command_error_extra(exc))
     except Exception as exc:
         _log_exception("Unreal Editor WebUI command handler failed.")
         return _error(
@@ -850,8 +866,7 @@ def start_cooperative_command(
         return _error(request_id, "invalid_json", str(exc))
     except CommandExecutionError as exc:
         _log_exception("Unreal Editor WebUI cooperative command start failed.")
-        extra = {"details": exc.details} if exc.details is not None else {}
-        return _error(request_id, exc.code, str(exc), **extra)
+        return _error(request_id, exc.code, str(exc), **_command_error_extra(exc))
     except Exception as exc:
         _log_exception("Unreal Editor WebUI cooperative command start failed.")
         return _error(request_id, "handler_exception", str(exc))
@@ -914,8 +929,7 @@ def step_cooperative_command(control_json: str) -> str:
             COOPERATIVE_JOBS.pop(task_id, None)
             _close_cooperative_job(job)
             _log_exception("Unreal Editor WebUI cooperative command failed.")
-            extra = {"details": exc.details} if exc.details is not None else {}
-            return _error(job.request_id, exc.code, str(exc), **extra)
+            return _error(job.request_id, exc.code, str(exc), **_command_error_extra(exc))
         except Exception as exc:
             COOPERATIVE_JOBS.pop(task_id, None)
             _close_cooperative_job(job)

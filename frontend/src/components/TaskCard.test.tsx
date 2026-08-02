@@ -43,4 +43,55 @@ describe('TaskCard', () => {
     await waitFor(() => expect(onLoadDetails).toHaveBeenCalledTimes(2))
     expect(screen.getByText('Details')).toBeInTheDocument()
   })
+
+  it('renders decoded structured data for a failed task response', () => {
+    const failedTask = {
+      ...task('failed', '2026-08-02T00:00:02.000Z'),
+      responseJson: JSON.stringify({
+        id: 'req-1',
+        ok: false,
+        error: {
+          code: 'batch_failed',
+          message: 'No asset could be changed.',
+          data: {
+            protocolVersion: 1,
+            view: 'changeSet',
+            summary: {
+              label: 'asset.renameBatch',
+              dryRun: false,
+              save: false,
+              status: 'failed',
+              changed: 0,
+              changedUnsaved: 0,
+              skipped: 0,
+              failed: 1,
+              total: 1,
+            },
+            changeSet: [{
+              assetPath: '/Game/Props/SM_OldChair',
+              propertyPath: 'objectPath',
+              before: '/Game/Props/SM_OldChair',
+              after: '/Game/Props/SM_NewChair',
+              action: 'rename',
+              status: 'failed',
+              message: 'Unreal rejected the asset rename.',
+            }],
+          },
+        },
+      }),
+    }
+
+    render(<TaskCard
+      bridgeReady
+      onCancel={vi.fn()}
+      onLoadDetails={vi.fn()}
+      onRemove={vi.fn()}
+      resultType="changeSet"
+      task={failedTask}
+    />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('[batch_failed] No asset could be changed.')
+    expect(screen.getAllByText('/Game/Props/SM_OldChair')).toHaveLength(2)
+    expect(screen.getByText('Unreal rejected the asset rename.')).toBeInTheDocument()
+  })
 })
