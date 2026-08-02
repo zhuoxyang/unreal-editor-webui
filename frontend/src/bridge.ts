@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { BridgeResponse } from './types/bridge'
+import type {
+  BridgeErrorData,
+  BridgeResponse,
+  ChangeSetErrorOperation,
+  ChangeSetOperationStatus,
+} from './types/bridge'
 
 export type { BridgeResponse, ProjectContext, TaskResult, TaskStatus, WebUISettings } from './types/bridge'
 
@@ -27,6 +32,20 @@ export type BridgeCaller = <T>(methodName: BridgeMethodName, ...args: string[]) 
 
 const MAX_RESPONSE_PREVIEW_LENGTH = 200
 const MAX_ERROR_DETAIL_LENGTH = 160
+const MAX_ERROR_DATA_OPERATIONS = 200
+const CHANGE_SET_OPERATION_STATUSES = new Set<string>([
+  'skipped',
+  'failed',
+  'changed',
+  'changed_unsaved',
+])
+const CHANGE_SET_SUMMARY_STATUSES = new Set<string>([
+  'preview',
+  'partial',
+  'failed',
+  'completed',
+  'no_changes',
+])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -71,11 +90,142 @@ export class BridgeProtocolError extends Error {
   }
 }
 
+function invalidErrorData(
+  methodName: BridgeMethodName,
+  message: string,
+  preview?: string,
+): never {
+  throw new BridgeProtocolError(methodName, `field "error.data" ${message}`, preview)
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+function decodeChangeSetOperation(
+  methodName: BridgeMethodName,
+  value: unknown,
+  preview?: string,
+): ChangeSetErrorOperation {
+  if (!isRecord(value)) {
+    return invalidErrorData(methodName, 'contains a non-object change-set operation.', preview)
+  }
+
+  const { assetPath, propertyPath, action, status, message } = value
+  if (
+    typeof assetPath !== 'string'
+    || typeof propertyPath !== 'string'
+    || typeof action !== 'string'
+    || typeof message !== 'string'
+    || typeof status !== 'string'
+    || !CHANGE_SET_OPERATION_STATUSES.has(status)
+    || !Object.prototype.hasOwnProperty.call(value, 'before')
+    || !Object.prototype.hasOwnProperty.call(value, 'after')
+  ) {
+    return invalidErrorData(methodName, 'contains an invalid change-set operation.', preview)
+  }
+
+  return {
+    assetPath,
+    propertyPath,
+    before: value.before,
+    after: value.after,
+    action,
+    status: status as ChangeSetOperationStatus,
+    message,
+  }
+}
+
+function decodeBridgeErrorData(
+  methodName: BridgeMethodName,
+  value: unknown,
+  preview?: string,
+): BridgeErrorData {
+  if (!isRecord(value) || value.protocolVersion !== 1 || value.view !== 'changeSet') {
+    return invalidErrorData(methodName, 'must be a supported changeSet v1 object.', preview)
+  }
+  if (!isRecord(value.summary) || !Array.isArray(value.changeSet)) {
+    return invalidErrorData(methodName, 'requires object "summary" and array "changeSet" fields.', preview)
+  }
+  if (value.changeSet.length > MAX_ERROR_DATA_OPERATIONS) {
+    return invalidErrorData(
+      methodName,
+      `contains more than ${MAX_ERROR_DATA_OPERATIONS} change-set operations.`,
+      preview,
+    )
+  }
+
+  const summary = value.summary
+  const {
+    label,
+    dryRun,
+    save,
+    status,
+    changed,
+    changedUnsaved,
+    skipped,
+    failed,
+    total,
+  } = summary
+  if (
+    typeof label !== 'string'
+    || typeof dryRun !== 'boolean'
+    || typeof save !== 'boolean'
+    || typeof status !== 'string'
+    || !CHANGE_SET_SUMMARY_STATUSES.has(status)
+    || !isNonNegativeInteger(changed)
+    || !isNonNegativeInteger(changedUnsaved)
+    || !isNonNegativeInteger(skipped)
+    || !isNonNegativeInteger(failed)
+    || !isNonNegativeInteger(total)
+  ) {
+    return invalidErrorData(methodName, 'contains an invalid change-set summary.', preview)
+  }
+
+  const changeSet = value.changeSet.map((operation) => (
+    decodeChangeSetOperation(methodName, operation, preview)
+  ))
+  const actualCounts = {
+    changed: changeSet.filter((operation) => operation.status === 'changed').length,
+    changedUnsaved: changeSet.filter((operation) => operation.status === 'changed_unsaved').length,
+    skipped: changeSet.filter((operation) => operation.status === 'skipped').length,
+    failed: changeSet.filter((operation) => operation.status === 'failed').length,
+  }
+  if (
+    total !== changeSet.length
+    || changed + changedUnsaved + skipped + failed !== total
+    || changed !== actualCounts.changed
+    || changedUnsaved !== actualCounts.changedUnsaved
+    || skipped !== actualCounts.skipped
+    || failed !== actualCounts.failed
+  ) {
+    return invalidErrorData(methodName, 'has inconsistent change-set summary counts.', preview)
+  }
+
+  return {
+    protocolVersion: 1,
+    view: 'changeSet',
+    summary: {
+      label,
+      dryRun,
+      save,
+      status: status as BridgeErrorData['summary']['status'],
+      changed,
+      changedUnsaved,
+      skipped,
+      failed,
+      total,
+    },
+    changeSet,
+  }
+}
+
 export class BridgeCallError extends Error {
   readonly methodName: BridgeMethodName
   readonly code: string
   readonly details?: string[]
   readonly requestId: string | null
+  readonly data?: BridgeErrorData
 
   constructor(
     methodName: BridgeMethodName,
@@ -83,6 +233,7 @@ export class BridgeCallError extends Error {
     message: string,
     details?: string[],
     requestId: string | null = null,
+    data?: BridgeErrorData,
   ) {
     super(message)
     this.name = 'BridgeCallError'
@@ -90,12 +241,32 @@ export class BridgeCallError extends Error {
     this.code = code
     this.details = details
     this.requestId = requestId
+    this.data = data
   }
+}
+
+function structuredErrorDetails(data?: BridgeErrorData) {
+  if (!data) {
+    return []
+  }
+
+  const details: string[] = []
+  for (const operation of data.changeSet) {
+    if (operation.status === 'failed') {
+      details.push(`${operation.assetPath || 'Operation'}: ${operation.message}`)
+      if (details.length === 3) break
+    }
+  }
+  return details
 }
 
 export function formatBridgeError(error: unknown) {
   if (error instanceof BridgeCallError) {
-    const details = error.details?.slice(0, 3).map(boundedErrorDetail).join('; ')
+    const visibleDetails = (error.details || []).slice(0, 3)
+    if (visibleDetails.length < 3) {
+      visibleDetails.push(...structuredErrorDetails(error.data).slice(0, 3 - visibleDetails.length))
+    }
+    const details = visibleDetails.map(boundedErrorDetail).join('; ')
     const request = error.requestId ? ` (request ${error.requestId})` : ''
     return `[${error.code}] ${error.message}${details ? ` — ${details}` : ''}${request}`
   }
@@ -145,7 +316,7 @@ export function parseBridgeResponse<T>(
     throw new BridgeProtocolError(methodName, 'failed response is missing object field "error".', preview)
   }
 
-  const { code, message, details, traceback } = parsed.error
+  const { code, message, details, data, traceback } = parsed.error
   if (typeof code !== 'string' || !code || typeof message !== 'string' || !message) {
     throw new BridgeProtocolError(
       methodName,
@@ -156,11 +327,22 @@ export function parseBridgeResponse<T>(
   if (details !== undefined && (!Array.isArray(details) || details.some((item) => typeof item !== 'string'))) {
     throw new BridgeProtocolError(methodName, 'field "error.details" must be an array of strings.', preview)
   }
+  const decodedData = data === undefined ? undefined : decodeBridgeErrorData(methodName, data, preview)
   if (traceback !== undefined && typeof traceback !== 'string') {
     throw new BridgeProtocolError(methodName, 'field "error.traceback" must be a string.', preview)
   }
 
-  return parsed as BridgeResponse<T>
+  return {
+    id: parsed.id as string | null,
+    ok: false,
+    error: {
+      code,
+      message,
+      ...(details === undefined ? {} : { details: details as string[] }),
+      ...(decodedData === undefined ? {} : { data: decodedData }),
+      ...(traceback === undefined ? {} : { traceback }),
+    },
+  }
 }
 
 export function createRequestId() {
@@ -214,6 +396,7 @@ export function useEditorBridge(log?: (message: string) => void) {
         response.error.message,
         response.error.details,
         response.id,
+        response.error.data,
       )
     }
 

@@ -258,7 +258,12 @@ def apply_rename_batch(
         raise CommandExecutionError(
             "batch_failed",
             "No asset in the rename batch could be changed.",
-            details=result,
+            data={
+                "protocolVersion": result["protocolVersion"],
+                "view": result["view"],
+                "summary": result["summary"],
+                "changeSet": result["changeSet"],
+            },
         )
 
     return result

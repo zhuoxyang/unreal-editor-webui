@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { createRequestId, formatBridgeError, type BridgeCaller } from '../bridge'
+import { BridgeCallError, createRequestId, formatBridgeError, type BridgeCaller } from '../bridge'
 import { decodeTaskResult } from '../bridge-decoders'
 import type { ExecutionMode } from '../recent-executions'
 import type { TaskResult } from '../types/bridge'
@@ -125,13 +125,21 @@ export function useCommandRunner({
     } catch (error) {
       if (isLatestInvocation(command.name, started.invocation)) {
         const message = formatBridgeError(error)
+        const structuredResult = error instanceof BridgeCallError ? error.data : undefined
+        if (structuredResult) {
+          setCommandResults((results) => {
+            const next = { ...results, [command.name]: structuredResult }
+            commandResultsRef.current = next
+            return next
+          })
+        }
         setCommandInvocations((states) => ({
           ...states,
           [command.name]: {
             status: 'error',
             mode: 'run',
             invocation: started.invocation,
-            stale: hasOwnResult(commandResultsRef.current, command.name),
+            stale: structuredResult ? false : hasOwnResult(commandResultsRef.current, command.name),
             startedAt: started.startedAt,
             finishedAt: new Date().toISOString(),
             error: message,

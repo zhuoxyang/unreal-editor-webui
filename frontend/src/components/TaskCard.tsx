@@ -112,6 +112,13 @@ export function TaskCard({ bridgeReady, resultType, task, onCancel, onLoadDetail
             <summary>Response</summary>
             {parsedTaskResponse?.ok ? (
               <ResultRenderer result={parsedTaskResponse.result} resultType={resultType} />
+            ) : parsedTaskResponse && parsedTaskResponse.error.data ? (
+              <>
+                <p className="task-error" role="alert">
+                  [{parsedTaskResponse.error.code}] {parsedTaskResponse.error.message}
+                </p>
+                <ResultRenderer result={parsedTaskResponse.error.data} resultType={resultType} />
+              </>
             ) : (
               <pre>{task.responseJson.slice(0, 100_000)}{task.responseJson.length > 100_000 ? '\n…' : ''}</pre>
             )}
