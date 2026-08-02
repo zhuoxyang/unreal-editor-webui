@@ -37,13 +37,13 @@ function runCli() {
   if (!isSupportedNodeVersion(nodeVersion)) {
     console.error(
       `Unsupported Node.js ${nodeVersion}. ` +
-      `Expected ${NODE_ENGINE_RANGE} as declared by frontend/package.json.`,
+      `Expected the repository Node.js engine contract ${NODE_ENGINE_RANGE}.`,
     )
     process.exitCode = 1
     return
   }
 
-  console.log(`Node.js ${nodeVersion} satisfies the frontend engine requirement (${NODE_ENGINE_RANGE}).`)
+  console.log(`Node.js ${nodeVersion} satisfies the repository engine requirement (${NODE_ENGINE_RANGE}).`)
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

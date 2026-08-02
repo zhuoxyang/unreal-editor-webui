@@ -2,6 +2,16 @@ version: 2
 
 updates:
   - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:45"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    versioning-strategy: increase-if-necessary
+
+  - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly

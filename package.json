@@ -1,0 +1,12 @@
+{
+  "name": "unreal-editor-webui-repository-tools",
+  "private": true,
+  "version": "0.0.0",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.22.2 || ^24.18.1"
+  },
+  "devDependencies": {
+    "yaml": "2.9.0"
+  }
+}
