@@ -283,7 +283,10 @@ class ExtractVerifiedArtifactTests(unittest.TestCase):
             with zipfile.ZipFile(archive_path) as archive:
                 info = archive.infolist()[0]
                 self.assertIn("\\", info.orig_filename)
-                self.assertNotIn("\\", info.filename)
+                if os.sep == "\\":
+                    self.assertNotIn("\\", info.filename)
+                else:
+                    self.assertEqual(info.orig_filename, info.filename)
             result = run_extractor(archive_path, destination)
 
             self.assertNotEqual(0, result.returncode)
