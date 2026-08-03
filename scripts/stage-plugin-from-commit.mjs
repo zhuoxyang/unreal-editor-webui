@@ -13,7 +13,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const PLUGIN_DIRECTORIES = Object.freeze([
@@ -196,12 +196,20 @@ function runGit(args, options = {}) {
   return result.stdout ?? Buffer.alloc(0)
 }
 
-function runCommand(command, args, cwd, label) {
+function runCommand(
+  command,
+  args,
+  cwd,
+  label,
+  { captureOutput = false, windowsVerbatimArguments = false } = {},
+) {
   try {
-    execFileSync(command, args, {
+    return execFileSync(command, args, {
       cwd,
+      encoding: captureOutput ? 'utf8' : undefined,
       env: process.env,
-      stdio: 'inherit',
+      stdio: captureOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+      windowsVerbatimArguments,
       windowsHide: true,
     })
   } catch (error) {
@@ -215,19 +223,162 @@ function runCommand(command, args, cwd, label) {
   }
 }
 
-function runNpm(args, cwd, label) {
-  if (process.platform === 'win32') {
-    let command
-    if (args.length === 1 && args[0] === 'ci') command = 'npm ci'
-    else if (args.length === 2 && args[0] === 'run' && args[1] === 'build') {
-      command = 'npm run build'
-    } else {
-      throw new Error(`Unsupported exact-commit npm command: ${JSON.stringify(args)}`)
+function pathEntries() {
+  const value = process.env.PATH ?? process.env.Path
+  if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) {
+    throw new Error('PATH must be a non-empty list of absolute directories.')
+  }
+
+  return value.split(delimiter).map((rawEntry) => {
+    const entry =
+      rawEntry.length >= 2 && rawEntry.startsWith('"') && rawEntry.endsWith('"')
+        ? rawEntry.slice(1, -1)
+        : rawEntry
+    if (entry.length === 0 || entry.includes('\0') || !isAbsolute(entry)) {
+      throw new Error('PATH must contain only non-empty absolute directory entries.')
     }
-    runCommand('cmd.exe', ['/d', '/s', '/c', command], cwd, label)
+    return entry
+  })
+}
+
+function assertTrustedLauncherPath(candidate, canonicalCandidate, untrustedRoots) {
+  if (
+    untrustedRoots.some(
+      (root) =>
+        isSameOrDescendant(root, candidate) || isSameOrDescendant(root, canonicalCandidate),
+    )
+  ) {
+    throw new Error('The npm launcher resolved inside repository-controlled build input.')
+  }
+}
+
+function resolveNpmExecutable(untrustedRoots) {
+  const names = process.platform === 'win32' ? ['npm.cmd', 'npm.exe'] : ['npm']
+  for (const directory of pathEntries()) {
+    for (const name of names) {
+      const candidate = resolve(directory, name)
+      let candidateStat
+      try {
+        candidateStat = statSync(candidate)
+      } catch (error) {
+        if (isMissingPathError(error)) continue
+        throw new Error('Unable to inspect an npm launcher candidate from PATH.')
+      }
+      if (!candidateStat.isFile()) {
+        throw new Error('An npm launcher candidate from PATH is not a regular file.')
+      }
+
+      let canonicalCandidate
+      try {
+        canonicalCandidate = realpathSync.native(candidate)
+      } catch {
+        throw new Error('Unable to canonicalize the npm launcher selected from PATH.')
+      }
+      if (!isAbsolute(canonicalCandidate)) {
+        throw new Error('The npm launcher selected from PATH is not absolute.')
+      }
+      assertTrustedLauncherPath(candidate, canonicalCandidate, untrustedRoots)
+      return canonicalCandidate
+    }
+  }
+  throw new Error('Unable to resolve an npm launcher from PATH.')
+}
+
+function resolveWindowsCommandProcessor() {
+  const systemRoot = process.env.SystemRoot
+  if (
+    typeof systemRoot !== 'string' ||
+    systemRoot.length === 0 ||
+    systemRoot.includes('\0') ||
+    !isAbsolute(systemRoot)
+  ) {
+    throw new Error('SystemRoot must identify an absolute Windows directory.')
+  }
+
+  let canonicalSystemRoot
+  let canonicalCommandProcessor
+  try {
+    canonicalSystemRoot = realpathSync.native(systemRoot)
+    canonicalCommandProcessor = realpathSync.native(resolve(systemRoot, 'System32', 'cmd.exe'))
+  } catch {
+    throw new Error('Unable to resolve the Windows system command processor.')
+  }
+  if (
+    !isSameOrDescendant(canonicalSystemRoot, canonicalCommandProcessor) ||
+    !statSync(canonicalCommandProcessor).isFile()
+  ) {
+    throw new Error('The Windows system command processor is invalid.')
+  }
+  return canonicalCommandProcessor
+}
+
+function resolveNpmLauncher(untrustedRoots) {
+  const executable = resolveNpmExecutable(untrustedRoots)
+  if (process.platform !== 'win32') {
+    return Object.freeze({ executable, kind: 'direct' })
+  }
+  if (/["\r\n%&|<>^!]/u.test(executable)) {
+    throw new Error('The Windows npm launcher path cannot be quoted safely.')
+  }
+  return Object.freeze({
+    commandProcessor: resolveWindowsCommandProcessor(),
+    executable,
+    kind: 'windows-command',
+  })
+}
+
+function assertSupportedNpmArguments(args) {
+  if (
+    (args.length === 1 && (args[0] === '--version' || args[0] === 'ci')) ||
+    (args.length === 2 && args[0] === 'run' && args[1] === 'build')
+  ) {
     return
   }
-  runCommand('npm', args, cwd, label)
+  throw new Error(`Unsupported exact-commit npm command: ${JSON.stringify(args)}`)
+}
+
+function runNpm(launcher, args, cwd, label, options) {
+  assertSupportedNpmArguments(args)
+  if (launcher.kind === 'windows-command') {
+    const command = `""${launcher.executable}" ${args.join(' ')}"`
+    return runCommand(
+      launcher.commandProcessor,
+      ['/d', '/s', '/v:off', '/c', command],
+      cwd,
+      label,
+      { ...options, windowsVerbatimArguments: true },
+    )
+  }
+  return runCommand(launcher.executable, args, cwd, label, options)
+}
+
+function parseSingleLineStableSemver(output, label) {
+  if (typeof output !== 'string') {
+    throw new Error(`${label} did not return text.`)
+  }
+  const normalized = output.replace(/\r\n/gu, '\n')
+  const lines = normalized.endsWith('\n')
+    ? normalized.slice(0, -1).split('\n')
+    : normalized.split('\n')
+  if (lines.length !== 1) {
+    throw new Error(`${label} must return exactly one line.`)
+  }
+  const version = lines[0]
+  if (!/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(version)) {
+    throw new Error(`${label} must return a stable semantic version.`)
+  }
+  return version
+}
+
+function readExactNpmVersion(launcher, frontendDirectory) {
+  const output = runNpm(
+    launcher,
+    ['--version'],
+    frontendDirectory,
+    'Exact-commit npm version probe',
+    { captureOutput: true },
+  )
+  return parseSingleLineStableSemver(output, 'Exact-commit npm version probe')
 }
 
 async function validateExactBuildInputs(buildRoot) {
@@ -681,6 +832,7 @@ export async function stagePluginFromCommit(sourceCommit, pluginStageInput, mani
     if (isExistingPathInside(repositoryRoot, buildRoot)) {
       throw new Error(`Temporary build tree must be outside the repository: ${buildRoot}`)
     }
+    const npmLauncher = resolveNpmLauncher([repositoryRoot, realpathSync.native(buildRoot)])
     materializeEntries(commitEntries, buildRoot)
 
     const frontendDirectory = filesystemPath(buildRoot, 'frontend')
@@ -691,13 +843,18 @@ export async function stagePluginFromCommit(sourceCommit, pluginStageInput, mani
 
     await validateExactBuildInputs(buildRoot)
 
-    runNpm(['ci'], frontendDirectory, 'Exact-commit dependency installation')
+    const buildToolchain = {
+      nodeVersion: process.versions.node,
+      nodeArchitecture: process.arch,
+      npmVersion: readExactNpmVersion(npmLauncher, frontendDirectory),
+    }
+    runNpm(npmLauncher, ['ci'], frontendDirectory, 'Exact-commit dependency installation')
     if (pathExists(generatedRoot)) {
       throw new Error(
         `${GENERATED_WEB_DIRECTORY} must be created by the frontend build, not dependency installation.`,
       )
     }
-    runNpm(['run', 'build'], frontendDirectory, 'Exact-commit frontend build')
+    runNpm(npmLauncher, ['run', 'build'], frontendDirectory, 'Exact-commit frontend build')
 
     mkdirSync(pluginStage)
     stageCreated = true
@@ -709,6 +866,7 @@ export async function stagePluginFromCommit(sourceCommit, pluginStageInput, mani
     const manifest = {
       schemaVersion: 1,
       sourceCommit: resolvedCommit,
+      buildToolchain,
       files,
     }
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
