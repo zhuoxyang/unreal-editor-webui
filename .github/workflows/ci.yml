@@ -136,6 +136,10 @@ jobs:
         shell: powershell
         run: node --test tests/package-plugin-registry-guard.test.mjs
 
+      - name: Test Windows UE build-environment contracts
+        shell: powershell
+        run: node --test tests/ue-build-environment.test.mjs
+
   repository:
     name: Repository checks
     runs-on: ubuntu-latest
@@ -222,11 +226,13 @@ jobs:
         run: |
           node --check scripts/resolve-ue-release-artifact.mjs
           node --check scripts/stage-plugin-from-commit.mjs
+          node --check scripts/ue-build-environment.mjs
           node --check scripts/export-npm-dependencies.mjs
           node --check scripts/validate-github-action-references.mjs
           node --check scripts/validate-npm-lock-registry.mjs
           node --test tests/download-verified-github-artifact.test.mjs
           node --test tests/resolve-ue-release-candidate.test.mjs
+          node --test tests/ue-build-environment.test.mjs
           node --test tests/validate-github-action-references.test.mjs
           node --test tests/validate-node-version.test.mjs
           node --test tests/validate-npm-lock-registry.test.mjs
