@@ -42,6 +42,8 @@ const OFFICIAL_LOCKFILE = {
     },
   },
 }
+const WINDOWS_NPM_PROBE_SCRIPT =
+  '@echo off\r\nsetlocal EnableDelayedExpansion\r\n>> "%NPM_PROBE%" echo npm %*\r\nif /I "%*"=="ci" if defined NPM_PROBE_CWD_SHADOW_TEMPLATE (\r\n  copy /Y "%NPM_PROBE_CWD_SHADOW_TEMPLATE%" "npm.cmd" >nul\r\n  if errorlevel 1 exit /b 90\r\n)\r\nif /I "%*"=="--version" (\r\n  echo(!NPM_PROBE_VERSION!\r\n  exit /b 0\r\n)\r\nif /I "%NPM_PROBE_MODE%"=="succeed" (\r\n  if /I "%*"=="run build" (\r\n    set /p BUILD_INPUT=<"build-input.txt"\r\n    if not exist "..\\Web\\dist" mkdir "..\\Web\\dist"\r\n    > "..\\Web\\dist\\index.html" echo generated !BUILD_INPUT!\r\n  )\r\n  exit /b 0\r\n)\r\nexit /b 91\r\n'
 
 function writeExecutable(path, contents) {
   writeFileSync(path, contents, 'utf8')
@@ -74,7 +76,7 @@ function createFixture(lockfile, shellKind) {
   const tempRoot = mkdtempSync(join(tmpdir(), 'unreal webui package temp-'))
   const scriptsDir = join(root, 'scripts')
   const frontendDir = join(root, 'frontend')
-  const probeBin = join(root, 'probe-bin')
+  const probeBin = join(tempRoot, 'probe-bin')
   mkdirSync(scriptsDir)
   mkdirSync(frontendDir)
   mkdirSync(probeBin)
@@ -142,7 +144,7 @@ function createFixture(lockfile, shellKind) {
   if (shellKind === 'powershell' && process.platform === 'win32') {
     writeFileSync(
       join(probeBin, 'npm.cmd'),
-      '@echo off\r\nsetlocal EnableDelayedExpansion\r\n>> "%NPM_PROBE%" echo npm %*\r\nif /I "%NPM_PROBE_MODE%"=="succeed" (\r\n  if /I "%*"=="run build" (\r\n    set /p BUILD_INPUT=<"build-input.txt"\r\n    if not exist "..\\Web\\dist" mkdir "..\\Web\\dist"\r\n    > "..\\Web\\dist\\index.html" echo generated !BUILD_INPUT!\r\n  )\r\n  exit /b 0\r\n)\r\nexit /b 91\r\n',
+      WINDOWS_NPM_PROBE_SCRIPT,
       'utf8',
     )
     runUat = join(probeBin, 'RunUAT.cmd')
@@ -155,13 +157,13 @@ function createFixture(lockfile, shellKind) {
     if (process.platform === 'win32') {
       writeFileSync(
         join(probeBin, 'npm.cmd'),
-        '@echo off\r\nsetlocal EnableDelayedExpansion\r\n>> "%NPM_PROBE%" echo npm %*\r\nif /I "%NPM_PROBE_MODE%"=="succeed" (\r\n  if /I "%*"=="run build" (\r\n    set /p BUILD_INPUT=<"build-input.txt"\r\n    if not exist "..\\Web\\dist" mkdir "..\\Web\\dist"\r\n    > "..\\Web\\dist\\index.html" echo generated !BUILD_INPUT!\r\n  )\r\n  exit /b 0\r\n)\r\nexit /b 91\r\n',
+        WINDOWS_NPM_PROBE_SCRIPT,
         'utf8',
       )
     }
     writeExecutable(
       join(probeBin, 'npm'),
-      '#!/usr/bin/env sh\nprintf "npm %s\\n" "$*" >> "$NPM_PROBE"\nif [ "${NPM_PROBE_MODE:-fail}" = "succeed" ]; then\n  if [ "$*" = "run build" ]; then\n    mkdir -p ../Web/dist\n    printf "generated %s\\n" "$(cat build-input.txt)" > ../Web/dist/index.html\n  fi\n  exit 0\nfi\nexit 91\n',
+      '#!/usr/bin/env sh\nprintf "npm %s\\n" "$*" >> "$NPM_PROBE"\nif [ "$*" = "--version" ]; then\n  printf "%s\\n" "${NPM_PROBE_VERSION:-}"\n  exit 0\nfi\nif [ "${NPM_PROBE_MODE:-fail}" = "succeed" ]; then\n  if [ "$*" = "run build" ]; then\n    mkdir -p ../Web/dist\n    printf "generated %s\\n" "$(cat build-input.txt)" > ../Web/dist/index.html\n  fi\n  exit 0\nfi\nexit 91\n',
     )
     runUat = join(probeBin, 'RunUAT')
     writeExecutable(
@@ -173,9 +175,11 @@ function createFixture(lockfile, shellKind) {
   const env = { ...process.env }
   const originalPath = env.PATH ?? env.Path ?? ''
   delete env.Path
-  env.PATH = [probeBin, dirname(process.execPath), originalPath].join(delimiter)
+  const inheritedPathEntries = originalPath.split(delimiter).filter((entry) => entry.length > 0)
+  env.PATH = [probeBin, dirname(process.execPath), ...inheritedPathEntries].join(delimiter)
   env.NPM_PROBE = npmProbe
   env.NPM_PROBE_MODE = 'fail'
+  env.NPM_PROBE_VERSION = '11.16.0'
   env.RUNUAT_PACKAGE_DIR = packageDir
   env.RUNUAT_PROBE = runUatProbe
   env.RUNUAT_PROBE_MODE = 'fail'
@@ -187,9 +191,11 @@ function createFixture(lockfile, shellKind) {
 
   return {
     env,
+    frontendDir,
     initialDirectories: topLevelDirectories(tempRoot),
     npmProbe,
     packageDir,
+    probeBin,
     root,
     runUat,
     runUatProbe,
@@ -375,6 +381,11 @@ function assertDirtyWorktreeCannotEnterPackage(shellKind, executable) {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     assert.equal(manifest.schemaVersion, 1)
     assert.equal(manifest.sourceCommit, fixture.sourceCommit)
+    assert.deepEqual(manifest.buildToolchain, {
+      nodeVersion: process.versions.node,
+      nodeArchitecture: process.arch,
+      npmVersion: fixture.env.NPM_PROBE_VERSION,
+    })
     assert.deepEqual(
       manifest.files.map(({ path }) => path),
       relativeRegularFiles(fixture.packageDir).filter((path) => path !== 'SourceManifest.json'),
@@ -630,9 +641,96 @@ function assertOfficialLockReachesNpmProbe(shellKind, executable) {
     assert.equal(result.status, 1, output)
     assert.match(output, /Validated 1 npm lockfile URL/u)
     assert.equal(existsSync(fixture.npmProbe), true, 'the official lock must reach npm')
-    assert.equal(readFileSync(fixture.npmProbe, 'utf8').trim(), 'npm ci')
+    assert.deepEqual(
+      readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
+      ['npm --version', 'npm ci'],
+    )
     assert.equal(existsSync(fixture.runUatProbe), false, 'the failing npm probe must stop before RunUAT')
     unlinkSync(fixture.npmProbe)
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertMalformedNpmVersionStopsBeforeInstall(shellKind, executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, shellKind)
+  fixture.env.NPM_PROBE_MODE = 'succeed'
+  fixture.env.NPM_PROBE_VERSION = '11.16.0 unexpected-output'
+  try {
+    const result = runPackageScript(shellKind, fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 1, output)
+    assert.match(output, /npm version probe must return a stable semantic version/iu)
+    assert.deepEqual(
+      readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
+      ['npm --version'],
+    )
+    assert.equal(existsSync(fixture.runUatProbe), false, 'invalid npm evidence must stop before RunUAT')
+    assert.equal(existsSync(fixture.packageDir), false, 'invalid npm evidence must not publish a package')
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertTrackedFrontendNpmCmdCannotHijack(executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, 'powershell')
+  const shadowProbe = join(fixture.root, 'tracked-npm-cmd-shadow.txt')
+  fixture.env.NPM_CWD_SHADOW_PROBE = shadowProbe
+  fixture.env.NPM_PROBE_MODE = 'succeed'
+  writeFileSync(
+    join(fixture.frontendDir, 'npm.cmd'),
+    '@echo off\r\n> "%NPM_CWD_SHADOW_PROBE%" echo tracked frontend npm.cmd ran\r\necho 99.99.99\r\nexit /b 0\r\n',
+    'utf8',
+  )
+  runGit(fixture.root, ['add', '--', 'frontend/npm.cmd'])
+  runGit(fixture.root, ['commit', '--quiet', '-m', 'add tracked npm shadow'])
+  fixture.sourceCommit = runGit(fixture.root, ['rev-parse', 'HEAD'])
+
+  try {
+    const result = runPackageScript('powershell', fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 92, output)
+    assert.equal(existsSync(shadowProbe), false, 'tracked frontend/npm.cmd must never run')
+    assert.deepEqual(
+      readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
+      ['npm --version', 'npm ci', 'npm run build'],
+    )
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertLifecycleCreatedNpmCmdCannotHijack(executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, 'powershell')
+  const shadowProbe = join(fixture.root, 'lifecycle-npm-cmd-shadow.txt')
+  const shadowTemplate = join(fixture.probeBin, 'lifecycle-npm-shadow.cmd')
+  fixture.env.NPM_CWD_SHADOW_PROBE = shadowProbe
+  fixture.env.NPM_PROBE_CWD_SHADOW_TEMPLATE = shadowTemplate
+  fixture.env.NPM_PROBE_MODE = 'succeed'
+  writeFileSync(
+    shadowTemplate,
+    '@echo off\r\n> "%NPM_CWD_SHADOW_PROBE%" echo lifecycle npm.cmd ran\r\nexit /b 77\r\n',
+    'utf8',
+  )
+
+  try {
+    const result = runPackageScript('powershell', fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 92, output)
+    assert.equal(existsSync(shadowProbe), false, 'npm ci-created npm.cmd must never run')
+    assert.deepEqual(
+      readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
+      ['npm --version', 'npm ci', 'npm run build'],
+    )
   } finally {
     cleanupFixture(fixture)
   }
@@ -650,7 +748,7 @@ function assertRunUatFailureCleansStaging(shellKind, executable) {
     assert.equal(result.status, 92, output)
     assert.deepEqual(
       readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
-      ['npm ci', 'npm run build'],
+      ['npm --version', 'npm ci', 'npm run build'],
     )
     assert.match(readFileSync(fixture.runUatProbe, 'utf8'), /^RunUAT BuildPlugin\b/u)
     assert.equal(existsSync(fixture.packageDir), false, 'RunUAT failure must not publish a package')
@@ -897,6 +995,11 @@ test('Bash packaging accepts an official lock before invoking npm', { skip: bash
   assertOfficialLockReachesNpmProbe('bash', bashExecutable)
 })
 
+test('Bash packaging rejects malformed npm version evidence before install', { skip: bashSkip }, () => {
+  assert.ok(bashAvailable, 'bash is required in CI')
+  assertMalformedNpmVersionStopsBeforeInstall('bash', bashExecutable)
+})
+
 test('Bash packaging cleans staging when RunUAT fails', { skip: bashSkip }, () => {
   assert.ok(bashAvailable, 'bash is required in CI')
   assertRunUatFailureCleansStaging('bash', bashExecutable)
@@ -952,6 +1055,43 @@ test(
   () => {
     assert.ok(powershellAvailable, 'PowerShell is required in CI')
     assertOfficialLockReachesNpmProbe('powershell', powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell packaging rejects malformed npm version evidence before install',
+  { skip: powershellSkip },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertMalformedNpmVersionStopsBeforeInstall('powershell', powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell packaging ignores a tracked frontend npm.cmd shadow',
+  {
+    skip:
+      process.platform !== 'win32'
+        ? 'Windows cmd lookup behavior is required'
+        : powershellSkip,
+  },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertTrackedFrontendNpmCmdCannotHijack(powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell packaging keeps the frozen npm launcher after npm ci creates npm.cmd',
+  {
+    skip:
+      process.platform !== 'win32'
+        ? 'Windows cmd lookup behavior is required'
+        : powershellSkip,
+  },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertLifecycleCreatedNpmCmdCannotHijack(powershellExecutable)
   },
 )
 

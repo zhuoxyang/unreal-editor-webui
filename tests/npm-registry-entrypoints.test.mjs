@@ -192,7 +192,7 @@ function scanCommandConsumers(source) {
 
   const javascriptInstallPatterns = [
     new RegExp(
-      String.raw`\brunNpm\s*\(\s*\[\s*['"\x60](?:${NPM_INSTALL_SUBCOMMAND_PATTERN})['"\x60]`,
+      String.raw`\brunNpm\s*\(\s*npmLauncher\s*,\s*\[\s*['"\x60](?:${NPM_INSTALL_SUBCOMMAND_PATTERN})['"\x60]`,
       'gu',
     ),
     new RegExp(
@@ -411,7 +411,7 @@ test('entrypoint discovery recognizes alternate install forms without matching d
     'cd frontend && npm ci',
     'npm \\\n      ci',
     "spawnSync('npm', ['ci'])",
-    "runNpm(['ci'], frontendDirectory, 'exact install')",
+    "runNpm(npmLauncher, ['ci'], frontendDirectory, 'exact install')",
     "exec('npm install')",
     "subprocess.run(['npm', 'ci'])",
     "Start-Process 'npm' -ArgumentList 'ci'",
@@ -511,7 +511,7 @@ test('exact-commit staging guards the consumed lock before install, build, and R
     ['exact-commit lockfile', "filesystemPath(buildRoot, 'frontend/package-lock.json')"],
     [
       'exact-commit npm install',
-      "runNpm(['ci'], frontendDirectory, 'Exact-commit dependency installation')",
+      "runNpm(npmLauncher, ['ci'], frontendDirectory, 'Exact-commit dependency installation')",
     ],
     [
       'post-install generated-output gate',
@@ -519,7 +519,7 @@ test('exact-commit staging guards the consumed lock before install, build, and R
     ],
     [
       'exact-commit frontend build',
-      "runNpm(['run', 'build'], frontendDirectory, 'Exact-commit frontend build')",
+      "runNpm(npmLauncher, ['run', 'build'], frontendDirectory, 'Exact-commit frontend build')",
     ],
     [
       'fresh tracked plugin materialization',
