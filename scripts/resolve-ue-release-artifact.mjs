@@ -2,7 +2,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, createWriteStream } from 'node:fs'
-import { access, mkdir, rename, rm } from 'node:fs/promises'
+import { link, lstat, mkdir, rm } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -12,6 +12,8 @@ const API_VERSION = '2022-11-28'
 const EXPECTED_WORKFLOW_PATH = '.github/workflows/ue-ci.yml'
 export const EXPECTED_JOB_NAME = 'UE 5.8 BuildPlugin and automation'
 export const EXPECTED_ARTIFACT_NAME = 'UnrealEditorWebUI-Package-UE58'
+export const EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME =
+  'UnrealEditorWebUI-BuildEnvironment-UE58'
 export const EXPECTED_RUNNER_LABELS = ['self-hosted', 'windows', 'gui', 'ue-5.8']
 
 function parseArguments(argv) {
@@ -50,7 +52,7 @@ function expectedSha256(digest) {
 
 async function assertPathDoesNotExist(path) {
   try {
-    await access(path)
+    await lstat(path)
   } catch (error) {
     if (error?.code === 'ENOENT') {
       return
@@ -59,6 +61,24 @@ async function assertPathDoesNotExist(path) {
   }
 
   throw new Error(`Refusing to overwrite existing artifact archive '${path}'.`)
+}
+
+async function publishFileNoOverwrite(sourcePath, destinationPath) {
+  try {
+    await link(sourcePath, destinationPath)
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error(`Refusing to overwrite existing artifact archive '${destinationPath}'.`)
+    }
+    throw error
+  }
+
+  try {
+    await rm(sourcePath)
+  } catch (error) {
+    await rm(destinationPath, { force: true })
+    throw error
+  }
 }
 
 export async function downloadVerifiedArtifactArchive({
@@ -139,7 +159,7 @@ export async function downloadVerifiedArtifactArchive({
       )
     }
 
-    await rename(temporaryPath, destinationPath)
+    await publishFileNoOverwrite(temporaryPath, destinationPath)
     return {
       digest: `sha256:${actualHash}`,
       path: destinationPath,
@@ -200,6 +220,12 @@ export async function githubCollection(
 export function validateRunMetadata(run, repository, commit) {
   const errors = []
 
+  if (!Number.isSafeInteger(run.id) || run.id <= 0) {
+    errors.push(`run id is '${run.id}', expected a safe positive integer`)
+  }
+  if (!Number.isSafeInteger(run.run_attempt) || run.run_attempt <= 0) {
+    errors.push(`run attempt is '${run.run_attempt}', expected a safe positive integer`)
+  }
   if (run.path !== EXPECTED_WORKFLOW_PATH) {
     errors.push(`workflow path is '${run.path}', expected '${EXPECTED_WORKFLOW_PATH}'`)
   }
@@ -224,6 +250,149 @@ export function validateRunMetadata(run, repository, commit) {
   }
 }
 
+async function removeCreatedPaths(paths) {
+  const cleanupErrors = []
+  for (const path of paths) {
+    try {
+      await rm(path, { force: true })
+    } catch (error) {
+      cleanupErrors.push(error)
+    }
+  }
+  return cleanupErrors
+}
+
+export async function downloadVerifiedArtifactPair({
+  buildEnvironmentArtifactId,
+  buildEnvironmentExpectedDigest,
+  buildEnvironmentOutputPath,
+  fetchImpl = fetch,
+  packageArtifactId,
+  packageExpectedDigest,
+  packageOutputPath,
+  repository,
+  token,
+}) {
+  if (!packageOutputPath || !buildEnvironmentOutputPath) {
+    throw new Error('Both package and build-environment artifact output paths are required.')
+  }
+
+  const packageDestinationPath = resolve(packageOutputPath)
+  const buildEnvironmentDestinationPath = resolve(buildEnvironmentOutputPath)
+  if (packageDestinationPath === buildEnvironmentDestinationPath) {
+    throw new Error('Package and build-environment artifact archives require distinct output paths.')
+  }
+
+  await mkdir(dirname(packageDestinationPath), { recursive: true })
+  await mkdir(dirname(buildEnvironmentDestinationPath), { recursive: true })
+  await assertPathDoesNotExist(packageDestinationPath)
+  await assertPathDoesNotExist(buildEnvironmentDestinationPath)
+
+  const stagingSuffix = `${process.pid}.${randomUUID()}`
+  const packageStagingPath = join(
+    dirname(packageDestinationPath),
+    `.${basename(packageDestinationPath)}.${stagingSuffix}.pair`,
+  )
+  const buildEnvironmentStagingPath = join(
+    dirname(buildEnvironmentDestinationPath),
+    `.${basename(buildEnvironmentDestinationPath)}.${stagingSuffix}.pair`,
+  )
+  const stagingPaths = [packageStagingPath, buildEnvironmentStagingPath]
+  const publishedPaths = []
+
+  try {
+    const packageDownload = await downloadVerifiedArtifactArchive({
+      artifactId: packageArtifactId,
+      expectedDigest: packageExpectedDigest,
+      fetchImpl,
+      outputPath: packageStagingPath,
+      repository,
+      token,
+    })
+    const buildEnvironmentDownload = await downloadVerifiedArtifactArchive({
+      artifactId: buildEnvironmentArtifactId,
+      expectedDigest: buildEnvironmentExpectedDigest,
+      fetchImpl,
+      outputPath: buildEnvironmentStagingPath,
+      repository,
+      token,
+    })
+
+    await publishFileNoOverwrite(packageStagingPath, packageDestinationPath)
+    publishedPaths.push(packageDestinationPath)
+    await publishFileNoOverwrite(
+      buildEnvironmentStagingPath,
+      buildEnvironmentDestinationPath,
+    )
+    publishedPaths.push(buildEnvironmentDestinationPath)
+
+    return {
+      buildEnvironment: {
+        ...buildEnvironmentDownload,
+        path: buildEnvironmentDestinationPath,
+      },
+      package: {
+        ...packageDownload,
+        path: packageDestinationPath,
+      },
+    }
+  } catch (error) {
+    const cleanupErrors = await removeCreatedPaths([
+      ...stagingPaths,
+      ...publishedPaths.reverse(),
+    ])
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'Artifact pair verification failed and cleanup was incomplete.',
+      )
+    }
+    throw error
+  }
+}
+
+function validateBoundArtifact(artifact, expectedName, run, commit) {
+  if (!Number.isSafeInteger(artifact.id) || artifact.id <= 0) {
+    throw new Error(
+      `UE artifact '${expectedName}' from run ${run.id} does not expose a safe positive id.`,
+    )
+  }
+  if (artifact.expired !== false) {
+    throw new Error(
+      `UE artifact ${artifact.id} ('${expectedName}') from run ${run.id} is expired or lacks an explicit non-expired state.`,
+    )
+  }
+  if (!Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0) {
+    throw new Error(`UE artifact ${artifact.id} ('${expectedName}') from run ${run.id} is empty.`)
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(artifact.digest ?? '')) {
+    throw new Error(
+      `UE artifact ${artifact.id} ('${expectedName}') does not expose a valid immutable SHA-256 digest.`,
+    )
+  }
+  if (!artifact.workflow_run || typeof artifact.workflow_run !== 'object') {
+    throw new Error(
+      `UE artifact ${artifact.id} ('${expectedName}') does not expose its workflow-run binding.`,
+    )
+  }
+  if (!Number.isSafeInteger(artifact.workflow_run.id) || artifact.workflow_run.id !== run.id) {
+    throw new Error(
+      `UE artifact ${artifact.id} ('${expectedName}') is not bound to workflow run ${run.id}.`,
+    )
+  }
+  if (
+    typeof artifact.workflow_run.head_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(artifact.workflow_run.head_sha) ||
+    artifact.workflow_run.head_sha.toLowerCase() !== commit
+  ) {
+    throw new Error(
+      `UE artifact ${artifact.id} ('${expectedName}') is not bound to commit ${commit}.`,
+    )
+  }
+
+  return artifact
+}
+
 export function validateReleaseCandidate({ artifacts, commit, jobs, repository, run }) {
   validateRunMetadata(run, repository, commit)
 
@@ -236,6 +405,11 @@ export function validateReleaseCandidate({ artifacts, commit, jobs, repository, 
   }
 
   const expectedJob = expectedJobs[0]
+  if (!Number.isSafeInteger(expectedJob.id) || expectedJob.id <= 0) {
+    throw new Error(
+      `UE workflow run ${run.id} job '${EXPECTED_JOB_NAME}' does not expose a safe positive id.`,
+    )
+  }
   const jobLabels = new Set(
     (Array.isArray(expectedJob.labels) ? expectedJob.labels : [])
       .filter((label) => typeof label === 'string')
@@ -244,70 +418,90 @@ export function validateReleaseCandidate({ artifacts, commit, jobs, repository, 
   const missingLabels = EXPECTED_RUNNER_LABELS.filter(
     (label) => !jobLabels.has(label),
   )
-  if (missingLabels.length > 0 || !expectedJob.runner_name) {
+  const hasNamedRunner =
+    typeof expectedJob.runner_name === 'string' && expectedJob.runner_name.trim().length > 0
+  if (missingLabels.length > 0 || !hasNamedRunner) {
     throw new Error(
       `UE job ${expectedJob.id} was not assigned to the required trusted runner labels (missing: ${missingLabels.join(', ') || 'none'}).`,
     )
   }
 
-  const expectedArtifacts = artifacts.filter((artifact) => artifact.name === EXPECTED_ARTIFACT_NAME)
+  const expectedArtifacts = artifacts.filter(
+    (artifact) => artifact.name === EXPECTED_ARTIFACT_NAME,
+  )
   if (expectedArtifacts.length !== 1) {
     throw new Error(
       `UE workflow run ${run.id} must contain exactly one '${EXPECTED_ARTIFACT_NAME}' artifact; found ${expectedArtifacts.length}.`,
     )
   }
 
-  const artifact = expectedArtifacts[0]
-  if (artifact.expired) {
-    throw new Error(`UE artifact ${artifact.id} from run ${run.id} has expired.`)
-  }
-  if (!Number.isSafeInteger(artifact.size_in_bytes) || artifact.size_in_bytes <= 0) {
-    throw new Error(`UE artifact ${artifact.id} from run ${run.id} is empty.`)
-  }
-  if (!/^sha256:[0-9a-f]{64}$/.test(artifact.digest ?? '')) {
-    throw new Error(`UE artifact ${artifact.id} does not expose a valid immutable SHA-256 digest.`)
-  }
-  if (!artifact.workflow_run || typeof artifact.workflow_run !== 'object') {
-    throw new Error(`UE artifact ${artifact.id} does not expose its workflow-run binding.`)
-  }
-  if (!Number.isSafeInteger(artifact.workflow_run.id) || artifact.workflow_run.id !== run.id) {
-    throw new Error(`UE artifact ${artifact.id} is not bound to workflow run ${run.id}.`)
-  }
-  if (
-    typeof artifact.workflow_run.head_sha !== 'string' ||
-    !/^[0-9a-f]{40}$/i.test(artifact.workflow_run.head_sha) ||
-    artifact.workflow_run.head_sha.toLowerCase() !== commit
-  ) {
-    throw new Error(`UE artifact ${artifact.id} is not bound to commit ${commit}.`)
+  const expectedBuildEnvironmentArtifacts = artifacts.filter(
+    (artifact) => artifact.name === EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME,
+  )
+  if (expectedBuildEnvironmentArtifacts.length !== 1) {
+    throw new Error(
+      `UE workflow run ${run.id} must contain exactly one '${EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME}' artifact; found ${expectedBuildEnvironmentArtifacts.length}.`,
+    )
   }
 
-  return { artifact, job: expectedJob, run }
+  const artifact = validateBoundArtifact(
+    expectedArtifacts[0],
+    EXPECTED_ARTIFACT_NAME,
+    run,
+    commit,
+  )
+  const buildEnvironmentArtifact = validateBoundArtifact(
+    expectedBuildEnvironmentArtifacts[0],
+    EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME,
+    run,
+    commit,
+  )
+
+  return { artifact, buildEnvironmentArtifact, job: expectedJob, run }
 }
 
-async function validateRun(token, repository, repositoryApiPath, commit, run) {
+export async function validateRun(
+  token,
+  repository,
+  commit,
+  run,
+  githubJsonImpl = githubJson,
+) {
+  validateRunMetadata(run, repository, commit)
+  const repositoryApiPath = repositoryPath(repository)
   const jobs = await githubCollection(
     token,
-    `/repos/${repositoryApiPath}/actions/runs/${run.id}/jobs`,
+    `/repos/${repositoryApiPath}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs`,
     'jobs',
+    githubJsonImpl,
   )
   const artifacts = await githubCollection(
     token,
     `/repos/${repositoryApiPath}/actions/runs/${run.id}/artifacts`,
     'artifacts',
+    githubJsonImpl,
   )
 
   return validateReleaseCandidate({ artifacts, commit, jobs, repository, run })
 }
 
-function writeOutputs(selection) {
-  const outputs = [
+export function releaseCandidateOutputs(selection) {
+  return [
     `ue_run_id=${selection.run.id}`,
+    `ue_run_attempt=${selection.run.run_attempt}`,
     `ue_run_url=${selection.run.html_url}`,
     `ue_job_id=${selection.job.id}`,
     `ue_artifact_id=${selection.artifact.id}`,
     `ue_artifact_digest=${selection.artifact.digest}`,
     `ue_artifact_name=${selection.artifact.name}`,
+    `ue_build_environment_artifact_id=${selection.buildEnvironmentArtifact.id}`,
+    `ue_build_environment_artifact_digest=${selection.buildEnvironmentArtifact.digest}`,
+    `ue_build_environment_artifact_name=${selection.buildEnvironmentArtifact.name}`,
   ]
+}
+
+function writeOutputs(selection) {
+  const outputs = releaseCandidateOutputs(selection)
 
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `${outputs.join('\n')}\n`, 'utf8')
@@ -319,9 +513,13 @@ function writeOutputs(selection) {
         artifactId: selection.artifact.id,
         artifactDigest: selection.artifact.digest,
         artifactName: selection.artifact.name,
+        buildEnvironmentArtifactDigest: selection.buildEnvironmentArtifact.digest,
+        buildEnvironmentArtifactId: selection.buildEnvironmentArtifact.id,
+        buildEnvironmentArtifactName: selection.buildEnvironmentArtifact.name,
         commit: selection.run.head_sha,
         jobId: selection.job.id,
         runId: selection.run.id,
+        runAttempt: selection.run.run_attempt,
         runUrl: selection.run.html_url,
       },
       null,
@@ -336,16 +534,26 @@ async function main() {
   const commit = (argumentsMap.get('commit') ?? process.env.RELEASE_COMMIT ?? '').toLowerCase()
   const requestedRunId = argumentsMap.get('run-id') ?? ''
   const archiveOutputPath = argumentsMap.get('download-to') ?? ''
+  const buildEnvironmentArchiveOutputPath =
+    argumentsMap.get('build-environment-download-to') ?? ''
   const token = process.env.GITHUB_TOKEN ?? ''
 
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error(`Invalid release commit '${commit}'. Expected a full 40-character Git SHA.`)
   }
-  if (!token) {
-    throw new Error('GITHUB_TOKEN is required to verify UE workflow metadata and artifacts.')
-  }
   if (requestedRunId && !/^[1-9][0-9]*$/.test(requestedRunId)) {
     throw new Error(`Invalid workflow run id '${requestedRunId}'.`)
+  }
+  if (!archiveOutputPath || !buildEnvironmentArchiveOutputPath) {
+    throw new Error(
+      'Both --download-to and --build-environment-download-to are required; release consumers must verify the package and build-environment archives together.',
+    )
+  }
+  if (resolve(archiveOutputPath) === resolve(buildEnvironmentArchiveOutputPath)) {
+    throw new Error('Package and build-environment artifact archives require distinct output paths.')
+  }
+  if (!token) {
+    throw new Error('GITHUB_TOKEN is required to verify UE workflow metadata and artifacts.')
   }
 
   const repositoryApiPath = repositoryPath(repository)
@@ -371,7 +579,7 @@ async function main() {
   let selection
   for (const run of candidateRuns) {
     try {
-      selection = await validateRun(token, repository, repositoryApiPath, commit, run)
+      selection = await validateRun(token, repository, commit, run)
       break
     } catch (error) {
       validationErrors.push(error instanceof Error ? error.message : String(error))
@@ -387,18 +595,22 @@ async function main() {
     )
   }
 
-  if (archiveOutputPath) {
-    const download = await downloadVerifiedArtifactArchive({
-      artifactId: selection.artifact.id,
-      expectedDigest: selection.artifact.digest,
-      outputPath: archiveOutputPath,
-      repository,
-      token,
-    })
-    console.log(
-      `Verified ${download.sizeInBytes} artifact bytes against ${download.digest} before writing ${download.path}.`,
-    )
-  }
+  const downloads = await downloadVerifiedArtifactPair({
+    buildEnvironmentArtifactId: selection.buildEnvironmentArtifact.id,
+    buildEnvironmentExpectedDigest: selection.buildEnvironmentArtifact.digest,
+    buildEnvironmentOutputPath: buildEnvironmentArchiveOutputPath,
+    packageArtifactId: selection.artifact.id,
+    packageExpectedDigest: selection.artifact.digest,
+    packageOutputPath: archiveOutputPath,
+    repository,
+    token,
+  })
+  console.log(
+    `Verified ${downloads.package.sizeInBytes} package artifact bytes against ${downloads.package.digest} before writing ${downloads.package.path}.`,
+  )
+  console.log(
+    `Verified ${downloads.buildEnvironment.sizeInBytes} build-environment artifact bytes against ${downloads.buildEnvironment.digest} before writing ${downloads.buildEnvironment.path}.`,
+  )
 
   writeOutputs(selection)
 }
