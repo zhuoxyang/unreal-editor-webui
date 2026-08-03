@@ -88,11 +88,12 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "requested_run_id=$requested_run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve, download, and verify exact trusted UE artifact
+      - name: Resolve, download, and verify exact trusted UE artifacts
         id: ue
         shell: bash
         env:
           ARTIFACT_ARCHIVE: trusted-package.zip
+          BUILD_ENVIRONMENT_ARCHIVE: trusted-build-environment.zip
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           REQUESTED_RUN_ID: ${{ steps.release.outputs.requested_run_id }}
@@ -102,18 +103,52 @@ jobs:
             --repository "$GITHUB_REPOSITORY"
             --commit "$RELEASE_COMMIT"
             --download-to "$ARTIFACT_ARCHIVE"
+            --build-environment-download-to "$BUILD_ENVIRONMENT_ARCHIVE"
           )
           if [[ -n "$REQUESTED_RUN_ID" ]]; then
             arguments+=(--run-id "$REQUESTED_RUN_ID")
           fi
           node scripts/resolve-ue-release-artifact.mjs "${arguments[@]}"
 
+      - name: Extract and verify trusted UE build environment
+        shell: bash
+        env:
+          BUILD_ENVIRONMENT_ARCHIVE: trusted-build-environment.zip
+          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
+          UE_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_artifact_digest }}
+          UE_ARTIFACT_ID: ${{ steps.ue.outputs.ue_artifact_id }}
+          UE_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_artifact_name }}
+          UE_RUN_ATTEMPT: ${{ steps.ue.outputs.ue_run_attempt }}
+          UE_RUN_ID: ${{ steps.ue.outputs.ue_run_id }}
+        run: |
+          set -euo pipefail
+          python scripts/extract-verified-artifact.py \
+            --archive "$BUILD_ENVIRONMENT_ARCHIVE" \
+            --destination trusted-build-environment \
+            --profile build-environment
+          mkdir -p release/metadata
+
+          node scripts/ue-build-environment.mjs verify \
+            --input trusted-build-environment/BuildEnvironment.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --commit "$RELEASE_COMMIT" \
+            --run-id "$UE_RUN_ID" \
+            --run-attempt "$UE_RUN_ATTEMPT" \
+            --job-key buildplugin-and-automation \
+            --package-artifact-id "$UE_ARTIFACT_ID" \
+            --package-artifact-name "$UE_ARTIFACT_NAME" \
+            --package-artifact-digest "$UE_ARTIFACT_DIGEST" \
+            --canonical-output release/metadata/build-environment.json
+          test -s release/metadata/build-environment.json
+
       - name: Extract verified trusted UE package
         shell: bash
         run: |
           set -euo pipefail
-          mkdir trusted-package
-          unzip -q trusted-package.zip -d trusted-package
+          python scripts/extract-verified-artifact.py \
+            --archive trusted-package.zip \
+            --destination trusted-package \
+            --profile package
 
       - name: Validate packaged plugin structure
         shell: bash
@@ -123,6 +158,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          if find trusted-package -type l -print -quit | grep -q .; then
+            echo "The trusted package contains a symbolic link; refusing to assemble a release candidate." >&2
+            exit 1
+          fi
           test -f trusted-package/UnrealEditorWebUI.uplugin
           test -f trusted-package/Web/dist/index.html
           test -f trusted-package/LICENSE
@@ -134,10 +173,6 @@ jobs:
           fi
           if ! cmp -s LICENSE trusted-package/LICENSE; then
             echo "The packaged license does not match the exact release commit." >&2
-            exit 1
-          fi
-          if find trusted-package -type l -print -quit | grep -q .; then
-            echo "The trusted package contains a symbolic link; refusing to assemble a release candidate." >&2
             exit 1
           fi
 
@@ -170,20 +205,29 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          UE_BUILD_ENVIRONMENT_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_build_environment_artifact_digest }}
+          UE_BUILD_ENVIRONMENT_ARTIFACT_ID: ${{ steps.ue.outputs.ue_build_environment_artifact_id }}
+          UE_BUILD_ENVIRONMENT_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_build_environment_artifact_name }}
           UE_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_artifact_digest }}
           UE_ARTIFACT_ID: ${{ steps.ue.outputs.ue_artifact_id }}
           UE_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_artifact_name }}
           UE_JOB_ID: ${{ steps.ue.outputs.ue_job_id }}
+          UE_RUN_ATTEMPT: ${{ steps.ue.outputs.ue_run_attempt }}
           UE_RUN_ID: ${{ steps.ue.outputs.ue_run_id }}
           UE_RUN_URL: ${{ steps.ue.outputs.ue_run_url }}
         run: |
           import datetime
+          import hashlib
           import json
           import os
           import pathlib
 
+          build_environment_path = pathlib.Path("release/metadata/build-environment.json")
+          build_environment_bytes = build_environment_path.read_bytes()
+          build_environment = json.loads(build_environment_bytes)
+
           metadata = {
-              "schemaVersion": 1,
+              "schemaVersion": 2,
               "releaseKind": "candidate",
               "publishedAsGitHubRelease": False,
               "repository": os.environ["GITHUB_REPOSITORY"],
@@ -201,12 +245,22 @@ jobs:
                   "requiredJob": "UE 5.8 BuildPlugin and automation",
                   "requiredRunnerLabels": ["self-hosted", "windows", "gui", "ue-5.8"],
                   "runId": int(os.environ["UE_RUN_ID"]),
+                  "runAttempt": int(os.environ["UE_RUN_ATTEMPT"]),
                   "runUrl": os.environ["UE_RUN_URL"],
                   "jobId": int(os.environ["UE_JOB_ID"]),
                   "artifactId": int(os.environ["UE_ARTIFACT_ID"]),
                   "artifactDigest": os.environ["UE_ARTIFACT_DIGEST"],
                   "artifactName": os.environ["UE_ARTIFACT_NAME"],
                   "artifactCommitMatched": True,
+                  "buildEnvironmentArtifact": {
+                      "artifactId": int(os.environ["UE_BUILD_ENVIRONMENT_ARTIFACT_ID"]),
+                      "artifactName": os.environ["UE_BUILD_ENVIRONMENT_ARTIFACT_NAME"],
+                      "artifactDigest": os.environ["UE_BUILD_ENVIRONMENT_ARTIFACT_DIGEST"],
+                  },
+                  "buildEnvironment": build_environment,
+                  "buildEnvironmentSha256": (
+                      "sha256:" + hashlib.sha256(build_environment_bytes).hexdigest()
+                  ),
               },
               "validationClaim": (
                   "Trusted UE 5.8 BuildPlugin, repository automation, and GUI CEF browser binding/task DOM-event coverage."
@@ -215,6 +269,11 @@ jobs:
 
           output = pathlib.Path("release/metadata/provenance.json")
           output.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+          persisted = json.loads(output.read_text(encoding="utf-8"))
+          if persisted["ueValidation"]["buildEnvironment"] != build_environment:
+              raise RuntimeError(
+                  "Embedded build environment does not equal canonical build-environment.json."
+              )
 
       - name: Create candidate archive and SHA-256
         id: archive
@@ -265,5 +324,5 @@ jobs:
             echo "- Archive: \`$ARCHIVE_NAME\`"
             echo "- Trusted UE validation: $UE_RUN_URL"
             echo
-            echo "This workflow created a short-lived candidate artifact only. It did not create a source archive or publish a GitHub Release. The selected UE validation includes the GUI CEF browser-to-UObject and task DOM-event round trip."
+            echo "This workflow created a short-lived candidate artifact only. It did not create a source archive or publish a GitHub Release. The selected UE validation includes the GUI CEF browser-to-UObject and task DOM-event round trip plus verified UBT build-environment evidence."
           } >> "$GITHUB_STEP_SUMMARY"
