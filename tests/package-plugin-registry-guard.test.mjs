@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, delimiter, dirname, join, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
@@ -43,7 +43,7 @@ const OFFICIAL_LOCKFILE = {
   },
 }
 const WINDOWS_NPM_PROBE_SCRIPT =
-  '@echo off\r\nsetlocal EnableDelayedExpansion\r\n>> "%NPM_PROBE%" echo npm %*\r\nif /I "%*"=="ci" if defined NPM_PROBE_CWD_SHADOW_TEMPLATE (\r\n  copy /Y "%NPM_PROBE_CWD_SHADOW_TEMPLATE%" "npm.cmd" >nul\r\n  if errorlevel 1 exit /b 90\r\n)\r\nif /I "%*"=="--version" (\r\n  echo(!NPM_PROBE_VERSION!\r\n  exit /b 0\r\n)\r\nif /I "%NPM_PROBE_MODE%"=="succeed" (\r\n  if /I "%*"=="run build" (\r\n    set /p BUILD_INPUT=<"build-input.txt"\r\n    if not exist "..\\Web\\dist" mkdir "..\\Web\\dist"\r\n    > "..\\Web\\dist\\index.html" echo generated !BUILD_INPUT!\r\n  )\r\n  exit /b 0\r\n)\r\nexit /b 91\r\n'
+  '@echo off\r\nsetlocal EnableDelayedExpansion\r\n>> "%NPM_PROBE%" echo npm %*\r\n> "%NPM_PATH_PROBE%" echo %PATH%\r\nif /I "%*"=="ci" if defined NPM_PROBE_CWD_SHADOW_TEMPLATE (\r\n  copy /Y "%NPM_PROBE_CWD_SHADOW_TEMPLATE%" "npm.cmd" >nul\r\n  if errorlevel 1 exit /b 90\r\n)\r\nif /I "%*"=="--version" (\r\n  echo(!NPM_PROBE_VERSION!\r\n  exit /b 0\r\n)\r\nif /I "%NPM_PROBE_MODE%"=="succeed" (\r\n  if /I "%*"=="run build" (\r\n    set /p BUILD_INPUT=<"build-input.txt"\r\n    if not exist "..\\Web\\dist" mkdir "..\\Web\\dist"\r\n    > "..\\Web\\dist\\index.html" echo generated !BUILD_INPUT!\r\n  )\r\n  exit /b 0\r\n)\r\nexit /b 91\r\n'
 
 function writeExecutable(path, contents) {
   writeFileSync(path, contents, 'utf8')
@@ -138,6 +138,7 @@ function createFixture(lockfile, shellKind) {
   writeFileSync(join(root, 'Web', 'dist', 'index.html'), 'live worktree sentinel\n', 'utf8')
 
   const npmProbe = join(root, 'npm-probe.txt')
+  const npmPathProbe = join(root, 'npm-path-probe.txt')
   const runUatProbe = join(root, 'runuat-probe.txt')
   const packageDir = join(root, 'package-output')
   let runUat
@@ -163,7 +164,7 @@ function createFixture(lockfile, shellKind) {
     }
     writeExecutable(
       join(probeBin, 'npm'),
-      '#!/usr/bin/env sh\nprintf "npm %s\\n" "$*" >> "$NPM_PROBE"\nif [ "$*" = "--version" ]; then\n  printf "%s\\n" "${NPM_PROBE_VERSION:-}"\n  exit 0\nfi\nif [ "${NPM_PROBE_MODE:-fail}" = "succeed" ]; then\n  if [ "$*" = "run build" ]; then\n    mkdir -p ../Web/dist\n    printf "generated %s\\n" "$(cat build-input.txt)" > ../Web/dist/index.html\n  fi\n  exit 0\nfi\nexit 91\n',
+      '#!/usr/bin/env node\nconst { appendFileSync, mkdirSync, readFileSync, writeFileSync } = require("node:fs")\nconst argumentsText = process.argv.slice(2).join(" ")\nappendFileSync(process.env.NPM_PROBE, `npm ${argumentsText}\\n`)\nwriteFileSync(process.env.NPM_PATH_PROBE, `${process.env.PATH}\\n`)\nif (argumentsText === "--version") {\n  process.stdout.write(`${process.env.NPM_PROBE_VERSION ?? ""}\\n`)\n  process.exit(0)\n}\nif ((process.env.NPM_PROBE_MODE ?? "fail") === "succeed") {\n  if (argumentsText === "run build") {\n    mkdirSync("../Web/dist", { recursive: true })\n    const buildInput = readFileSync("build-input.txt", "utf8").trim()\n    writeFileSync("../Web/dist/index.html", `generated ${buildInput}\\n`)\n  }\n  process.exit(0)\n}\nprocess.exit(91)\n',
     )
     runUat = join(probeBin, 'RunUAT')
     writeExecutable(
@@ -176,8 +177,9 @@ function createFixture(lockfile, shellKind) {
   const originalPath = env.PATH ?? env.Path ?? ''
   delete env.Path
   const inheritedPathEntries = originalPath.split(delimiter).filter((entry) => entry.length > 0)
-  env.PATH = [probeBin, dirname(process.execPath), ...inheritedPathEntries].join(delimiter)
+  env.PATH = [probeBin, dirname(process.execPath), '', ...inheritedPathEntries].join(delimiter)
   env.NPM_PROBE = npmProbe
+  env.NPM_PATH_PROBE = npmPathProbe
   env.NPM_PROBE_MODE = 'fail'
   env.NPM_PROBE_VERSION = '11.16.0'
   env.RUNUAT_PACKAGE_DIR = packageDir
@@ -194,6 +196,7 @@ function createFixture(lockfile, shellKind) {
     frontendDir,
     initialDirectories: topLevelDirectories(tempRoot),
     npmProbe,
+    npmPathProbe,
     packageDir,
     probeBin,
     root,
@@ -269,6 +272,7 @@ function runPackageScript(shellKind, fixture, executable, sourceCommit = fixture
         cwd: fixture.root,
         encoding: 'utf8',
         env: fixture.env,
+        timeout: 180_000,
         windowsHide: true,
       },
     )
@@ -294,6 +298,7 @@ function runPackageScript(shellKind, fixture, executable, sourceCommit = fixture
       cwd: fixture.root,
       encoding: 'utf8',
       env: fixture.env,
+      timeout: 180_000,
       windowsHide: true,
     },
   )
@@ -630,6 +635,22 @@ function assertMaliciousLockStopsBeforeCommands(shellKind, executable) {
   }
 }
 
+function assertNpmReceivedSanitizedPath(fixture) {
+  const childPathEntries = readFileSync(fixture.npmPathProbe, 'utf8')
+    .trimEnd()
+    .split(delimiter)
+  assert.ok(childPathEntries.length > 0, 'npm must receive a non-empty PATH')
+  for (const entry of childPathEntries) {
+    assert.notEqual(entry, '', 'npm must not receive an empty PATH entry')
+    assert.ok(isAbsolute(entry), `npm received a non-absolute PATH entry: ${entry}`)
+  }
+  assert.equal(
+    resolve(childPathEntries[0]),
+    resolve(dirname(process.execPath)),
+    'the active Node.js directory must be first in npm PATH',
+  )
+}
+
 function assertOfficialLockReachesNpmProbe(shellKind, executable) {
   const fixture = createFixture(OFFICIAL_LOCKFILE, shellKind)
   try {
@@ -645,8 +666,169 @@ function assertOfficialLockReachesNpmProbe(shellKind, executable) {
       readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
       ['npm --version', 'npm ci'],
     )
+    assertNpmReceivedSanitizedPath(fixture)
     assert.equal(existsSync(fixture.runUatProbe), false, 'the failing npm probe must stop before RunUAT')
     unlinkSync(fixture.npmProbe)
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertRelativePathEntryStopsBeforeNpm(shellKind, executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, shellKind)
+  fixture.env.PATH = [dirname(process.execPath), 'relative-entry', fixture.env.PATH].join(delimiter)
+  try {
+    const result = runPackageScript(shellKind, fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 1, output)
+    assert.match(output, /PATH must contain only absolute directory entries/u)
+    assert.equal(existsSync(fixture.npmProbe), false, 'npm must not run with a relative PATH entry')
+    assert.equal(
+      existsSync(fixture.npmPathProbe),
+      false,
+      'npm must not receive a PATH containing a relative entry',
+    )
+    assert.equal(
+      existsSync(fixture.runUatProbe),
+      false,
+      'RunUAT must not run with a relative PATH entry',
+    )
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertRepositoryPathEntryStopsBeforeNpm(shellKind, executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, shellKind)
+  fixture.env.PATH = [dirname(process.execPath), fixture.root, fixture.env.PATH].join(delimiter)
+  try {
+    const result = runPackageScript(shellKind, fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 1, output)
+    assert.match(output, /PATH must not include repository-controlled directories/u)
+    assert.equal(
+      existsSync(fixture.npmProbe),
+      false,
+      'npm must not run when PATH explicitly includes the repository',
+    )
+    assert.equal(
+      existsSync(fixture.runUatProbe),
+      false,
+      'RunUAT must not run when PATH explicitly includes the repository',
+    )
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertCanonicalPathSeparatorEntryStopsBeforeNpm(shellKind, executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, shellKind)
+  const separatorTarget = join(fixture.tempRoot, `canonical${delimiter}path`)
+  const separatorAlias = join(fixture.tempRoot, 'canonical-path-alias')
+  mkdirSync(separatorTarget)
+  symlinkSync(
+    separatorTarget,
+    separatorAlias,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  )
+  fixture.env.PATH = [dirname(process.execPath), separatorAlias, fixture.env.PATH].join(delimiter)
+  try {
+    const result = runPackageScript(shellKind, fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 1, output)
+    assert.match(output, /A canonical PATH directory cannot be encoded safely in PATH/u)
+    assert.equal(
+      existsSync(fixture.npmProbe),
+      false,
+      'npm must not run when a canonical PATH directory contains the list separator',
+    )
+    assert.equal(
+      existsSync(fixture.runUatProbe),
+      false,
+      'RunUAT must not run when a canonical PATH directory contains the list separator',
+    )
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertWindowsNpmNodeFallbackCannotUseCwd(executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, 'powershell')
+  const shadowProbe = join(fixture.root, 'tracked-node-cmd-shadow.txt')
+  const fallbackScript = join(fixture.probeBin, 'npm-node-fallback.cjs')
+  fixture.env.NPM_CWD_NODE_SHADOW_PROBE = shadowProbe
+  fixture.env.NPM_NODE_FALLBACK_SCRIPT = fallbackScript
+  writeFileSync(
+    fallbackScript,
+    'const { appendFileSync, writeFileSync } = require("node:fs")\nconst argumentsText = process.argv.slice(2).join(" ")\nappendFileSync(process.env.NPM_PROBE, `npm ${argumentsText}\\n`)\nwriteFileSync(process.env.NPM_PATH_PROBE, `${process.env.PATH}\\n`)\nif (argumentsText === "--version") {\n  process.stdout.write(`${process.env.NPM_PROBE_VERSION}\\n`)\n  process.exit(0)\n}\nprocess.exit(91)\n',
+    'utf8',
+  )
+  writeFileSync(
+    join(fixture.probeBin, 'npm.cmd'),
+    '@echo off\r\nnode "%NPM_NODE_FALLBACK_SCRIPT%" %*\r\nexit /b %ERRORLEVEL%\r\n',
+    'utf8',
+  )
+  writeFileSync(
+    join(fixture.frontendDir, 'node.cmd'),
+    '@echo off\r\n> "%NPM_CWD_NODE_SHADOW_PROBE%" echo tracked frontend node.cmd ran\r\nexit /b 77\r\n',
+    'utf8',
+  )
+  runGit(fixture.root, ['add', '--', 'frontend/node.cmd'])
+  runGit(fixture.root, ['commit', '--quiet', '-m', 'add tracked node fallback shadow'])
+  fixture.sourceCommit = runGit(fixture.root, ['rev-parse', 'HEAD'])
+
+  try {
+    const result = runPackageScript('powershell', fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 1, output)
+    assert.equal(existsSync(shadowProbe), false, 'npm.cmd must not resolve node from its cwd')
+    assert.deepEqual(
+      readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
+      ['npm --version', 'npm ci'],
+    )
+    assertNpmReceivedSanitizedPath(fixture)
+  } finally {
+    cleanupFixture(fixture)
+  }
+}
+
+function assertPosixNpmNodeShebangCannotUseCwd(executable) {
+  const fixture = createFixture(OFFICIAL_LOCKFILE, 'bash')
+  const shadowProbe = join(fixture.root, 'tracked-node-shadow.txt')
+  fixture.env.NPM_CWD_NODE_SHADOW_PROBE = shadowProbe
+  writeExecutable(
+    join(fixture.frontendDir, 'node'),
+    '#!/usr/bin/env sh\nprintf "tracked frontend node ran\\n" > "$NPM_CWD_NODE_SHADOW_PROBE"\nexit 77\n',
+  )
+  runGit(fixture.root, ['add', '--', 'frontend/node'])
+  runGit(fixture.root, ['commit', '--quiet', '-m', 'add tracked node shebang shadow'])
+  fixture.sourceCommit = runGit(fixture.root, ['rev-parse', 'HEAD'])
+
+  try {
+    const result = runPackageScript('bash', fixture, executable)
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+
+    assert.equal(result.error, undefined, output)
+    assert.equal(result.signal, null, output)
+    assert.equal(result.status, 1, output)
+    assert.equal(existsSync(shadowProbe), false, 'npm shebang must not resolve node from its cwd')
+    assert.deepEqual(
+      readFileSync(fixture.npmProbe, 'utf8').trim().split(/\r?\n/u),
+      ['npm --version', 'npm ci'],
+    )
+    assertNpmReceivedSanitizedPath(fixture)
   } finally {
     cleanupFixture(fixture)
   }
@@ -1000,6 +1182,39 @@ test('Bash packaging rejects malformed npm version evidence before install', { s
   assertMalformedNpmVersionStopsBeforeInstall('bash', bashExecutable)
 })
 
+test('Bash packaging rejects a relative PATH entry before npm', { skip: bashSkip }, () => {
+  assert.ok(bashAvailable, 'bash is required in CI')
+  assertRelativePathEntryStopsBeforeNpm('bash', bashExecutable)
+})
+
+test('Bash packaging rejects a repository PATH entry before npm', { skip: bashSkip }, () => {
+  assert.ok(bashAvailable, 'bash is required in CI')
+  assertRepositoryPathEntryStopsBeforeNpm('bash', bashExecutable)
+})
+
+test(
+  'Bash packaging rejects a canonical PATH directory containing the list separator',
+  { skip: bashSkip },
+  () => {
+    assert.ok(bashAvailable, 'bash is required in CI')
+    assertCanonicalPathSeparatorEntryStopsBeforeNpm('bash', bashExecutable)
+  },
+)
+
+test(
+  'Bash npm shebang cannot resolve node from the frontend cwd',
+  {
+    skip:
+      process.platform === 'win32'
+        ? 'POSIX shebang lookup behavior is required'
+        : bashSkip,
+  },
+  () => {
+    assert.ok(bashAvailable, 'bash is required in CI')
+    assertPosixNpmNodeShebangCannotUseCwd(bashExecutable)
+  },
+)
+
 test('Bash packaging cleans staging when RunUAT fails', { skip: bashSkip }, () => {
   assert.ok(bashAvailable, 'bash is required in CI')
   assertRunUatFailureCleansStaging('bash', bashExecutable)
@@ -1068,6 +1283,33 @@ test(
 )
 
 test(
+  'PowerShell packaging rejects a relative PATH entry before npm',
+  { skip: powershellSkip },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertRelativePathEntryStopsBeforeNpm('powershell', powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell packaging rejects a repository PATH entry before npm',
+  { skip: powershellSkip },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertRepositoryPathEntryStopsBeforeNpm('powershell', powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell packaging rejects a canonical PATH directory containing the list separator',
+  { skip: powershellSkip },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertCanonicalPathSeparatorEntryStopsBeforeNpm('powershell', powershellExecutable)
+  },
+)
+
+test(
   'PowerShell packaging ignores a tracked frontend npm.cmd shadow',
   {
     skip:
@@ -1092,6 +1334,20 @@ test(
   () => {
     assert.ok(powershellAvailable, 'PowerShell is required in CI')
     assertLifecycleCreatedNpmCmdCannotHijack(powershellExecutable)
+  },
+)
+
+test(
+  'PowerShell npm.cmd cannot resolve its node fallback from the frontend cwd',
+  {
+    skip:
+      process.platform !== 'win32'
+        ? 'Windows cmd lookup behavior is required'
+        : powershellSkip,
+  },
+  () => {
+    assert.ok(powershellAvailable, 'PowerShell is required in CI')
+    assertWindowsNpmNodeFallbackCannotUseCwd(powershellExecutable)
   },
 )
 

@@ -201,13 +201,17 @@ function runCommand(
   args,
   cwd,
   label,
-  { captureOutput = false, windowsVerbatimArguments = false } = {},
+  {
+    captureOutput = false,
+    environment = process.env,
+    windowsVerbatimArguments = false,
+  } = {},
 ) {
   try {
     return execFileSync(command, args, {
       cwd,
       encoding: captureOutput ? 'utf8' : undefined,
-      env: process.env,
+      env: environment,
       stdio: captureOutput ? ['ignore', 'pipe', 'pipe'] : 'inherit',
       windowsVerbatimArguments,
       windowsHide: true,
@@ -229,32 +233,104 @@ function pathEntries() {
     throw new Error('PATH must be a non-empty list of absolute directories.')
   }
 
-  return value.split(delimiter).map((rawEntry) => {
+  const entries = []
+  for (const rawEntry of value.split(delimiter)) {
     const entry =
       rawEntry.length >= 2 && rawEntry.startsWith('"') && rawEntry.endsWith('"')
         ? rawEntry.slice(1, -1)
         : rawEntry
-    if (entry.length === 0 || entry.includes('\0') || !isAbsolute(entry)) {
-      throw new Error('PATH must contain only non-empty absolute directory entries.')
+    if (entry.length === 0) continue
+    if (entry.includes('\0') || !isAbsolute(entry)) {
+      throw new Error('PATH must contain only absolute directory entries.')
     }
-    return entry
-  })
+    entries.push(entry)
+  }
+  if (entries.length === 0) {
+    throw new Error('PATH must contain at least one absolute directory entry.')
+  }
+  return entries
 }
 
-function assertTrustedLauncherPath(candidate, canonicalCandidate, untrustedRoots) {
+function assertTrustedExecutablePath(candidate, canonicalCandidate, untrustedRoots, label) {
   if (
     untrustedRoots.some(
       (root) =>
         isSameOrDescendant(root, candidate) || isSameOrDescendant(root, canonicalCandidate),
     )
   ) {
-    throw new Error('The npm launcher resolved inside repository-controlled build input.')
+    throw new Error(`${label} resolved inside repository-controlled build input.`)
   }
 }
 
-function resolveNpmExecutable(untrustedRoots) {
+function assertEncodablePathDirectory(directory, label) {
+  if (directory.length === 0 || !isAbsolute(directory) || directory.includes(delimiter)) {
+    throw new Error(`${label} cannot be encoded safely in PATH.`)
+  }
+}
+
+function encodePathDirectories(directories) {
+  for (const directory of directories) {
+    assertEncodablePathDirectory(directory, 'A sanitized PATH directory')
+  }
+  const value = directories.join(delimiter)
+  const roundTrip = value.split(delimiter)
+  if (
+    roundTrip.length !== directories.length ||
+    roundTrip.some(
+      (directory, index) => directory.length === 0 || directory !== directories[index],
+    )
+  ) {
+    throw new Error('Sanitized PATH directories could not be encoded without ambiguity.')
+  }
+  return value
+}
+
+function sanitizedPathDirectories(directories, untrustedRoots) {
+  const sanitized = []
+  const seen = new Set()
+  for (const directory of directories) {
+    if (untrustedRoots.some((root) => isSameOrDescendant(root, directory))) {
+      throw new Error('PATH must not include repository-controlled directories.')
+    }
+
+    let directoryStat
+    try {
+      directoryStat = statSync(directory)
+    } catch (error) {
+      if (isMissingPathError(error)) continue
+      throw new Error('Unable to inspect a directory from PATH.')
+    }
+    if (!directoryStat.isDirectory()) {
+      throw new Error('PATH entries must identify directories.')
+    }
+
+    let canonicalDirectory
+    try {
+      canonicalDirectory = realpathSync.native(directory)
+    } catch {
+      throw new Error('Unable to canonicalize a directory from PATH.')
+    }
+    assertTrustedExecutablePath(
+      directory,
+      canonicalDirectory,
+      untrustedRoots,
+      'A PATH directory',
+    )
+    assertEncodablePathDirectory(canonicalDirectory, 'A canonical PATH directory')
+    const key = comparablePath(canonicalDirectory)
+    if (seen.has(key)) continue
+    seen.add(key)
+    sanitized.push(canonicalDirectory)
+  }
+  if (sanitized.length === 0) {
+    throw new Error('PATH has no usable trusted directories.')
+  }
+  return sanitized
+}
+
+function resolveNpmExecutable(untrustedRoots, directories) {
   const names = process.platform === 'win32' ? ['npm.cmd', 'npm.exe'] : ['npm']
-  for (const directory of pathEntries()) {
+  for (const directory of directories) {
     for (const name of names) {
       const candidate = resolve(directory, name)
       let candidateStat
@@ -277,11 +353,67 @@ function resolveNpmExecutable(untrustedRoots) {
       if (!isAbsolute(canonicalCandidate)) {
         throw new Error('The npm launcher selected from PATH is not absolute.')
       }
-      assertTrustedLauncherPath(candidate, canonicalCandidate, untrustedRoots)
+      assertTrustedExecutablePath(
+        candidate,
+        canonicalCandidate,
+        untrustedRoots,
+        'The npm launcher',
+      )
       return canonicalCandidate
     }
   }
   throw new Error('Unable to resolve an npm launcher from PATH.')
+}
+
+function resolveCurrentNodeExecutable(untrustedRoots) {
+  const candidate = process.execPath
+  let canonicalCandidate
+  try {
+    canonicalCandidate = realpathSync.native(candidate)
+  } catch {
+    throw new Error('Unable to canonicalize the active Node.js executable.')
+  }
+  const expectedName = process.platform === 'win32' ? 'node.exe' : 'node'
+  if (
+    !isAbsolute(canonicalCandidate) ||
+    comparablePath(basename(canonicalCandidate)) !== comparablePath(expectedName) ||
+    !statSync(canonicalCandidate).isFile()
+  ) {
+    throw new Error('The active Node.js executable is invalid.')
+  }
+  assertTrustedExecutablePath(
+    candidate,
+    canonicalCandidate,
+    untrustedRoots,
+    'The active Node.js executable',
+  )
+  return canonicalCandidate
+}
+
+function environmentWithSanitizedPath(directories, nodeExecutable) {
+  const nodeDirectory = dirname(nodeExecutable)
+  assertEncodablePathDirectory(nodeDirectory, 'The active Node.js directory')
+  const childDirectories = [
+    nodeDirectory,
+    ...directories.filter(
+      (directory) => comparablePath(directory) !== comparablePath(nodeDirectory),
+    ),
+  ]
+  const environment = Object.create(null)
+  for (const [name, value] of Object.entries(process.env)) {
+    const normalizedName = name.toLowerCase()
+    if (
+      normalizedName !== 'path' &&
+      normalizedName !== 'nodefaultcurrentdirectoryinexepath'
+    ) {
+      environment[name] = value
+    }
+  }
+  environment.PATH = encodePathDirectories(childDirectories)
+  if (process.platform === 'win32') {
+    environment.NoDefaultCurrentDirectoryInExePath = '1'
+  }
+  return Object.freeze(environment)
 }
 
 function resolveWindowsCommandProcessor() {
@@ -313,15 +445,19 @@ function resolveWindowsCommandProcessor() {
 }
 
 function resolveNpmLauncher(untrustedRoots) {
-  const executable = resolveNpmExecutable(untrustedRoots)
+  const directories = sanitizedPathDirectories(pathEntries(), untrustedRoots)
+  const executable = resolveNpmExecutable(untrustedRoots, directories)
+  const nodeExecutable = resolveCurrentNodeExecutable(untrustedRoots)
+  const environment = environmentWithSanitizedPath(directories, nodeExecutable)
   if (process.platform !== 'win32') {
-    return Object.freeze({ executable, kind: 'direct' })
+    return Object.freeze({ environment, executable, kind: 'direct' })
   }
   if (/["\r\n%&|<>^!]/u.test(executable)) {
     throw new Error('The Windows npm launcher path cannot be quoted safely.')
   }
   return Object.freeze({
     commandProcessor: resolveWindowsCommandProcessor(),
+    environment,
     executable,
     kind: 'windows-command',
   })
@@ -346,10 +482,17 @@ function runNpm(launcher, args, cwd, label, options) {
       ['/d', '/s', '/v:off', '/c', command],
       cwd,
       label,
-      { ...options, windowsVerbatimArguments: true },
+      {
+        ...options,
+        environment: launcher.environment,
+        windowsVerbatimArguments: true,
+      },
     )
   }
-  return runCommand(launcher.executable, args, cwd, label, options)
+  return runCommand(launcher.executable, args, cwd, label, {
+    ...options,
+    environment: launcher.environment,
+  })
 }
 
 function parseSingleLineStableSemver(output, label) {
