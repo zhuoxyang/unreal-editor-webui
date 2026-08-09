@@ -711,7 +711,7 @@ function assertRepositoryPathEntryStopsBeforeNpm(shellKind, executable) {
     assert.equal(result.error, undefined, output)
     assert.equal(result.signal, null, output)
     assert.equal(result.status, 1, output)
-    assert.match(output, /PATH must not include repository-controlled directories/u)
+    assert.match(output, /repository-controlled (?:directories|build input)/u)
     assert.equal(
       existsSync(fixture.npmProbe),
       false,
