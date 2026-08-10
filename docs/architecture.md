@@ -76,9 +76,19 @@ rejected file also falls back but disables automatic preference rewrites until a
 loaded, preventing a transient configuration error from destroying project-specific selections.
 Catalog contents organize already trusted registry metadata and never grant command permissions.
 
+Runtime health uses a separate no-argument `getwebuihealth()` method. Native code classifies the
+validated document session into `packaged`, `loopback_http`, `loopback_https`, or `inactive` and
+stores only that category, never the URL or authority. Its closed response contains only public,
+bounded version strings and fixed capability enums. The React support-report builder then selects
+those decoded fields plus persistence/catalog/registry states and aggregate task counts into a new
+closed object. It never receives a settings object, project identity, catalog/command entry, task
+record, log, or raw error to redact after the fact. One shared pure function derives the panel and
+report `overallStatus` plus ordered fixed `reasonCodes`, so rendered and copied diagnoses cannot
+drift.
+
 ## Resource Bounds
 
-The native bridge rejects command requests above 256 Ki characters, settings above 64 Ki characters, permission policies above 16 Ki characters, registry responses above 4 MiB UTF-8, task responses above 1.5 MiB UTF-8, serialized task details above 4 MiB UTF-8, task identifiers above 128 characters, browser log messages above 16 Ki characters, and task events above 64 KiB UTF-8. The project catalog is read as a single strict UTF-8 byte snapshot capped at 128 KiB and rejected above 16 JSON levels or 10,000 structural nodes before DOM parsing. Terminal responses are fetched through `gettask()` and are never copied into DOM events. Python independently enforces 256 KiB UTF-8 requests, 4 MiB UTF-8 responses, JSON depth 32, 10,000 JSON nodes, and at most 64 active cooperative jobs. Task logs retain at most 80 lines of 2,048 characters, and full retained task responses share a 16 Mi-character budget.
+The native bridge rejects command requests above 256 Ki characters, settings above 64 Ki characters, permission policies above 16 Ki characters, registry responses above 4 MiB UTF-8, task responses above 1.5 MiB UTF-8, serialized task details above 4 MiB UTF-8, task identifiers above 128 characters, browser log messages above 16 Ki characters, and task events above 64 KiB UTF-8. The project catalog is read as a single strict UTF-8 byte snapshot capped at 128 KiB and rejected above 16 JSON levels or 10,000 structural nodes before DOM parsing. The frontend support report is capped at 4 KiB UTF-8. Terminal responses are fetched through `gettask()` and are never copied into DOM events. Python independently enforces 256 KiB UTF-8 requests, 4 MiB UTF-8 responses, JSON depth 32, 10,000 JSON nodes, and at most 64 active cooperative jobs. Task logs retain at most 80 lines of 2,048 characters, and full retained task responses share a 16 Mi-character budget.
 
 ## Validation
 

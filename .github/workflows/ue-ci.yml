@@ -394,6 +394,7 @@ jobs:
             "UnrealEditorWebUI.Bridge.PreflightValidation",
             "UnrealEditorWebUI.Bridge.ResourceLimitsAndProjectContext",
             "UnrealEditorWebUI.Bridge.TimeoutAndRemovalRules",
+            "UnrealEditorWebUI.Bridge.WebUIHealth",
             "UnrealEditorWebUI.Settings.URLAllowlist"
           )
           foreach ($TestPath in $RequiredTests) {

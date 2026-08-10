@@ -79,6 +79,21 @@ export type ProjectContext = {
   storageNamespace: string
 }
 
+export type WebUIDocumentScope = 'packaged' | 'loopback_http' | 'loopback_https' | 'inactive'
+
+export type WebUIPythonRuntime = 'available' | 'unavailable'
+
+export type WebUIHealth = {
+  protocolVersion: 1
+  bridgeProtocolVersion: 1
+  pluginVersion: string
+  engineVersion: string
+  documentScope: WebUIDocumentScope
+  pythonRuntime: WebUIPythonRuntime
+  privilegedConfirmation: 'per_call'
+  taskSessionIsolation: 'document'
+}
+
 export type NativeToolCatalogDiagnosticCode =
   | 'catalog_too_large'
   | 'catalog_read_failed'

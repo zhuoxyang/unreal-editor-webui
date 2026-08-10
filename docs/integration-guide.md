@@ -34,8 +34,57 @@ Unreal exposes `UObject` methods in lowercase. The current bridge methods are:
 - `canceltask(taskId)`
 - `getwebuisettings()`
 - `setwebuisettings(settingsJson)`
+- `getwebuihealth()`
 - `getprojectcontext()`
 - `gettoolcatalog()`
+
+## Web UI Health
+
+`getwebuihealth()` is read-only and takes no arguments. A successful v1 result has exactly these
+fields:
+
+```json
+{
+  "protocolVersion": 1,
+  "bridgeProtocolVersion": 1,
+  "pluginVersion": "0.1.1",
+  "engineVersion": "5.8.0",
+  "documentScope": "packaged",
+  "pythonRuntime": "available",
+  "privilegedConfirmation": "per_call",
+  "taskSessionIsolation": "document"
+}
+```
+
+`documentScope` is only `packaged`, `loopback_http`, `loopback_https`, or `inactive`; it never
+contains a URL, hostname, port, path, query, or fragment. The response also excludes project
+identity, settings, command and catalog data, task/session/request ids, logs, environment values,
+and machine identity. Older plugin builds may not expose the optional method, so clients must treat
+its absence as `unsupported` without breaking other bridge operations.
+
+The bundled frontend generates its copied support report from this strictly decoded result and
+other already-decoded scalar statuses. Do not construct support output by serializing settings,
+project context, command metadata, task records, logs, or generic bridge errors and then attempting
+to redact them.
+
+The report is a closed object whose exact top-level keys are `reportVersion`, `product`, `health`,
+`native`, `bridge`, `project`, `registry`, `catalog`, and `tasks`; `reportVersion` is `1` and
+`product` is `unreal-editor-webui`.
+`health.overallStatus` is one of `unavailable`, `unsupported`, `checking`, `healthy`, `degraded`,
+`unhealthy`, or `error`. Its ordered `reasonCodes` use only these fixed values:
+
+- `health_bridge_unavailable`, `health_method_unavailable`, `health_bridge_checking`,
+  `health_transport_invalid`, or `health_request_failed`;
+- `health_native_context_invalid`, `health_document_inactive`, or `health_python_unavailable`;
+- `health_project_persistence_loading` or `health_project_persistence_unavailable`;
+- `health_registry_loading`, `health_registry_unavailable`, or
+  `health_registry_modules_rejected`;
+- `health_catalog_loading` or `health_catalog_fallback`.
+
+The `catalog.diagnosticCode` retains the existing bounded catalog reason when fallback is active.
+The panel maps every reason to repository-owned fixed text; native/parser exception messages never
+enter the report or DOM. A known unhealthy or degraded condition takes precedence over pending
+checks; `checking` is used only when every active reason is a loading state.
 
 ## Request Envelope
 

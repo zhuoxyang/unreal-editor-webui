@@ -230,6 +230,7 @@ test('custom host catalog evidence reaches native automation and the packaged Re
   assert.ok(STEPS.indexOf(host) < STEPS.indexOf(automation))
   assert.ok(STEPS.indexOf(automation) < STEPS.indexOf(gui))
   assert.match(automation.run, /"UnrealEditorWebUI\.Bridge\.ProjectToolCatalog"/u)
+  assert.match(automation.run, /"UnrealEditorWebUI\.Bridge\.WebUIHealth"/u)
 
   assert.match(
     BROWSER_TEST_SOURCE,
@@ -245,6 +246,139 @@ test('custom host catalog evidence reaches native automation and the packaged Re
     "command:'system.ping'",
   ])
   assert.doesNotMatch(BROWSER_TEST_SOURCE, /gettoolcatalog/iu)
+})
+
+test('packaged GUI proves the closed health report through product DOM without leaking runtime evidence', () => {
+  const guiSteps = STEPS.filter(
+    (step) => step.name === 'Run GUI CEF binding and task event test',
+  )
+  assert.equal(guiSteps.length, 1, 'health evidence must reuse the existing GUI editor launch')
+  assert.equal(
+    (guiSteps[0].run.match(/^\s*& \$Editor\b.*$/gmu) || []).length,
+    1,
+    'the GUI evidence step must launch the editor exactly once',
+  )
+
+  assertOrdered(BROWSER_TEST_SOURCE, [
+    "function healthPanel(){",
+    "document.querySelector('[data-health-panel-toggle]')",
+    'toggle.click()',
+    "document.querySelector('[data-health-overall-status]')",
+    "getAttribute('data-health-overall-status')!=='healthy'",
+    'function supportReportText(panel,afterTask){',
+    "panel.querySelector('[data-support-report-generate]')",
+    'generate.click()',
+    "panel.querySelector('textarea[data-support-report-preview]')",
+  ])
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /if\(afterTask&&text===state\.initialReportText\)\{generate\.click\(\);phase\('support-report-refresh'\);return null;\}/u,
+    'post-task generation must retry if React had not published the aggregate count yet',
+  )
+  assert.doesNotMatch(
+    BROWSER_TEST_SOURCE,
+    /bridge\(\)\.(?:getwebuihealth|getprojectcontext|gettoolcatalog|getsupportreport)\b/iu,
+    'CEF must observe the product UI instead of calling health/report bridge methods directly',
+  )
+  assert.doesNotMatch(
+    BROWSER_TEST_SOURCE,
+    /\.status\.ready|Bridge ready/iu,
+    'CEF must use the versioned product health DOM instead of the removed binary bridge badge',
+  )
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /allowed\.indexOf\(reason\)!==-1\?reason:'browser_assertion'/u,
+    'browser failures must collapse unknown exception text to a fixed reason code',
+  )
+  assert.match(BROWSER_TEST_SOURCE, /var passTitle='UEWEBUI_E2E_PASS';/u)
+  assert.match(BROWSER_TEST_SOURCE, /var failTitle='UEWEBUI_E2E_FAIL:';/u)
+  assert.match(BROWSER_TEST_SOURCE, /var waitTitle='UEWEBUI_E2E_WAIT:';/u)
+  assert.doesNotMatch(
+    BROWSER_TEST_SOURCE,
+    /(?:passTitle|failTitle|waitTitle)=[^;]*nonce/u,
+    'browser result and phase titles must not serialize the task nonce',
+  )
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /IsKnownBrowserFailureReason\(CandidateReason\)[\s\S]*FString\(TEXT\("browser_assertion"\)\)/u,
+    'native test output must independently allowlist browser failure reasons',
+  )
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /Timed out waiting for the CEF round trip\. Loaded=%s phase=%s\./u,
+    'timeouts may report only a fixed phase and loaded boolean',
+  )
+  assert.doesNotMatch(
+    BROWSER_TEST_SOURCE,
+    /BrowserWidget->GetUrl\(\)|URL='%s'|title='%s'/u,
+    'CEF failure artifacts must not contain the loaded URL, title, or embedded nonce',
+  )
+
+  const validateStart = BROWSER_TEST_SOURCE.indexOf('function validateSupportReport(text,afterTask){')
+  const validateEnd = BROWSER_TEST_SOURCE.indexOf('function healthPanel(){', validateStart)
+  assert.ok(validateStart >= 0 && validateEnd > validateStart)
+  const validateSource = BROWSER_TEST_SOURCE.slice(validateStart, validateEnd)
+  assertOrdered(validateSource, [
+    "exactKeys(report,['reportVersion','product','health','native','bridge','project','registry','catalog','tasks'],'report')",
+    "report.reportVersion!==1||report.product!=='unreal-editor-webui'",
+    "exactKeys(report.health,['overallStatus','reasonCodes'],'health')",
+    "report.health.overallStatus!=='healthy'||!Array.isArray(report.health.reasonCodes)",
+    "report.health.reasonCodes.length!==0",
+    "exactKeys(report.native,['protocolVersion','bridgeProtocolVersion','pluginVersion','engineVersion'",
+    'report.native.protocolVersion!==1||report.native.bridgeProtocolVersion!==1',
+    "report.native.documentScope!=='packaged'",
+    "report.native.pythonRuntime!=='available'",
+    "report.native.privilegedConfirmation!=='per_call'",
+    "report.native.taskSessionIsolation!=='document'",
+    "report.bridge.lifecycle!=='ready'||report.bridge.diagnosticCode!==null",
+    "report.project.persistence!=='enabled'",
+    "report.registry.status!=='ready'",
+    'report.registry.availableCount<1||report.registry.loadErrorCount!==0',
+    "report.catalog.status!=='ready'||report.catalog.source!=='project'",
+    'report.catalog.schemaVersion!==1||report.catalog.diagnosticCode!==null',
+    "exactKeys(report.tasks,['queued','running','completed','failed','cancelled','timedOut','total'],'tasks')",
+    "excluded(text,catalogMarker,'catalog_marker')",
+    "excluded(text,'HostProject','project_name')",
+    "excluded(text,window.location.href,'page_url')",
+    "excluded(text,window.location.pathname,'page_path')",
+    "excluded(text,nonce,'task_nonce')",
+    "excluded(text,state.taskId,'task_id')",
+    "excluded(text,state.taskResponseJson,'task_response')",
+    "excluded(text,'cef-e2e','task_payload')",
+    "excluded(text,'system.ping','task_command')",
+    "excluded(text,'pong','task_result')",
+  ])
+
+  const verifyStart = BROWSER_TEST_SOURCE.indexOf('async function verify(){')
+  const startStart = BROWSER_TEST_SOURCE.indexOf('async function start(){', verifyStart)
+  const startEnd = BROWSER_TEST_SOURCE.indexOf(
+    'window.setInterval(function(){void start();void verify();},100)',
+    startStart,
+  )
+  assert.ok(verifyStart >= 0 && startStart > verifyStart && startEnd > startStart)
+  const verifySource = BROWSER_TEST_SOURCE.slice(verifyStart, startStart)
+  const startSource = BROWSER_TEST_SOURCE.slice(startStart, startEnd)
+
+  assertOrdered(startSource, [
+    "if(!projectCatalogReady()){phase('tool-catalog');state.readySince=0;return;}",
+    'var panel=healthPanel()',
+    'supportReportText(panel,false)',
+    'validateSupportReport(initialReport,false)',
+    "command:'system.ping'",
+  ])
+  assertOrdered(verifySource, [
+    'state.taskResponseJson=String(taskEnvelope.result.responseJson',
+    'state.taskVerified=true',
+    'supportReportText(panel,true)',
+    'validateSupportReport(refreshedReport,true)',
+    `document.querySelector('[data-task-id=\\"'+state.taskId+'\\"]')`,
+    'renderedCompletedEvent()',
+    'document.title=passTitle',
+  ])
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /healthy native\/project\/catalog\/registry product state, allowlisted support-report DOM/iu,
+  )
 })
 
 test('UE 5.8 editor launches isolate CI from user-global Python startup scripts', () => {

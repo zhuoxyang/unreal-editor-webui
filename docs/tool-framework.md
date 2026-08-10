@@ -67,6 +67,12 @@ Favorites or tabs whose commands are temporarily unavailable are skipped in the 
 not deleted from storage. Catalog files are readable by the trusted embedded page, so never place
 tokens, credentials, absolute machine paths, executable code, HTML, SVG, or remote URLs in them.
 
+The rack header's health panel reports whether catalog loading and command discovery are ready,
+loading, or using a fallback. Its copyable support report contains only the catalog source/status,
+schema version, fixed diagnostic code, command counts, and shared fixed health reason codes.
+Catalog ids, labels, descriptions, defaults, command names, module names, and decoder errors are
+deliberately outside that report.
+
 ## Prototype Policy
 
 Local exploratory mockups are intentionally ignored by git:

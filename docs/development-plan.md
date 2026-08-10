@@ -25,6 +25,8 @@ The repository now contains a minimal Unreal Engine editor plugin starter. The a
 - Recent payload reuse and schema-default presets in the command console.
 - Strict schema-v1 runtime project/stage/category catalog loading from a fixed project Config path,
   with bundled fallback and preference reconciliation.
+- Versioned native Web UI health context plus a privacy-safe, allowlisted support report in the
+  workspace header.
 - Clean package script that stages the plugin without local frontend dependencies.
 - Starter asset commands for selected Content Browser assets and Asset Registry path listing.
 - Static `Web/index.html` smoke-test UI.
@@ -34,7 +36,8 @@ The repository now contains a minimal Unreal Engine editor plugin starter. The a
 
 1. Add more command-specific result renderers for validation reports.
 2. Expand the asset-tool demo with validation and batch operations.
-3. Add optional validation/status widgets for Web UI startup and bridge safety options.
+3. Expand health diagnostics only through new fixed enums and packaged evidence; do not add raw
+   environment or log export.
 
 ## Design Direction
 

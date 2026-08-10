@@ -6,7 +6,9 @@
 #include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformMisc.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
 #include "Misc/Paths.h"
@@ -77,6 +79,25 @@ namespace
         return FString();
     }
 
+    FString GetResponseErrorMessage(const FString& ResponseJson)
+    {
+        const TSharedPtr<FJsonObject> Response = ParseJsonObject(ResponseJson);
+        if (!Response.IsValid())
+        {
+            return FString();
+        }
+
+        const TSharedPtr<FJsonObject>* Error = nullptr;
+        if (Response->TryGetObjectField(TEXT("error"), Error) && Error != nullptr && Error->IsValid())
+        {
+            FString Message;
+            (*Error)->TryGetStringField(TEXT("message"), Message);
+            return Message;
+        }
+
+        return FString();
+    }
+
     FString GetCatalogDiagnosticCode(const TSharedPtr<FJsonObject>& Result)
     {
         if (!Result.IsValid())
@@ -106,6 +127,60 @@ namespace
             && Result->HasField(TEXT("source"))
             && Result->HasField(TEXT("catalog"))
             && Result->HasField(TEXT("diagnosticCode"));
+    }
+
+    bool HasExactWebUIHealthResultKeys(const TSharedPtr<FJsonObject>& Result)
+    {
+        return Result.IsValid()
+            && Result->Values.Num() == 8
+            && Result->HasField(TEXT("protocolVersion"))
+            && Result->HasField(TEXT("bridgeProtocolVersion"))
+            && Result->HasField(TEXT("pluginVersion"))
+            && Result->HasField(TEXT("engineVersion"))
+            && Result->HasField(TEXT("documentScope"))
+            && Result->HasField(TEXT("pythonRuntime"))
+            && Result->HasField(TEXT("privilegedConfirmation"))
+            && Result->HasField(TEXT("taskSessionIsolation"));
+    }
+
+    bool IsCanonicalPluginVersion(const FString& PluginVersion)
+    {
+        if (PluginVersion.IsEmpty() || PluginVersion.Len() > 64)
+        {
+            return false;
+        }
+
+        bool bRequiresAlphanumeric = true;
+        for (const TCHAR Character : PluginVersion)
+        {
+            const bool bIsAsciiDigit = Character >= TEXT('0') && Character <= TEXT('9');
+            const bool bIsAsciiUpper = Character >= TEXT('A') && Character <= TEXT('Z');
+            const bool bIsAsciiLower = Character >= TEXT('a') && Character <= TEXT('z');
+            if (bIsAsciiDigit || bIsAsciiUpper || bIsAsciiLower)
+            {
+                bRequiresAlphanumeric = false;
+            }
+            else if ((Character == TEXT('.') || Character == TEXT('-'))
+                && !bRequiresAlphanumeric)
+            {
+                bRequiresAlphanumeric = true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return !bRequiresAlphanumeric;
+    }
+
+    FString MakeFileURL(const FString& Path)
+    {
+        const FString NormalizedPath = Path.Replace(TEXT("\\"), TEXT("/"));
+#if PLATFORM_WINDOWS
+        return FString::Printf(TEXT("file:///%s"), *NormalizedPath);
+#else
+        return FString::Printf(TEXT("file://%s"), *NormalizedPath);
+#endif
     }
 
     FString GetTaskStatus(UUnrealEditorWebUIBridge* Bridge, const FString& TaskId)
@@ -957,6 +1032,164 @@ bool FUnrealEditorWebUIBridgeDocumentSessionTest::RunTest(const FString& Paramet
     const TArray<TSharedPtr<FJsonValue>>* VisibleTasks = nullptr;
     TestTrue(TEXT("Current session task list is valid"), EmptyList.IsValid() && EmptyList->TryGetArrayField(TEXT("tasks"), VisibleTasks));
     TestEqual(TEXT("Earlier-session tasks are not listed"), VisibleTasks == nullptr ? -1 : VisibleTasks->Num(), 0);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIBridgeHealthTest,
+    "UnrealEditorWebUI.Bridge.WebUIHealth",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIBridgeHealthTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    const FString ProductionResponse = Bridge->GetWebUIHealth();
+    const TSharedPtr<FJsonObject> ProductionEnvelope = ParseJsonObject(ProductionResponse);
+    const TSharedPtr<FJsonObject> ProductionResult = ParseResultObject(ProductionResponse);
+    TestTrue(TEXT("The production health response is a JSON object"), ProductionEnvelope.IsValid());
+    TestTrue(TEXT("The production health response has a null request id"), IsNullJsonField(ProductionEnvelope, TEXT("id")));
+    TestTrue(TEXT("The production health response has the exact result shape"), HasExactWebUIHealthResultKeys(ProductionResult));
+    if (!ProductionResult.IsValid())
+    {
+        return false;
+    }
+
+    TestEqual(TEXT("Health protocol version is 1"), ProductionResult->GetIntegerField(TEXT("protocolVersion")), 1);
+    TestEqual(TEXT("Bridge protocol version is 1"), ProductionResult->GetIntegerField(TEXT("bridgeProtocolVersion")), 1);
+    const FString PluginVersion = ProductionResult->GetStringField(TEXT("pluginVersion"));
+    TestTrue(TEXT("The descriptor version is bounded and canonical ASCII"), IsCanonicalPluginVersion(PluginVersion));
+
+    const FEngineVersion& CurrentEngineVersion = FEngineVersion::Current();
+    const FString ExpectedEngineVersion = FString::Printf(
+        TEXT("%d.%d.%d"),
+        static_cast<int32>(CurrentEngineVersion.GetMajor()),
+        static_cast<int32>(CurrentEngineVersion.GetMinor()),
+        static_cast<int32>(CurrentEngineVersion.GetPatch()));
+    TestEqual(
+        TEXT("The engine version contains only major.minor.patch"),
+        ProductionResult->GetStringField(TEXT("engineVersion")),
+        ExpectedEngineVersion);
+    TestEqual(
+        TEXT("A new bridge starts with an inactive document scope"),
+        ProductionResult->GetStringField(TEXT("documentScope")),
+        FString(TEXT("inactive")));
+    const FString ProductionPythonRuntime = ProductionResult->GetStringField(TEXT("pythonRuntime"));
+    TestTrue(
+        TEXT("The Python probe returns only its documented enum"),
+        ProductionPythonRuntime == TEXT("available") || ProductionPythonRuntime == TEXT("unavailable"));
+    TestEqual(
+        TEXT("Privileged confirmation is per call"),
+        ProductionResult->GetStringField(TEXT("privilegedConfirmation")),
+        FString(TEXT("per_call")));
+    TestEqual(
+        TEXT("Task sessions are isolated per document"),
+        ProductionResult->GetStringField(TEXT("taskSessionIsolation")),
+        FString(TEXT("document")));
+
+    const auto TestScope = [this, Bridge](
+        const FString& SecurityScope,
+        const FString& ExpectedScope,
+        const FString& Description)
+    {
+        Bridge->BeginDocumentSession(SecurityScope);
+        const FString Response = Bridge->TestOnlyBuildWebUIHealthResponse(TEXT("0.1.1"), true);
+        const TSharedPtr<FJsonObject> Result = ParseResultObject(Response);
+        TestTrue(*FString::Printf(TEXT("%s returns a health result"), *Description), Result.IsValid());
+        if (Result.IsValid())
+        {
+            TestEqual(
+                *FString::Printf(TEXT("%s stores only the expected classification"), *Description),
+                Result->GetStringField(TEXT("documentScope")),
+                ExpectedScope);
+            TestTrue(
+                *FString::Printf(TEXT("%s keeps the exact health shape"), *Description),
+                HasExactWebUIHealthResultKeys(Result));
+        }
+        return Response;
+    };
+
+    TestScope(TEXT("about:blank"), TEXT("inactive"), TEXT("about:blank"));
+    TestScope(TEXT("module-shutdown"), TEXT("inactive"), TEXT("module shutdown"));
+    TestScope(TEXT("tab-replaced"), TEXT("inactive"), TEXT("tab replacement"));
+    TestScope(TEXT("https://example.com/private"), TEXT("inactive"), TEXT("a rejected remote URL"));
+    TestScope(TEXT("http://localhost:5173/tools"), TEXT("loopback_http"), TEXT("an HTTP loopback URL"));
+    TestScope(TEXT("https://127.0.0.1:443/tools"), TEXT("loopback_https"), TEXT("an HTTPS loopback URL"));
+
+    const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
+    if (TestTrue(TEXT("The plugin descriptor is available for packaged scope coverage"), Plugin.IsValid()))
+    {
+        const FString PackagedPath = FPaths::ConvertRelativePathToFull(
+            FPaths::Combine(Plugin->GetBaseDir(), TEXT("Web/index.html")));
+        const FString PackagedURL = MakeFileURL(PackagedPath);
+        const FString PackagedResponse = TestScope(PackagedURL, TEXT("packaged"), TEXT("a packaged Web file URL"));
+        TestFalse(TEXT("The packaged health response never returns the source path"), PackagedResponse.Contains(TEXT("index.html")));
+    }
+
+    const FString URLCanary = TEXT("health_redaction_canary_7f3d");
+    const FString CanaryURL = FString::Printf(
+        TEXT("http://localhost:5173/tools?supportSecret=%s"),
+        *URLCanary);
+    const FString CanaryResponse = TestScope(CanaryURL, TEXT("loopback_http"), TEXT("a URL containing a redaction canary"));
+    TestFalse(TEXT("The health response never returns a raw URL canary"), CanaryResponse.Contains(URLCanary));
+    TestFalse(TEXT("The health response never returns the raw loopback authority"), CanaryResponse.Contains(TEXT("localhost")));
+
+    const TSharedPtr<FJsonObject> AvailablePythonResult = ParseResultObject(
+        Bridge->TestOnlyBuildWebUIHealthResponse(TEXT("0.1.1"), true));
+    const TSharedPtr<FJsonObject> UnavailablePythonResult = ParseResultObject(
+        Bridge->TestOnlyBuildWebUIHealthResponse(TEXT("0.1.1"), false));
+    TestEqual(
+        TEXT("An available Python pointer maps to the available enum"),
+        AvailablePythonResult.IsValid() ? AvailablePythonResult->GetStringField(TEXT("pythonRuntime")) : FString(),
+        FString(TEXT("available")));
+    TestEqual(
+        TEXT("A missing Python pointer maps to the unavailable enum"),
+        UnavailablePythonResult.IsValid() ? UnavailablePythonResult->GetStringField(TEXT("pythonRuntime")) : FString(),
+        FString(TEXT("unavailable")));
+
+    const FString ExactVersionLimit = FString::ChrN(64, TEXT('A'));
+    const TSharedPtr<FJsonObject> ExactVersionResult = ParseResultObject(
+        Bridge->TestOnlyBuildWebUIHealthResponse(ExactVersionLimit, true));
+    TestEqual(
+        TEXT("A canonical plugin version exactly at 64 characters is accepted"),
+        ExactVersionResult.IsValid() ? ExactVersionResult->GetStringField(TEXT("pluginVersion")) : FString(),
+        ExactVersionLimit);
+
+    const TArray<FString> InvalidPluginVersions = {
+        FString(),
+        FString::ChrN(65, TEXT('A')),
+        TEXT("0.1.1+build"),
+        TEXT("0.1_1"),
+        TEXT("0.1.1/secret"),
+        TEXT(".0.1.1"),
+        TEXT("0.1.1-"),
+        TEXT("0..1"),
+        TEXT("0.-1"),
+        TEXT("0.1.1-\u79C1\u5BC6"),
+    };
+    for (int32 Index = 0; Index < InvalidPluginVersions.Num(); ++Index)
+    {
+        const FString InvalidResponse = Bridge->TestOnlyBuildWebUIHealthResponse(
+            InvalidPluginVersions[Index],
+            true);
+        TestEqual(
+            *FString::Printf(TEXT("Invalid plugin version %d returns the fixed error code"), Index),
+            GetResponseErrorCode(InvalidResponse),
+            FString(TEXT("health_unavailable")));
+        TestEqual(
+            *FString::Printf(TEXT("Invalid plugin version %d returns the fixed error message"), Index),
+            GetResponseErrorMessage(InvalidResponse),
+            FString(TEXT("WebUI health is unavailable.")));
+    }
+
+    const FString VersionCanary = TEXT("0.1.1-PRIVATE_CANARY");
+    const FString InvalidCanaryResponse = Bridge->TestOnlyBuildWebUIHealthResponse(VersionCanary, true);
+    TestEqual(
+        TEXT("A non-canonical canary version fails closed"),
+        GetResponseErrorCode(InvalidCanaryResponse),
+        FString(TEXT("health_unavailable")));
+    TestFalse(TEXT("The fixed health error redacts the invalid descriptor value"), InvalidCanaryResponse.Contains(VersionCanary));
     return true;
 }
 

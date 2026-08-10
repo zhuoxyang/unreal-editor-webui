@@ -9,6 +9,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/App.h"
 #include "Misc/Base64.h"
+#include "Misc/EngineVersion.h"
 #include "Misc/Guid.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
@@ -161,6 +162,100 @@ namespace
             RequestId,
             TEXT("response_too_large"),
             TEXT("Serialized bridge response exceeds the maximum size of 4 MiB UTF-8."));
+    }
+
+    bool IsCanonicalPluginVersion(const FString& PluginVersion)
+    {
+        if (PluginVersion.IsEmpty() || PluginVersion.Len() > 64)
+        {
+            return false;
+        }
+
+        bool bRequiresAlphanumeric = true;
+        for (const TCHAR Character : PluginVersion)
+        {
+            const bool bIsAsciiDigit = Character >= TEXT('0') && Character <= TEXT('9');
+            const bool bIsAsciiUpper = Character >= TEXT('A') && Character <= TEXT('Z');
+            const bool bIsAsciiLower = Character >= TEXT('a') && Character <= TEXT('z');
+            if (bIsAsciiDigit || bIsAsciiUpper || bIsAsciiLower)
+            {
+                bRequiresAlphanumeric = false;
+            }
+            else if ((Character == TEXT('.') || Character == TEXT('-'))
+                && !bRequiresAlphanumeric)
+            {
+                bRequiresAlphanumeric = true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return !bRequiresAlphanumeric;
+    }
+
+    bool IsKnownDocumentScope(const FString& DocumentScope)
+    {
+        return DocumentScope == TEXT("packaged")
+            || DocumentScope == TEXT("loopback_http")
+            || DocumentScope == TEXT("loopback_https")
+            || DocumentScope == TEXT("inactive");
+    }
+
+    FString ClassifyDocumentScope(const FString& SecurityScope)
+    {
+        FString AllowlistError;
+        if (!UnrealEditorWebUISettings::IsBridgeURLAllowed(SecurityScope, AllowlistError))
+        {
+            return TEXT("inactive");
+        }
+
+        FString NormalizedScope = SecurityScope;
+        NormalizedScope.TrimStartAndEndInline();
+        const FString LowerScope = NormalizedScope.ToLower();
+        if (LowerScope.StartsWith(TEXT("file://")))
+        {
+            return TEXT("packaged");
+        }
+        if (LowerScope.StartsWith(TEXT("http://")))
+        {
+            return TEXT("loopback_http");
+        }
+        if (LowerScope.StartsWith(TEXT("https://")))
+        {
+            return TEXT("loopback_https");
+        }
+        return TEXT("inactive");
+    }
+
+    FString BuildWebUIHealthResponse(
+        const FString& PluginVersion,
+        const FString& EngineVersion,
+        const FString& DocumentScope,
+        bool bPythonAvailable)
+    {
+        if (!IsCanonicalPluginVersion(PluginVersion)
+            || EngineVersion.IsEmpty()
+            || !IsKnownDocumentScope(DocumentScope))
+        {
+            return MakeErrorResponse(
+                FString(),
+                TEXT("health_unavailable"),
+                TEXT("WebUI health is unavailable."));
+        }
+
+        const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetNumberField(TEXT("protocolVersion"), 1);
+        Result->SetNumberField(TEXT("bridgeProtocolVersion"), 1);
+        Result->SetStringField(TEXT("pluginVersion"), PluginVersion);
+        Result->SetStringField(TEXT("engineVersion"), EngineVersion);
+        Result->SetStringField(TEXT("documentScope"), DocumentScope);
+        Result->SetStringField(
+            TEXT("pythonRuntime"),
+            bPythonAvailable ? TEXT("available") : TEXT("unavailable"));
+        Result->SetStringField(TEXT("privilegedConfirmation"), TEXT("per_call"));
+        Result->SetStringField(TEXT("taskSessionIsolation"), TEXT("document"));
+        return MakeBoundedSuccessResponse(FString(), Result);
     }
 
     TSharedRef<FJsonObject> MakeToolCatalogResult(
@@ -881,12 +976,13 @@ void UUnrealEditorWebUIBridge::SetEventDispatcher(TFunction<void(const FString&)
 
 void UUnrealEditorWebUIBridge::BeginDocumentSession(const FString& SecurityScope)
 {
-    static_cast<void>(SecurityScope);
+    const FString DocumentScope = ClassifyDocumentScope(SecurityScope);
     bool bHadCooperativeTasks = false;
 
     {
         FScopeLock Lock(&TasksCriticalSection);
         CurrentDocumentSessionId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
+        CurrentDocumentScope = DocumentScope;
 
         for (const TPair<FString, FUnrealEditorWebUITask>& Pair : Tasks)
         {
@@ -977,6 +1073,29 @@ FString UUnrealEditorWebUIBridge::TestOnlyBuildProjectStorageNamespace(
     const FString& ProjectIdentity) const
 {
     return BuildProjectStorageNamespace(ProjectIdentity);
+}
+
+FString UUnrealEditorWebUIBridge::TestOnlyBuildWebUIHealthResponse(
+    const FString& PluginVersion,
+    bool bPythonAvailable) const
+{
+    FString DocumentScope;
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        DocumentScope = CurrentDocumentScope;
+    }
+
+    const FEngineVersion& EngineVersion = FEngineVersion::Current();
+    const FString CanonicalEngineVersion = FString::Printf(
+        TEXT("%d.%d.%d"),
+        static_cast<int32>(EngineVersion.GetMajor()),
+        static_cast<int32>(EngineVersion.GetMinor()),
+        static_cast<int32>(EngineVersion.GetPatch()));
+    return BuildWebUIHealthResponse(
+        PluginVersion,
+        CanonicalEngineVersion,
+        DocumentScope,
+        bPythonAvailable);
 }
 
 FString UUnrealEditorWebUIBridge::TestOnlyGetToolCatalogFromProjectConfigDir(
@@ -1432,6 +1551,36 @@ FString UUnrealEditorWebUIBridge::CancelTask(const FString& TaskId)
 FString UUnrealEditorWebUIBridge::GetWebUISettings() const
 {
     return MakeBoundedSuccessResponse(FString(), ParseJsonObjectOrEmpty(UnrealEditorWebUISettings::ToJson(UnrealEditorWebUISettings::Load())));
+}
+
+FString UUnrealEditorWebUIBridge::GetWebUIHealth() const
+{
+    const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealEditorWebUI"));
+    if (!Plugin.IsValid())
+    {
+        return MakeErrorResponse(
+            FString(),
+            TEXT("health_unavailable"),
+            TEXT("WebUI health is unavailable."));
+    }
+
+    FString DocumentScope;
+    {
+        FScopeLock Lock(&TasksCriticalSection);
+        DocumentScope = CurrentDocumentScope;
+    }
+
+    const FEngineVersion& EngineVersion = FEngineVersion::Current();
+    const FString CanonicalEngineVersion = FString::Printf(
+        TEXT("%d.%d.%d"),
+        static_cast<int32>(EngineVersion.GetMajor()),
+        static_cast<int32>(EngineVersion.GetMinor()),
+        static_cast<int32>(EngineVersion.GetPatch()));
+    return BuildWebUIHealthResponse(
+        Plugin->GetDescriptor().VersionName,
+        CanonicalEngineVersion,
+        DocumentScope,
+        IPythonScriptPlugin::Get() != nullptr);
 }
 
 FString UUnrealEditorWebUIBridge::GetProjectContext() const

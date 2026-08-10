@@ -67,6 +67,9 @@ public:
     FString SetWebUISettings(const FString& SettingsJson);
 
     UFUNCTION()
+    FString GetWebUIHealth() const;
+
+    UFUNCTION()
     FString GetProjectContext() const;
 
     UFUNCTION()
@@ -87,6 +90,9 @@ public:
         const FString& RequestId,
         const FString& PreflightJson) const;
     FString TestOnlyBuildProjectStorageNamespace(const FString& ProjectIdentity) const;
+    FString TestOnlyBuildWebUIHealthResponse(
+        const FString& PluginVersion,
+        bool bPythonAvailable) const;
     FString TestOnlyGetToolCatalogFromProjectConfigDir(const FString& ProjectConfigDir) const;
     void TestOnlyCompleteTaskWithResponse(
         const FString& TaskId,
@@ -143,6 +149,7 @@ private:
     mutable FCriticalSection TasksCriticalSection;
     TMap<FString, FUnrealEditorWebUITask> Tasks;
     FString CurrentDocumentSessionId = TEXT("initial-session");
+    FString CurrentDocumentScope = TEXT("inactive");
     TFunction<void(const FString&)> EventDispatcher;
     FTSTicker::FDelegateHandle CooperativeTaskTickerHandle;
 #if WITH_DEV_AUTOMATION_TESTS
