@@ -78,11 +78,7 @@ jobs:
             exit 1
           fi
 
-          descriptor_version="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync('UnrealEditorWebUI.uplugin','utf8')); process.stdout.write(value.VersionName ?? '')")"
-          if [[ "v$descriptor_version" != "$release_tag" ]]; then
-            echo "Descriptor VersionName '$descriptor_version' does not match release tag '$release_tag'." >&2
-            exit 1
-          fi
+          node scripts/validate-plugin-version.mjs --tag "$release_tag"
 
           echo "release_commit=$release_commit" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
@@ -176,11 +172,9 @@ jobs:
             exit 1
           fi
 
-          package_version="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync('trusted-package/UnrealEditorWebUI.uplugin','utf8')); process.stdout.write(value.VersionName ?? '')")"
-          if [[ "v$package_version" != "$RELEASE_TAG" ]]; then
-            echo "Packaged descriptor version '$package_version' does not match '$RELEASE_TAG'." >&2
-            exit 1
-          fi
+          node scripts/validate-plugin-version.mjs \
+            --tag "$RELEASE_TAG" \
+            --compare-descriptor trusted-package/UnrealEditorWebUI.uplugin
 
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json

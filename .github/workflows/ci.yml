@@ -148,6 +148,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Node.js
@@ -164,6 +165,11 @@ jobs:
 
       - name: Install repository tooling dependencies
         run: npm ci --ignore-scripts --include=dev --no-audit --no-fund
+
+      - name: Test plugin version metadata contracts
+        run: |
+          node --test tests/validate-plugin-version.test.mjs
+          node scripts/validate-plugin-version.mjs
 
       - name: Validate plugin descriptor and module wiring
         shell: python

@@ -46,7 +46,7 @@ The source checkout is used for version checks and dependency metadata only. It 
 
 Preferred tag flow:
 
-1. Update `UnrealEditorWebUI.uplugin` so `VersionName` matches the intended semantic version, then commit every final source and documentation change.
+1. Update `UnrealEditorWebUI.uplugin` so `VersionName` matches the intended semantic version and the positive integer `Version` is greater than every earlier release. `scripts/validate-plugin-version.mjs` checks canonical semantic versions, tag/descriptor agreement, and monotonic metadata across all reachable `v*` tags. Then commit every final source and documentation change.
 2. Run the protected UE 5.8 `UE CI` workflow for that unchanged commit and wait for the complete UE job, including GUI CEF automation, to succeed.
 3. Create and push the matching `v...` tag pointing to that exact validated commit.
 4. Review the `Release Candidate` summary, provenance, SBOM, archive contents, and SHA-256 before any external promotion.
