@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import { parse } from 'yaml'
 
 import {
   isSupportedNodeVersion,
@@ -124,6 +125,25 @@ test('runs CI on every declared floor and no undeclared Node.js major', () => {
 
   assert.ok(matrixMatch, 'CI must declare the frontend Node.js matrix on one line')
   assert.deepEqual(JSON.parse(matrixMatch[1]), supportedFloorVersions())
+})
+
+test('ignores unsupported frontend majors without suppressing security target versions', () => {
+  const dependabot = parse(readRepositoryFile('.github/dependabot.yml'))
+  const frontendNpm = dependabot.updates.find(
+    (update) => update['package-ecosystem'] === 'npm' && update.directory === '/frontend',
+  )
+
+  assert.ok(frontendNpm, 'Dependabot must declare the frontend npm update scope')
+  assert.ok(Array.isArray(frontendNpm.ignore), 'Frontend Dependabot ignores must be a list')
+  for (const dependencyName of ['typescript', '@types/node']) {
+    const rules = frontendNpm.ignore.filter((rule) => rule['dependency-name'] === dependencyName)
+    assert.equal(rules.length, 1, `${dependencyName} must have one intentional ignore rule`)
+    assert.deepEqual(rules[0], {
+      'dependency-name': dependencyName,
+      'update-types': ['version-update:semver-major'],
+    })
+    assert.equal(rules[0].versions, undefined, 'Security updates must not be version-filtered')
+  }
 })
 
 test('uses the pinned release runtime for UE and release validation', () => {
