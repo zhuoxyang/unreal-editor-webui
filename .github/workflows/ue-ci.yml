@@ -170,6 +170,7 @@ jobs:
     env:
       UE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && '5.3' || '5.8' }}
       UE_ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'C:\Program Files\Epic Games\UE_5.3' || 'C:\Program Files\Epic Games\UE_5.8' }}
+      UE_PYTHON_STARTUP_ISOLATION: '-ini:Engine:[ConsoleVariables]:Engine.Python.IsPythonInRestrictiveMode=1'
 
     steps:
       - name: Check out repository
@@ -197,6 +198,14 @@ jobs:
           $BuildVersion = Get-Content -LiteralPath $BuildVersionPath -Raw | ConvertFrom-Json
           $DetectedVersion = "$($BuildVersion.MajorVersion).$($BuildVersion.MinorVersion)"
           if ($DetectedVersion -ne $env:UE_VERSION) { throw "Runner engine is UE $DetectedVersion, expected UE $env:UE_VERSION." }
+          if ($env:UE_VERSION -eq "5.3") {
+            $DocumentsPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+            if ([string]::IsNullOrWhiteSpace($DocumentsPath)) { throw "Unable to resolve the runner Documents directory." }
+            $UserPythonStartupScript = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"
+            if (Test-Path -LiteralPath $UserPythonStartupScript -PathType Leaf) {
+              throw "UE 5.3 cannot isolate user-global Python startup scripts. Use a clean runner profile without $UserPythonStartupScript."
+            }
+          }
           $RunnerSessionId = (Get-Process -Id $PID).SessionId
           if ($RunnerSessionId -eq 0) {
             throw "GUI validation cannot run from Windows Session 0. Start run.cmd interactively from the logged-in desktop session."
@@ -351,9 +360,13 @@ jobs:
         shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $PythonIsolationArgs = @()
+          if ($env:UE_VERSION -eq "5.8") {
+            $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
+          }
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation-$RunSuffix.log"
-          & $EditorCmd $env:HOST_PROJECT -ExecCmds="Automation RunTests StartsWith:UnrealEditorWebUI.Bridge+StartsWith:UnrealEditorWebUI.Settings; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests StartsWith:UnrealEditorWebUI.Bridge+StartsWith:UnrealEditorWebUI.Settings; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
           if ($LASTEXITCODE -ne 0) {
             throw "Unreal automation tests failed with exit code $LASTEXITCODE. See $LogPath"
           }
@@ -380,6 +393,10 @@ jobs:
         shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $PythonIsolationArgs = @()
+          if ($env:UE_VERSION -eq "5.8") {
+            $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
+          }
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke-$RunSuffix.log"
           $ResultPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke-$RunSuffix.json"
@@ -389,7 +406,7 @@ jobs:
           $SmokeExitCode = -1
           $env:UNREAL_WEBUI_PACKAGED_SMOKE_RESULT = $ResultPath
           try {
-            & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+            & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
             $SmokeExitCode = $LASTEXITCODE
           }
           finally {
@@ -417,9 +434,13 @@ jobs:
         shell: powershell
         run: |
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          $PythonIsolationArgs = @()
+          if ($env:UE_VERSION -eq "5.8") {
+            $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
+          }
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke-$RunSuffix.log"
-          & $EditorCmd $env:HOST_PROJECT -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+          & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
           if ($LASTEXITCODE -ne 0) {
             throw "Native settings smoke failed with exit code $LASTEXITCODE. See $LogPath"
           }
@@ -432,11 +453,15 @@ jobs:
         shell: powershell
         run: |
           $Editor = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.exe"
+          $PythonIsolationArgs = @()
+          if ($env:UE_VERSION -eq "5.8") {
+            $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
+          }
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomation-$RunSuffix.log"
           $ReportPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomationReport-$RunSuffix"
           # Windows PowerShell does not otherwise wait reliably for a GUI-subsystem executable.
-          & $Editor $env:HOST_PROJECT -ExecCmds="Automation RunTests UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent; Quit" -unattended -nopause -nosplash -ReportExportPath="$ReportPath" -abslog="$LogPath" | Out-Host
+          & $Editor $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent; Quit" -unattended -nopause -nosplash -ReportExportPath="$ReportPath" -abslog="$LogPath" | Out-Host
           $EditorExitCode = $LASTEXITCODE
           if ($EditorExitCode -ne 0) {
             throw "GUI CEF automation failed with exit code $EditorExitCode. See $LogPath"

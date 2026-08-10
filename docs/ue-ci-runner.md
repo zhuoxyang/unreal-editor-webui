@@ -42,7 +42,7 @@ Install these before registering the runner:
 - 64-bit Git for Windows installed under the system's standard 64-bit Program Files directory (normally `C:\Program Files\Git`), including `usr\bin\tar.exe` and `usr\bin\gzip.exe`. The setup script requires both tools and proves that `tar` can create and read a gzip-compressed archive before it downloads or registers a runner.
 - PowerShell 7 or Windows PowerShell 5.1.
 - Network access for the pinned `actions/setup-node` step; the UE job installs the repository's required Node.js/npm version before validation.
-- A clean Unreal Python startup environment. User-global `Documents/UnrealEngine/Python/init_unreal.py` scripts should not log errors during commandlets.
+- UE 5.8 validation enables the engine's restrictive Python mode before plugin initialization. This keeps user-global `Documents/UnrealEngine/Python/init_unreal.py` files out of CI while preserving allowed engine/project startup scripts and explicitly requested smoke scripts. UE 5.3 does not expose this control, so its runner preflight fails before packaging when that user-global file exists; use a clean dedicated profile for compatibility validation.
 
 ## Register The Runner
 
