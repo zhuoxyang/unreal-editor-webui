@@ -142,6 +142,14 @@ function requireSafeNonNegativeInteger(value, label) {
   return value
 }
 
+function requireCompatibleChangelist(value, changelist, label) {
+  const compatibleChangelist = requireSafeNonNegativeInteger(value, label)
+  if (compatibleChangelist !== 0 && compatibleChangelist > changelist) {
+    fail(`${label} must be zero or no greater than the UE changelist.`)
+  }
+  return compatibleChangelist
+}
+
 function requireStableVersion(value, label) {
   if (typeof value !== 'string' || !STABLE_VERSION_PATTERN.test(value)) {
     fail(`${label} must be a stable semantic version.`)
@@ -477,8 +485,9 @@ function parseBuildVersion(path) {
   const minorVersion = requireSafeNonNegativeInteger(value.MinorVersion, 'UE minor version')
   const patchVersion = requireSafeNonNegativeInteger(value.PatchVersion, 'UE patch version')
   const changelist = requireSafePositiveInteger(value.Changelist, 'UE changelist')
-  const compatibleChangelist = requireSafePositiveInteger(
+  const compatibleChangelist = requireCompatibleChangelist(
     value.CompatibleChangelist,
+    changelist,
     'UE compatible changelist',
   )
   const branchName = requireString(value.BranchName, 'UE branch name')
@@ -588,15 +597,18 @@ function validateEngine(value) {
   ) {
     fail('Build-environment Unreal Engine identity is invalid.')
   }
+  const changelist = requireSafePositiveInteger(value.changelist, 'UE changelist')
+  const compatibleChangelist = requireCompatibleChangelist(
+    value.compatibleChangelist,
+    changelist,
+    'UE compatible changelist',
+  )
   return {
     majorVersion: value.majorVersion,
     minorVersion: value.minorVersion,
     patchVersion: requireSafeNonNegativeInteger(value.patchVersion, 'UE patch version'),
-    changelist: requireSafePositiveInteger(value.changelist, 'UE changelist'),
-    compatibleChangelist: requireSafePositiveInteger(
-      value.compatibleChangelist,
-      'UE compatible changelist',
-    ),
+    changelist,
+    compatibleChangelist,
     branchName: value.branchName,
     isLicenseeVersion: value.isLicenseeVersion,
     isPromotedBuild: value.isPromotedBuild,

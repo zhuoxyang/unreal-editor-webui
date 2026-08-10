@@ -566,6 +566,116 @@ test('create emits a closed canonical v1 document and verify rebuilds the same b
   }
 })
 
+test('create and verify preserve the UE zero compatible-changelist sentinel', () => {
+  const fixture = createFixture({
+    build: buildVersion({
+      PatchVersion: 0,
+      Changelist: 55116800,
+      CompatibleChangelist: 0,
+    }),
+  })
+  try {
+    const createResult = runCli('create', createArguments(fixture))
+    assertCliSuccess(createResult)
+    const documentText = readFileSync(fixture.output, 'utf8')
+    const document = JSON.parse(documentText)
+
+    assert.equal(document.unrealEngine.patchVersion, 0)
+    assert.equal(document.unrealEngine.changelist, 55116800)
+    assert.equal(document.unrealEngine.compatibleChangelist, 0)
+
+    const verifyResult = runCli('verify', verifyArguments(fixture))
+    assertCliSuccess(verifyResult)
+    assert.equal(readFileSync(fixture.canonicalOutput, 'utf8'), documentText)
+  } finally {
+    cleanup(fixture)
+  }
+})
+
+test('create and verify accept a compatible changelist equal to the current changelist', () => {
+  const fixture = createFixture({
+    build: buildVersion({ CompatibleChangelist: 56057345 }),
+  })
+  try {
+    assertCliSuccess(runCli('create', createArguments(fixture)))
+    const documentText = readFileSync(fixture.output, 'utf8')
+    const document = JSON.parse(documentText)
+    assert.equal(document.unrealEngine.changelist, 56057345)
+    assert.equal(document.unrealEngine.compatibleChangelist, 56057345)
+
+    assertCliSuccess(runCli('verify', verifyArguments(fixture)))
+    assert.equal(readFileSync(fixture.canonicalOutput, 'utf8'), documentText)
+  } finally {
+    cleanup(fixture)
+  }
+})
+
+test('create and verify reject a compatible changelist newer than the current changelist', () => {
+  const createFixtureValue = createFixture({
+    build: buildVersion({ CompatibleChangelist: 56057346 }),
+  })
+  try {
+    const result = runCli('create', createArguments(createFixtureValue))
+    assert.equal(result.status, 1, outputOf(result))
+    assert.match(outputOf(result), /must be zero or no greater than the UE changelist/iu)
+    assert.throws(() => readFileSync(createFixtureValue.output), { code: 'ENOENT' })
+  } finally {
+    cleanup(createFixtureValue)
+  }
+
+  const verifyFixtureValue = createFixture()
+  try {
+    assertCliSuccess(runCli('create', createArguments(verifyFixtureValue)))
+    const document = JSON.parse(readFileSync(verifyFixtureValue.output, 'utf8'))
+    document.unrealEngine.compatibleChangelist = document.unrealEngine.changelist + 1
+    writeFileSync(verifyFixtureValue.output, JSON.stringify(document), 'utf8')
+
+    const result = runCli('verify', verifyArguments(verifyFixtureValue))
+    assert.equal(result.status, 1, outputOf(result))
+    assert.match(outputOf(result), /must be zero or no greater than the UE changelist/iu)
+    assert.throws(() => readFileSync(verifyFixtureValue.canonicalOutput), { code: 'ENOENT' })
+  } finally {
+    cleanup(verifyFixtureValue)
+  }
+})
+
+test('verify rejects malformed UE compatible changelists', () => {
+  for (const compatibleChangelist of [-1, '0']) {
+    const fixture = createFixture({
+      build: buildVersion({ CompatibleChangelist: 0 }),
+    })
+    try {
+      assertCliSuccess(runCli('create', createArguments(fixture)))
+      const document = JSON.parse(readFileSync(fixture.output, 'utf8'))
+      document.unrealEngine.compatibleChangelist = compatibleChangelist
+      writeFileSync(fixture.output, JSON.stringify(document), 'utf8')
+
+      const result = runCli('verify', verifyArguments(fixture))
+      assert.equal(result.status, 1, outputOf(result))
+      assert.match(outputOf(result), /compatible changelist must be a safe non-negative integer/iu)
+      assert.throws(() => readFileSync(fixture.canonicalOutput), { code: 'ENOENT' })
+    } finally {
+      cleanup(fixture)
+    }
+  }
+})
+
+test('create rejects malformed UE compatible changelists', () => {
+  for (const compatibleChangelist of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, '0', null]) {
+    const fixture = createFixture({
+      build: buildVersion({ CompatibleChangelist: compatibleChangelist }),
+    })
+    try {
+      const result = runCli('create', createArguments(fixture))
+      assert.equal(result.status, 1, outputOf(result))
+      assert.match(outputOf(result), /compatible changelist must be a safe non-negative integer/iu)
+      assert.throws(() => readFileSync(fixture.output), { code: 'ENOENT' })
+    } finally {
+      cleanup(fixture)
+    }
+  }
+})
+
 test('verify rejects unknown fields without echoing injected path or token data', () => {
   const fixture = createFixture()
   try {
