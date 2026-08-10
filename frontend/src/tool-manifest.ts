@@ -1,33 +1,31 @@
 import type { ReactNode } from 'react'
-import toolCatalog from './tool-catalog.json'
 import {
   isRecord,
   namespacedStorageKey,
   storedEnvelope,
   type StorageLoadResult,
 } from './storage'
+import {
+  MAX_FAVORITE_COMMANDS,
+  MAX_OPEN_TABS,
+  STARTER_TOOL_CATALOG,
+  isReservedToolCategoryId,
+  type ToolCatalogV1,
+  type ToolCategoryId,
+  type ToolProjectId,
+  type ToolStageId,
+} from './tool-catalog'
 
-export type ToolProjectId = 'aurora' | 'neon' | 'mobile'
-export type ToolStageId = 'common' | 'art' | 'ta' | 'level' | 'release'
-export type ToolCategoryId = 'all' | 'favorites' | 'recent' | 'assets' | 'materials' | 'level' | 'release' | 'system'
-
-export type ToolProject = {
-  id: ToolProjectId
-  name: string
-  description: string
-  stages: ToolStageId[]
-}
-
-export type ToolStage = {
-  id: ToolStageId
-  label: string
-}
-
-export type ToolCategory = {
-  id: ToolCategoryId
-  label: string
-  icon: string
-}
+export {
+  MAX_FAVORITE_COMMANDS,
+  MAX_OPEN_TABS,
+  type ToolCategory,
+  type ToolCategoryId,
+  type ToolProject,
+  type ToolProjectId,
+  type ToolStage,
+  type ToolStageId,
+} from './tool-catalog'
 
 export type ToolPreferenceState = {
   projectId: ToolProjectId
@@ -45,60 +43,58 @@ export type ToolShellPanel = {
 
 export const TOOL_PREFERENCES_STORAGE_KEY = 'unreal-editor-webui.toolPreferences'
 export const TOOL_PREFERENCES_SCHEMA_VERSION = 1
-export const MAX_FAVORITE_COMMANDS = 12
-export const MAX_OPEN_TABS = 8
 
-type ToolCatalog = {
-  projects: ToolProject[]
-  stages: ToolStage[]
-  categories: ToolCategory[]
-  defaultPreferences: ToolPreferenceState
-}
-
-const CATALOG = toolCatalog as ToolCatalog
-
-export const TOOL_PROJECTS = CATALOG.projects
-export const TOOL_STAGES = CATALOG.stages
-export const TOOL_CATEGORIES = CATALOG.categories
+export const TOOL_PROJECTS = STARTER_TOOL_CATALOG.projects
+export const TOOL_STAGES = STARTER_TOOL_CATALOG.stages
+export const TOOL_CATEGORIES = STARTER_TOOL_CATALOG.categories
 type ReadonlyToolPreferenceState = Omit<ToolPreferenceState, 'favorites' | 'openTabs'> & {
   readonly favorites: readonly string[]
   readonly openTabs: readonly string[]
 }
 
 export const DEFAULT_TOOL_PREFERENCES: ReadonlyToolPreferenceState = Object.freeze({
-  ...CATALOG.defaultPreferences,
-  favorites: Object.freeze([...CATALOG.defaultPreferences.favorites]),
-  openTabs: Object.freeze([...CATALOG.defaultPreferences.openTabs]),
+  ...STARTER_TOOL_CATALOG.defaultPreferences,
+  favorites: Object.freeze([...STARTER_TOOL_CATALOG.defaultPreferences.favorites]),
+  openTabs: Object.freeze([...STARTER_TOOL_CATALOG.defaultPreferences.openTabs]),
 })
-
-function isToolProjectId(value: unknown): value is ToolProjectId {
-  return TOOL_PROJECTS.some((project) => project.id === value)
-}
-
-function isToolStageId(value: unknown): value is ToolStageId {
-  return TOOL_STAGES.some((stage) => stage.id === value)
-}
-
-function isToolCategoryId(value: unknown): value is ToolCategoryId {
-  return TOOL_CATEGORIES.some((category) => category.id === value)
-}
 
 export function commandCategoryId(command: {
   category?: string
   tags?: string[]
   name: string
-}): ToolCategoryId {
-  const haystack = `${command.category || ''} ${(command.tags || []).join(' ')} ${command.name}`.toLowerCase()
+}, catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG): ToolCategoryId | null {
+  if (catalog === STARTER_TOOL_CATALOG) {
+    const haystack = `${command.category || ''} ${(command.tags || []).join(' ')} ${command.name}`.toLowerCase()
+    let categoryId = 'assets'
+    if (haystack.includes('material') || haystack.includes('texture')) categoryId = 'materials'
+    else if (haystack.includes('level') || haystack.includes('blueprint')) categoryId = 'level'
+    else if (haystack.includes('release') || haystack.includes('gate') || haystack.includes('perf')) categoryId = 'release'
+    else if (haystack.includes('system') || haystack.includes('demo') || haystack.includes('editor')) categoryId = 'system'
+    return STARTER_TOOL_CATALOG.categories.find((category) => category.id === categoryId)?.id || null
+  }
 
-  if (haystack.includes('material') || haystack.includes('texture')) return 'materials'
-  if (haystack.includes('level') || haystack.includes('blueprint')) return 'level'
-  if (haystack.includes('release') || haystack.includes('gate') || haystack.includes('perf')) return 'release'
-  if (haystack.includes('system') || haystack.includes('demo') || haystack.includes('editor')) return 'system'
-  return 'assets'
+  const categoryName = command.category?.trim().toLowerCase() || ''
+  const tags = (command.tags || []).map((tag) => tag.trim().toLowerCase())
+  return catalog.categories.find((category) => (
+    !isReservedToolCategoryId(category.id)
+    && (
+      category.id === categoryName
+      || tags.includes(category.id)
+      || tags.includes(`category:${category.id}`)
+    )
+  ))?.id || null
 }
 
-export function commandSupportsStage(command: { tags?: string[]; category?: string; name: string }, stageId: ToolStageId) {
-  if (stageId === 'common') return true
+export function commandSupportsStage(
+  command: { tags?: string[]; category?: string; name: string },
+  stageId: ToolStageId,
+  catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG,
+) {
+  if (stageId === catalog.defaultPreferences.stageId) return true
+  const tags = (command.tags || []).map((tag) => tag.trim().toLowerCase())
+  if (tags.includes(stageId) || tags.includes(`stage:${stageId}`)) return true
+  if (catalog !== STARTER_TOOL_CATALOG) return false
+
   const haystack = `${command.category || ''} ${(command.tags || []).join(' ')} ${command.name}`.toLowerCase()
 
   if (stageId === 'art') return /(asset|material|texture|rename|editor)/.test(haystack)
@@ -108,11 +104,11 @@ export function commandSupportsStage(command: { tags?: string[]; category?: stri
   return true
 }
 
-function cloneDefaultToolPreferences(): ToolPreferenceState {
+function cloneDefaultToolPreferences(catalog: ToolCatalogV1): ToolPreferenceState {
   return {
-    ...DEFAULT_TOOL_PREFERENCES,
-    favorites: [...DEFAULT_TOOL_PREFERENCES.favorites],
-    openTabs: [...DEFAULT_TOOL_PREFERENCES.openTabs],
+    ...catalog.defaultPreferences,
+    favorites: [...catalog.defaultPreferences.favorites],
+    openTabs: [...catalog.defaultPreferences.openTabs],
   }
 }
 
@@ -140,24 +136,30 @@ function normalizeStringList(value: unknown, fallback: string[], limit: number) 
   return result
 }
 
-export function normalizeToolPreferences(value: unknown): ToolPreferenceState {
-  const defaults = cloneDefaultToolPreferences()
+export function normalizeToolPreferences(
+  value: unknown,
+  catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG,
+): ToolPreferenceState {
+  const defaults = cloneDefaultToolPreferences(catalog)
   if (!isRecord(value)) {
     return defaults
   }
 
-  const projectId = isToolProjectId(value.projectId) ? value.projectId : defaults.projectId
-  const project = TOOL_PROJECTS.find((item) => item.id === projectId) || TOOL_PROJECTS[0]
-  const requestedStageId = isToolStageId(value.stageId) ? value.stageId : defaults.stageId
-  const stageId = project.stages.includes(requestedStageId)
+  const requestedProject = catalog.projects.find((project) => project.id === value.projectId)
+  const project = requestedProject
+    || catalog.projects.find((item) => item.id === defaults.projectId)
+    || catalog.projects[0]
+  const requestedStageId = project.stages.find((stageId) => stageId === value.stageId)
+  const stageId = requestedStageId
     ? requestedStageId
     : project.stages.includes(defaults.stageId)
       ? defaults.stageId
-      : project.stages[0] || defaults.stageId
-  const categoryId = isToolCategoryId(value.categoryId) ? value.categoryId : defaults.categoryId
+      : project.stages[0]
+  const categoryId = catalog.categories.find((category) => category.id === value.categoryId)?.id
+    || defaults.categoryId
 
   return {
-    projectId,
+    projectId: project.id,
     stageId,
     categoryId,
     favorites: normalizeStringList(value.favorites, defaults.favorites, MAX_FAVORITE_COMMANDS),
@@ -169,26 +171,29 @@ export function toolPreferencesStorageKey(storageNamespace?: string) {
   return namespacedStorageKey(TOOL_PREFERENCES_STORAGE_KEY, storageNamespace)
 }
 
-export function loadToolPreferencesState(storageNamespace?: string | null): StorageLoadResult<ToolPreferenceState> {
+export function loadToolPreferencesState(
+  storageNamespace?: string | null,
+  catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG,
+): StorageLoadResult<ToolPreferenceState> {
   if (storageNamespace === null) {
-    return { value: cloneDefaultToolPreferences(), needsRewrite: false, source: 'missing' }
+    return { value: cloneDefaultToolPreferences(catalog), needsRewrite: false, source: 'missing' }
   }
   try {
     const stored = globalThis.localStorage?.getItem(toolPreferencesStorageKey(storageNamespace))
     if (!stored) {
-      return { value: cloneDefaultToolPreferences(), needsRewrite: false, source: 'missing' }
+      return { value: cloneDefaultToolPreferences(catalog), needsRewrite: false, source: 'missing' }
     }
 
     const parsed: unknown = JSON.parse(stored)
     if (isRecord(parsed) && parsed.schemaVersion === TOOL_PREFERENCES_SCHEMA_VERSION) {
       if (!isRecord(parsed.data)) {
         return {
-          value: cloneDefaultToolPreferences(),
+          value: cloneDefaultToolPreferences(catalog),
           needsRewrite: true,
           source: 'invalid',
         }
       }
-      const value = normalizeToolPreferences(parsed.data)
+      const value = normalizeToolPreferences(parsed.data, catalog)
       return {
         value,
         needsRewrite: JSON.stringify(value) !== JSON.stringify(parsed.data),
@@ -198,36 +203,46 @@ export function loadToolPreferencesState(storageNamespace?: string | null): Stor
 
     if (isRecord(parsed) && Object.prototype.hasOwnProperty.call(parsed, 'schemaVersion')) {
       return {
-        value: cloneDefaultToolPreferences(),
+        value: cloneDefaultToolPreferences(catalog),
         needsRewrite: false,
         source: 'unsupported',
       }
     }
     if (isRecord(parsed)) {
       return {
-        value: normalizeToolPreferences(parsed),
+        value: normalizeToolPreferences(parsed, catalog),
         needsRewrite: true,
         source: 'legacy',
       }
     }
-    return { value: cloneDefaultToolPreferences(), needsRewrite: true, source: 'invalid' }
+    return { value: cloneDefaultToolPreferences(catalog), needsRewrite: true, source: 'invalid' }
   } catch {
-    return { value: cloneDefaultToolPreferences(), needsRewrite: true, source: 'invalid' }
+    return { value: cloneDefaultToolPreferences(catalog), needsRewrite: true, source: 'invalid' }
   }
 }
 
-export function loadToolPreferences(storageNamespace?: string | null): ToolPreferenceState {
-  return loadToolPreferencesState(storageNamespace).value
+export function loadToolPreferences(
+  storageNamespace?: string | null,
+  catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG,
+): ToolPreferenceState {
+  return loadToolPreferencesState(storageNamespace, catalog).value
 }
 
-export function saveToolPreferences(preferences: ToolPreferenceState, storageNamespace?: string | null) {
+export function saveToolPreferences(
+  preferences: ToolPreferenceState,
+  storageNamespace?: string | null,
+  catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG,
+) {
   if (storageNamespace === null) {
     return
   }
   try {
     globalThis.localStorage?.setItem(
       toolPreferencesStorageKey(storageNamespace),
-      JSON.stringify(storedEnvelope(TOOL_PREFERENCES_SCHEMA_VERSION, normalizeToolPreferences(preferences))),
+      JSON.stringify(storedEnvelope(
+        TOOL_PREFERENCES_SCHEMA_VERSION,
+        normalizeToolPreferences(preferences, catalog),
+      )),
     )
   } catch {
     // Embedded browser localStorage can be unavailable depending on context.

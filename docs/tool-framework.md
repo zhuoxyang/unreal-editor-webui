@@ -14,8 +14,9 @@ Tools are registered in Python with rich metadata:
 - `resultType`: preferred result renderer such as `assetTable`, `issueTable`, or `changeSet`.
 - `execution`: authoritative task execution policy.
 
-The frontend combines this metadata with its built-in project/stage catalog in
-`frontend/src/tool-manifest.ts` to decide where tools appear.
+The frontend combines this metadata with the active, runtime-decoded project/stage catalog to
+decide where tools appear. A catalog organizes discovered commands; it never registers,
+authorizes, or executes a command.
 
 ## Project And Stage Catalog
 
@@ -24,8 +25,47 @@ The starter frontend includes sample projects and stages:
 - Projects: `Project Aurora`, `Project Neon`, `Project Mobile`.
 - Stages: `我的常用`, `创意设计`, `TA 工程`, `关卡制作`, `项目管理`.
 
-These are starter defaults. Production teams should replace them with project data loaded from
-settings, an internal service, or a checked-in manifest file.
+These are deterministic fallback data. A project can replace them without rebuilding `Web/dist`
+by creating:
+
+```text
+<Project>/Config/UnrealEditorWebUI/ToolCatalog.json
+```
+
+The bridge reads only this fixed project-controlled path. It does not accept a path or URL from
+JavaScript, scan user directories, or fetch remote catalogs. The file must be UTF-8 JSON (an
+optional UTF-8 BOM is accepted), no larger than 128 KiB, and conform to the closed
+`schemaVersion: 1` contract. See [`docs/examples/tool-catalog.v1.json`](examples/tool-catalog.v1.json)
+for a complete example.
+
+Schema v1 contains:
+
+- `projects`: unique project ids, display names/descriptions, and references to allowed stages.
+- `stages`: unique stage ids and labels.
+- `categories`: unique category ids, labels, and a safe built-in icon token.
+- `defaultPreferences`: a valid default project, one of that project's stages, a valid category,
+  and bounded favorite/open-tab command-name lists.
+
+Every object is closed: unknown keys, unsupported versions, duplicate/empty ids, dangling stage
+references, invalid defaults, unsafe icon markup, and values above the documented bounds reject
+the whole project catalog. No partially valid project data is merged into the starter catalog.
+Missing configuration is a normal starter fallback. A malformed, unreadable, unsupported, or
+over-limit file produces a bounded diagnostic and also uses the starter catalog, but automatic
+preference rewriting is paused so a temporary configuration mistake cannot erase project ids.
+
+The category ids `all`, `favorites`, and `recent` are reserved UI behaviors and are required.
+Custom command categories match a command's exact lowercase `category`, an exact tag equal to the
+category id, or a `category:<id>` tag. The configured default stage is the unfiltered landing
+stage; other custom stages match an exact tag equal to the stage id or a `stage:<id>` tag. The
+starter `common`, `art`, `ta`, `level`, and `release` stages and starter
+category ids retain their existing keyword compatibility. Unknown runtime stages never silently
+show every command.
+
+Persisted preferences are reconciled against the active catalog: compatible ids and command-name
+lists retain their order, while removed project/stage/category ids fall back deterministically.
+Favorites or tabs whose commands are temporarily unavailable are skipped in the rendered view,
+not deleted from storage. Catalog files are readable by the trusted embedded page, so never place
+tokens, credentials, absolute machine paths, executable code, HTML, SVG, or remote URLs in them.
 
 ## Prototype Policy
 

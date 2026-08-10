@@ -367,6 +367,27 @@
   color: #86efac;
 }
 
+.header-statuses {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  justify-items: end;
+}
+
+.catalog-source {
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.catalog-source.ready {
+  color: #93c5fd;
+}
+
+.catalog-source.fallback {
+  color: #f0c979;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -594,6 +615,11 @@ button:disabled {
 .inline-warning ul {
   margin: 0;
   padding-left: 18px;
+}
+
+.catalog-loading,
+.catalog-diagnostic {
+  margin: 0;
 }
 
 .table-pagination {

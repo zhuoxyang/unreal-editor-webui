@@ -1,0 +1,253 @@
+import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import test from 'node:test'
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const CREATE_HOST_PROJECT = join(REPOSITORY_ROOT, 'scripts', 'create-host-project.ps1')
+const TOOL_CATALOG_TEMPLATE = join(
+  REPOSITORY_ROOT,
+  'tests',
+  'fixtures',
+  'tool-catalog',
+  'host-project-v1.template.json',
+)
+const CATALOG_MARKER_PLACEHOLDER = '__UE_WEBUI_CATALOG_MARKER__'
+const VALID_MARKER = '0123456789abcdef0123456789abcdef'
+
+function createTestRoot() {
+  const root = mkdtempSync(join(tmpdir(), 'unreal webui host project-'))
+  const pluginSource = join(root, 'packaged plugin')
+  mkdirSync(pluginSource)
+  writeFileSync(
+    join(pluginSource, 'UnrealEditorWebUI.uplugin'),
+    '{"FileVersion":3}\n',
+    'utf8',
+  )
+  return { root, pluginSource }
+}
+
+function runCreateHostProject({
+  projectDir,
+  pluginSource,
+  toolCatalogTemplate,
+  toolCatalogMarker,
+}) {
+  const args = [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    CREATE_HOST_PROJECT,
+    '-ProjectDir',
+    projectDir,
+    '-PluginSourceDir',
+    pluginSource,
+    '-EngineAssociation',
+    '5.8',
+  ]
+  if (toolCatalogTemplate !== undefined) {
+    args.push('-ToolCatalogTemplate', toolCatalogTemplate)
+  }
+  if (toolCatalogMarker !== undefined) {
+    args.push('-ToolCatalogMarker', toolCatalogMarker)
+  }
+
+  return spawnSync('powershell.exe', args, {
+    cwd: REPOSITORY_ROOT,
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+}
+
+function assertSucceeded(result) {
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`
+  assert.equal(result.error, undefined, output)
+  assert.equal(result.status, 0, output)
+}
+
+test(
+  'Windows host-project creation renders one schema-v1 catalog at the fixed project path',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const fixtureSource = readFileSync(TOOL_CATALOG_TEMPLATE, 'utf8')
+    assert.match(fixtureSource, /"schemaVersion"\s*:\s*1/u)
+    assert.ok(fixtureSource.includes(CATALOG_MARKER_PLACEHOLDER))
+
+    const { root, pluginSource } = createTestRoot()
+    const projectDir = join(root, 'generated host')
+    try {
+      const result = runCreateHostProject({
+        projectDir,
+        pluginSource,
+        toolCatalogTemplate: TOOL_CATALOG_TEMPLATE,
+        toolCatalogMarker: VALID_MARKER,
+      })
+      assertSucceeded(result)
+
+      const expectedProjectPath = join(projectDir, 'HostProject.uproject')
+      assert.equal(
+        realpathSync.native(result.stdout.trim()).toLowerCase(),
+        realpathSync.native(expectedProjectPath).toLowerCase(),
+      )
+      assert.equal(result.stdout.trim().split(/\r?\n/u).length, 1)
+      assert.ok(existsSync(expectedProjectPath))
+      assert.ok(
+        existsSync(
+          join(
+            projectDir,
+            'Plugins',
+            'UnrealEditorWebUI',
+            'UnrealEditorWebUI.uplugin',
+          ),
+        ),
+      )
+
+      const catalogPath = join(
+        projectDir,
+        'Config',
+        'UnrealEditorWebUI',
+        'ToolCatalog.json',
+      )
+      const catalogSource = readFileSync(catalogPath, 'utf8')
+      const catalog = JSON.parse(catalogSource.replace(/^\uFEFF/u, ''))
+      assert.equal(catalog.schemaVersion, 1)
+      assert.equal(catalog.projects[0].id, `project-${VALID_MARKER}`)
+      assert.equal(catalog.projects[0].name, `CI Project ${VALID_MARKER}`)
+      assert.deepEqual(catalog.projects[0].stages, [`stage-${VALID_MARKER}`])
+      assert.equal(catalog.stages[0].id, `stage-${VALID_MARKER}`)
+      assert.equal(catalog.stages[0].label, `CI Stage ${VALID_MARKER}`)
+      assert.equal(catalog.categories.at(-1).id, `category-${VALID_MARKER}`)
+      assert.equal(
+        catalog.categories.at(-1).label,
+        `CI Category ${VALID_MARKER}`,
+      )
+      assert.deepEqual(
+        catalog.categories.slice(0, 3).map(({ id }) => id),
+        ['all', 'favorites', 'recent'],
+      )
+      assert.deepEqual(
+        catalog.categories.map(({ icon }) => icon),
+        ['grid', 'star', 'recent', 'assets'],
+      )
+      assert.deepEqual(catalog.defaultPreferences, {
+        projectId: `project-${VALID_MARKER}`,
+        stageId: `stage-${VALID_MARKER}`,
+        categoryId: `category-${VALID_MARKER}`,
+        favorites: ['system.ping'],
+        openTabs: [],
+      })
+      assert.equal(catalogSource.includes(CATALOG_MARKER_PLACEHOLDER), false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'Windows host-project creation keeps catalog injection optional',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const { root, pluginSource } = createTestRoot()
+    const projectDir = join(root, 'generated host')
+    try {
+      const result = runCreateHostProject({ projectDir, pluginSource })
+      assertSucceeded(result)
+      assert.ok(existsSync(join(projectDir, 'HostProject.uproject')))
+      assert.equal(
+        existsSync(
+          join(
+            projectDir,
+            'Config',
+            'UnrealEditorWebUI',
+            'ToolCatalog.json',
+          ),
+        ),
+        false,
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'Windows host-project creation rejects unpaired or unsafe catalog inputs before writing',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const invalidInputs = [
+      { toolCatalogTemplate: TOOL_CATALOG_TEMPLATE },
+      { toolCatalogMarker: VALID_MARKER },
+      {
+        toolCatalogTemplate: TOOL_CATALOG_TEMPLATE,
+        toolCatalogMarker: VALID_MARKER.toUpperCase(),
+      },
+      {
+        toolCatalogTemplate: TOOL_CATALOG_TEMPLATE,
+        toolCatalogMarker: VALID_MARKER.slice(1),
+      },
+    ]
+
+    for (const invalidInput of invalidInputs) {
+      const { root, pluginSource } = createTestRoot()
+      const projectDir = join(root, 'generated host')
+      try {
+        const result = runCreateHostProject({
+          projectDir,
+          pluginSource,
+          ...invalidInput,
+        })
+        assert.equal(result.error, undefined)
+        assert.notEqual(result.status, 0)
+        assert.equal(existsSync(projectDir), false)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  },
+)
+
+test(
+  'Windows host-project creation rejects invalid catalog templates before writing',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const invalidTemplates = [
+      '{"schemaVersion":1,"projects":[]}\n',
+      `{"schemaVersion":2,"marker":"${CATALOG_MARKER_PLACEHOLDER}"}\n`,
+      `{"schemaVersion":"1","marker":"${CATALOG_MARKER_PLACEHOLDER}"}\n`,
+      `{"schemaVersion":1.1,"marker":"${CATALOG_MARKER_PLACEHOLDER}"}\n`,
+      `{"schemaVersion":1,"marker":"${CATALOG_MARKER_PLACEHOLDER}"\n`,
+    ]
+
+    for (const [index, source] of invalidTemplates.entries()) {
+      const { root, pluginSource } = createTestRoot()
+      const projectDir = join(root, 'generated host')
+      const templatePath = join(root, `invalid-${index}.template.json`)
+      writeFileSync(templatePath, source, 'utf8')
+      try {
+        const result = runCreateHostProject({
+          projectDir,
+          pluginSource,
+          toolCatalogTemplate: templatePath,
+          toolCatalogMarker: VALID_MARKER,
+        })
+        assert.equal(result.error, undefined)
+        assert.notEqual(result.status, 0)
+        assert.equal(existsSync(projectDir), false)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  },
+)

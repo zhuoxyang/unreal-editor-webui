@@ -3,10 +3,9 @@ import type { RecentExecution } from '../recent-executions'
 import {
   commandCategoryId,
   commandSupportsStage,
-  TOOL_PROJECTS,
-  TOOL_STAGES,
   type ToolPreferenceState,
 } from '../tool-manifest'
+import { STARTER_TOOL_CATALOG, type ToolCatalogV1 } from '../tool-catalog'
 import type { CommandMetadata } from '../types/command'
 
 type UseToolWorkspaceOptions = {
@@ -17,6 +16,7 @@ type UseToolWorkspaceOptions = {
   selectedCommandName: string | null
   toolPreferences: ToolPreferenceState
   workspaceTabs: string[]
+  catalog?: ToolCatalogV1
 }
 
 export function useToolWorkspace({
@@ -27,16 +27,21 @@ export function useToolWorkspace({
   selectedCommandName,
   toolPreferences,
   workspaceTabs,
+  catalog = STARTER_TOOL_CATALOG,
 }: UseToolWorkspaceOptions) {
-  const activeProject = TOOL_PROJECTS.find((project) => project.id === toolPreferences.projectId) || TOOL_PROJECTS[0]
-  const availableStages = TOOL_STAGES.filter((stage) => activeProject.stages.includes(stage.id))
+  const activeProject = catalog.projects.find((project) => project.id === toolPreferences.projectId)
+    || catalog.projects.find((project) => project.id === catalog.defaultPreferences.projectId)
+    || catalog.projects[0]
+  const availableStages = activeProject.stages
+    .map((stageId) => catalog.stages.find((stage) => stage.id === stageId))
+    .filter((stage): stage is ToolCatalogV1['stages'][number] => Boolean(stage))
 
   const filteredCommands = useMemo(() => {
     const search = commandSearch.trim().toLowerCase()
 
     return commands.filter((command) => {
-      const matchesStage = commandSupportsStage(command, toolPreferences.stageId)
-      const categoryId = commandCategoryId(command)
+      const matchesStage = commandSupportsStage(command, toolPreferences.stageId, catalog)
+      const categoryId = commandCategoryId(command, catalog)
       const matchesCategory =
         toolPreferences.categoryId === 'all' ||
         (toolPreferences.categoryId === 'favorites' && favoriteCommands.includes(command.name)) ||
@@ -45,7 +50,7 @@ export function useToolWorkspace({
       const searchText = `${command.name} ${command.description} ${command.category || ''} ${(command.tags || []).join(' ')}`.toLowerCase()
       return matchesStage && matchesCategory && (!search || searchText.includes(search))
     })
-  }, [commands, commandSearch, favoriteCommands, recentExecutions, toolPreferences.categoryId, toolPreferences.stageId])
+  }, [catalog, commands, commandSearch, favoriteCommands, recentExecutions, toolPreferences.categoryId, toolPreferences.stageId])
 
   const selectedCommand = useMemo(() => {
     if (selectedCommandName) {
@@ -102,4 +107,3 @@ export function useToolWorkspace({
     workspaceCommandTabs,
   }
 }
-

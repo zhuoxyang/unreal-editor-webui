@@ -14,9 +14,9 @@ import { useRecentExecutions } from './hooks/useRecentExecutions'
 import { useProjectContext } from './hooks/useProjectContext'
 import { useTasks } from './hooks/useTasks'
 import { useToolPreferences } from './hooks/useToolPreferences'
+import { useToolCatalog } from './hooks/useToolCatalog'
 import { useToolWorkspace } from './hooks/useToolWorkspace'
 import { hasCommandResult } from './schema-form'
-import { TOOL_CATEGORIES, TOOL_PROJECTS } from './tool-manifest'
 import { commandHasDryRun } from './types/command'
 
 function App() {
@@ -31,6 +31,16 @@ function App() {
 
   const { bridgeReady, callBridge, callBridgeQuiet } = useEditorBridge(log)
   const { projectContext, projectContextReady } = useProjectContext({ bridgeReady, callBridgeQuiet, log })
+  const {
+    canAutoRewrite,
+    canRetryCatalog,
+    catalog,
+    catalogDiagnostic,
+    catalogReady,
+    catalogSource,
+    catalogStatus,
+    retryCatalog,
+  } = useToolCatalog({ bridgeReady, callBridgeQuiet, log })
   const { commands, commandsError, commandsLoadErrors, commandsStatus, retryCommands } = useCommands({
     bridgeReady,
     callBridgeQuiet,
@@ -58,7 +68,10 @@ function App() {
     updateToolProject,
     updateToolStage,
     workspaceTabs,
-  } = useToolPreferences(projectContext.storageNamespace)
+  } = useToolPreferences(projectContext.storageNamespace, catalog, {
+    catalogReady: projectContextReady && catalogReady,
+    canAutoRewrite,
+  })
   const {
     cancelTask,
     eventLines,
@@ -96,6 +109,7 @@ function App() {
     selectedCommandName,
     toolPreferences,
     workspaceTabs,
+    catalog,
   })
 
   function openCommandWorkspace(commandName: string) {
@@ -130,12 +144,24 @@ function App() {
   }
 
   return (
-    <main className="app-shell tool-shell">
-      <ToolShellHeader bridgeReady={bridgeReady} />
+    <main
+      className="app-shell tool-shell"
+      data-tool-catalog-source={catalogSource}
+      data-tool-catalog-schema-version={catalog.schemaVersion}
+    >
+      <ToolShellHeader
+        bridgeReady={bridgeReady}
+        catalogSchemaVersion={catalog.schemaVersion}
+        catalogSource={catalogSource}
+        catalogStatus={catalogStatus}
+      />
 
       <section className="tool-shell-layout">
         <ToolRackPanel
-          categories={TOOL_CATEGORIES}
+          categories={catalog.categories}
+          catalogDiagnostic={catalogDiagnostic}
+          catalogStatus={catalogStatus}
+          canRetryCatalog={canRetryCatalog}
           commandsError={commandsError}
           commandsLoadErrors={commandsLoadErrors}
           commandsStatus={commandsStatus}
@@ -145,11 +171,12 @@ function App() {
           onCategoryChange={updateToolCategory}
           onOpenCommand={openCommandWorkspace}
           onProjectChange={updateToolProject}
+          onRetryCatalog={retryCatalog}
           onRetryCommands={() => void retryCommands()}
           onSearchChange={setCommandSearch}
           onStageChange={updateToolStage}
           projectId={toolPreferences.projectId}
-          projects={TOOL_PROJECTS}
+          projects={catalog.projects}
           recentCommands={visibleRecentCommands}
           search={commandSearch}
           selectedCommandName={selectedCommand?.name || null}

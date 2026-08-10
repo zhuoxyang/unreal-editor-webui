@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "projects": [
+    {
+      "id": "studio",
+      "name": "Studio Project",
+      "description": "Project-controlled tool rack example",
+      "stages": ["common", "lighting"]
+    }
+  ],
+  "stages": [
+    { "id": "common", "label": "Common" },
+    { "id": "lighting", "label": "Lighting" }
+  ],
+  "categories": [
+    { "id": "all", "label": "All tools", "icon": "grid" },
+    { "id": "favorites", "label": "Favorites", "icon": "star" },
+    { "id": "recent", "label": "Recent", "icon": "recent" },
+    { "id": "assets", "label": "Assets", "icon": "assets" },
+    { "id": "lighting", "label": "Lighting", "icon": "level" }
+  ],
+  "defaultPreferences": {
+    "projectId": "studio",
+    "stageId": "common",
+    "categoryId": "all",
+    "favorites": ["asset.listByPath", "editor.selectedAssets"],
+    "openTabs": []
+  }
+}

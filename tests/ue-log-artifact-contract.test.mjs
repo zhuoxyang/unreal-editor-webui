@@ -9,6 +9,17 @@ import { parse } from 'yaml'
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const WORKFLOW_PATH = join(REPOSITORY_ROOT, '.github', 'workflows', 'ue-ci.yml')
 const WORKFLOW_SOURCE = readFileSync(WORKFLOW_PATH, 'utf8')
+const BROWSER_TEST_SOURCE = readFileSync(
+  join(
+    REPOSITORY_ROOT,
+    'Source',
+    'UnrealEditorWebUI',
+    'Private',
+    'Tests',
+    'UnrealEditorWebUIBrowserTests.cpp',
+  ),
+  'utf8',
+)
 const WORKFLOW = parse(WORKFLOW_SOURCE)
 const CI_WORKFLOW = parse(
   readFileSync(join(REPOSITORY_ROOT, '.github', 'workflows', 'ci.yml'), 'utf8'),
@@ -182,12 +193,58 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
   )
   assert.equal(build.run.includes('git hash-object --no-filters LICENSE'), false)
   assert.doesNotMatch(build.run, /WorkingLicense|working-tree LICENSE|Get-FileHash/u)
+  assert.ok(STEPS.indexOf(build) < STEPS.indexOf(host))
 
   assertOrdered(host.run, [
     RUN_SUFFIX_ASSIGNMENT,
     '$PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"',
-    'scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION',
+    '$CatalogMarker = [guid]::NewGuid().ToString("N")',
+    '$CatalogMarker -cnotmatch "^[0-9a-f]{32}$"',
+    '$CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"',
+    'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1',
+    '-ProjectDir $ProjectDir',
+    '-PluginSourceDir $PluginPackageDir',
+    '-EngineAssociation $env:UE_VERSION',
+    '-ToolCatalogTemplate $CatalogTemplate',
+    '-ToolCatalogMarker $CatalogMarker',
+    '"HOST_PROJECT=$ProjectPath"',
+    '"UE_WEBUI_CATALOG_MARKER=$CatalogMarker"',
+    'Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append',
   ])
+})
+
+test('custom host catalog evidence reaches native automation and the packaged React DOM', () => {
+  const host = stepNamed('Create temporary host project')
+  const automation = stepNamed('Run UE automation tests')
+  const gui = stepNamed('Run GUI CEF binding and task event test')
+  const packagingContract = CI_WORKFLOW.jobs['packaging-windows'].steps.find(
+    (step) => step.name === 'Test Windows packaging contracts',
+  )
+
+  assert.ok(packagingContract, 'Windows packaging must run the host-project contract')
+  assertOrdered(packagingContract.run, [
+    'node --test tests/package-plugin-registry-guard.test.mjs',
+    'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+    'node --test tests/create-host-project.test.mjs',
+  ])
+  assert.ok(STEPS.indexOf(host) < STEPS.indexOf(automation))
+  assert.ok(STEPS.indexOf(automation) < STEPS.indexOf(gui))
+  assert.match(automation.run, /"UnrealEditorWebUI\.Bridge\.ProjectToolCatalog"/u)
+
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /FPlatformMisc::GetEnvironmentVariable\(TEXT\("UE_WEBUI_CATALOG_MARKER"\)\)/u,
+  )
+  assertOrdered(BROWSER_TEST_SOURCE, [
+    'data-tool-catalog-source=\\"project\\"',
+    'data-tool-catalog-schema-version=\\"1\\"',
+    'data-tool-project-id=\\"project-',
+    'data-tool-stage-id=\\"stage-',
+    'data-tool-category-id=\\"category-',
+    "if(!projectCatalogReady()){phase('tool-catalog');state.readySince=0;return;}",
+    "command:'system.ping'",
+  ])
+  assert.doesNotMatch(BROWSER_TEST_SOURCE, /gettoolcatalog/iu)
 })
 
 test('UE 5.8 editor launches isolate CI from user-global Python startup scripts', () => {

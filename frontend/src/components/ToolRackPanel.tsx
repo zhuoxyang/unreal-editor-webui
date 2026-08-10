@@ -1,6 +1,8 @@
 import type { ChangeEvent } from 'react'
 import type { CommandsLoadStatus } from '../hooks/useCommands'
+import type { ToolCatalogLoadStatus } from '../hooks/useToolCatalog'
 import type { ToolCategory, ToolCategoryId, ToolProject, ToolProjectId, ToolStage, ToolStageId } from '../tool-manifest'
+import { toolCategoryIcon } from '../tool-catalog'
 import type { CommandLoadError } from '../types/command'
 
 export type ToolRackCommand = {
@@ -15,9 +17,9 @@ type ToolRackPanelProps = {
   commands: ToolRackCommand[]
   favoriteCommands: ToolRackCommand[]
   recentCommands: ToolRackCommand[]
-  categories: ToolCategory[]
-  projects: ToolProject[]
-  stages: ToolStage[]
+  categories: readonly ToolCategory[]
+  projects: readonly ToolProject[]
+  stages: readonly ToolStage[]
   selectedCommandName: string | null
   projectId: ToolProjectId
   stageId: ToolStageId
@@ -27,12 +29,16 @@ type ToolRackPanelProps = {
   commandsError: string
   commandsLoadErrors: CommandLoadError[]
   commandsStatus: CommandsLoadStatus
+  catalogDiagnostic: string
+  catalogStatus: ToolCatalogLoadStatus
+  canRetryCatalog: boolean
   onProjectChange: (projectId: ToolProjectId) => void
   onStageChange: (stageId: ToolStageId) => void
   onCategoryChange: (categoryId: ToolCategoryId) => void
   onSearchChange: (value: string) => void
   onOpenCommand: (commandName: string) => void
   onRetryCommands: () => void
+  onRetryCatalog: () => void
 }
 
 function toolIcon(command: ToolRackCommand) {
@@ -80,12 +86,16 @@ export function ToolRackPanel({
   commandsError,
   commandsLoadErrors,
   commandsStatus,
+  catalogDiagnostic,
+  catalogStatus,
+  canRetryCatalog,
   onProjectChange,
   onStageChange,
   onCategoryChange,
   onSearchChange,
   onOpenCommand,
   onRetryCommands,
+  onRetryCatalog,
 }: ToolRackPanelProps) {
   return (
     <aside className="panel tool-rack-panel lightbox-rack">
@@ -94,12 +104,26 @@ export function ToolRackPanel({
           <h2>Tool Rack</h2>
           <span>{shownCount} tools</span>
         </div>
+        {catalogStatus === 'loading' ? (
+          <p className="catalog-loading muted" role="status">Loading project catalog…</p>
+        ) : null}
+        {catalogDiagnostic ? (
+          <div className="inline-warning catalog-diagnostic" role="status">
+            <p>{catalogDiagnostic}</p>
+            {canRetryCatalog ? (
+              <button type="button" onClick={onRetryCatalog}>Retry loading catalog</button>
+            ) : null}
+          </div>
+        ) : null}
         <select
           value={projectId}
-          onChange={(event: ChangeEvent<HTMLSelectElement>) => onProjectChange(event.target.value as ToolProjectId)}
+          onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+            const project = projects.find((item) => item.id === event.target.value)
+            if (project) onProjectChange(project.id)
+          }}
         >
           {projects.map((project) => (
-            <option key={project.id} value={project.id}>
+            <option data-tool-project-id={project.id} key={project.id} value={project.id}>
               {project.name}
             </option>
           ))}
@@ -108,6 +132,8 @@ export function ToolRackPanel({
           {stages.map((stage) => (
             <button
               className={stage.id === stageId ? 'stage-tab active' : 'stage-tab'}
+              aria-pressed={stage.id === stageId}
+              data-tool-stage-id={stage.id}
               key={stage.id}
               type="button"
               onClick={() => onStageChange(stage.id)}
@@ -128,12 +154,14 @@ export function ToolRackPanel({
         {categories.map((category) => (
           <button
             className={category.id === categoryId ? 'category-button active' : 'category-button'}
+            aria-pressed={category.id === categoryId}
+            data-tool-category-id={category.id}
             key={category.id}
             title={category.label}
             type="button"
             onClick={() => onCategoryChange(category.id)}
           >
-            {category.icon}
+            {toolCategoryIcon(category.icon)}
           </button>
         ))}
       </div>

@@ -17,15 +17,17 @@ flowchart LR
     I --> J["SWebBrowser::ExecuteJavascript"]
     J --> K["window CustomEvent<br/>unreal-editor-webui"]
     K --> A
+    D --> L["Fixed project Config<br/>UnrealEditorWebUI/ToolCatalog.json"]
+    L --> A
 ```
 
 ## Main Pieces
 
 - `Source/UnrealEditorWebUI/Private/UnrealEditorWebUIModule.cpp` creates the dock tab, owns `SWebBrowser`, binds the bridge object as `window.ue.editorwebui`, dispatches task events back into the page, and blocks unsafe navigations.
-- `Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp` implements bridge methods, request preflight, native confirmation for privileged commands, task lifecycle storage, cancellation, timeout handling, and settings reads/writes.
+- `Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp` implements bridge methods, request preflight, native confirmation for privileged commands, task lifecycle storage, cancellation, timeout handling, settings reads/writes, and the bounded read-only project catalog transport.
 - `Python/unreal_editor_webui_bridge_entry.py` is the C++ to Python entry point. C++ evaluates a short import/dispatch expression with base64 arguments and receives JSON in memory through `ExecPythonCommandEx`.
 - `Python/unreal_editor_webui_registry.py` registers trusted commands, exposes `system.commands`, applies schema defaults, validates payloads, checks permission policy, and dispatches handlers.
-- `frontend/src/` is the React tool rack. It discovers commands from `system.commands`, renders schema-driven forms, persists project-scoped tool preferences only after native project context is available, shows task state, and renders structured results.
+- `frontend/src/` is the React tool rack. It discovers commands from `system.commands`, strictly decodes either the fixed project catalog or the bundled starter, renders schema-driven forms, persists reconciled project-scoped preferences only after both native contexts resolve, shows task state, and renders structured results.
 
 ## Request Flow
 
@@ -67,9 +69,16 @@ Remote origins and different loopback origins are rejected by settings validatio
 
 Browser persistence is fail-closed. The frontend enables it only after `getprojectcontext()` returns protocol version `1` and a valid project namespace. Legacy global keys are quarantined rather than automatically assigned to a project whose ownership cannot be proven.
 
+The optional runtime catalog is also fail-closed. `gettoolcatalog()` has no path argument and reads
+only `<Project>/Config/UnrealEditorWebUI/ToolCatalog.json`. Native code limits and parses the file;
+the frontend is the semantic schema-v1 authority. A missing file selects the bundled starter. A
+rejected file also falls back but disables automatic preference rewrites until a valid catalog is
+loaded, preventing a transient configuration error from destroying project-specific selections.
+Catalog contents organize already trusted registry metadata and never grant command permissions.
+
 ## Resource Bounds
 
-The native bridge rejects command requests above 256 Ki characters, settings above 64 Ki characters, permission policies above 16 Ki characters, registry responses above 4 MiB UTF-8, task responses above 1.5 MiB UTF-8, serialized task details above 4 MiB UTF-8, task identifiers above 128 characters, browser log messages above 16 Ki characters, and task events above 64 KiB UTF-8. Terminal responses are fetched through `gettask()` and are never copied into DOM events. Python independently enforces 256 KiB UTF-8 requests, 4 MiB UTF-8 responses, JSON depth 32, 10,000 JSON nodes, and at most 64 active cooperative jobs. Task logs retain at most 80 lines of 2,048 characters, and full retained task responses share a 16 Mi-character budget.
+The native bridge rejects command requests above 256 Ki characters, settings above 64 Ki characters, permission policies above 16 Ki characters, registry responses above 4 MiB UTF-8, task responses above 1.5 MiB UTF-8, serialized task details above 4 MiB UTF-8, task identifiers above 128 characters, browser log messages above 16 Ki characters, and task events above 64 KiB UTF-8. The project catalog is read as a single strict UTF-8 byte snapshot capped at 128 KiB and rejected above 16 JSON levels or 10,000 structural nodes before DOM parsing. Terminal responses are fetched through `gettask()` and are never copied into DOM events. Python independently enforces 256 KiB UTF-8 requests, 4 MiB UTF-8 responses, JSON depth 32, 10,000 JSON nodes, and at most 64 active cooperative jobs. Task logs retain at most 80 lines of 2,048 characters, and full retained task responses share a 16 Mi-character budget.
 
 ## Validation
 

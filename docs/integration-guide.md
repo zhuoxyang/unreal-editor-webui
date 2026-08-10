@@ -35,6 +35,7 @@ Unreal exposes `UObject` methods in lowercase. The current bridge methods are:
 - `getwebuisettings()`
 - `setwebuisettings(settingsJson)`
 - `getprojectcontext()`
+- `gettoolcatalog()`
 
 ## Request Envelope
 
@@ -232,6 +233,34 @@ await getBridge().setwebuisettings(JSON.stringify({
 
 `setwebuisettings` is a privileged write path and requires native confirmation.
 
+## Runtime Tool Catalog
+
+Call `gettoolcatalog()` to resolve the fixed project catalog candidate:
+
+```js
+const response = JSON.parse(await getBridge().gettoolcatalog());
+const candidate = response.result;
+```
+
+The result uses protocol version 1 and has the closed shape
+`{ protocolVersion, source, catalog, diagnosticCode }`:
+
+- `source: "project"` carries a parsed JSON object from
+  `Config/UnrealEditorWebUI/ToolCatalog.json` and a null diagnostic.
+- `source: "missing"` carries a null catalog and diagnostic; use the bundled starter catalog.
+- `source: "invalid"` carries a null catalog and one stable diagnostic code; use the bundled
+  starter catalog and do not automatically rewrite project preferences.
+
+The native read boundary validates the fixed location, byte/encoding/complexity limits, and JSON
+object root. A client must still run the nested `catalog` through the complete closed schema-v1
+decoder before making it active. If semantic validation fails, reject the whole candidate and use
+the bundled starter. Do not merge individual arrays or fields from rejected input. The first-party
+React client exposes only the active source, schema version, fixed relative source label, and a
+bounded diagnostic; it never returns or renders an absolute source path or raw parser input.
+
+Calling the getter again explicitly reloads the file. There is no catalog setter, filesystem
+watcher, remote source, or arbitrary-path bridge method.
+
 ## Project-Scoped Browser Storage
 
 Call `getprojectcontext()` before persisting browser preferences or command history:
@@ -247,5 +276,5 @@ Legacy global preference and history keys are deliberately not migrated automati
 
 ## Resource Limits
 
-Keep command requests below 256 KiB UTF-8 and direct responses below 4 MiB UTF-8. Stored task responses have a stricter 1.5 MiB UTF-8 limit so the final escaped task-detail envelope remains bounded; terminal events contain summaries and never embed `responseJson`. JSON nesting is limited to 32 levels and 10,000 nodes. Native settings input is limited to 64 Ki characters, task identifiers to 128 characters, retained task count to 64, and cooperative jobs to 64. Clients should treat `request_too_large`, `response_too_large`, `json_too_complex`, and `too_many_tasks` as stable operational errors.
+Keep command requests below 256 KiB UTF-8 and direct responses below 4 MiB UTF-8. Stored task responses have a stricter 1.5 MiB UTF-8 limit so the final escaped task-detail envelope remains bounded; terminal events contain summaries and never embed `responseJson`. JSON nesting is limited to 32 levels and 10,000 nodes. Native settings input is limited to 64 Ki characters, task identifiers to 128 characters, retained task count to 64, and cooperative jobs to 64. The project tool catalog is limited to 128 KiB strict UTF-8, 16 JSON levels, and 10,000 structural nodes before its domain-specific array and string limits are applied. Clients should treat `request_too_large`, `response_too_large`, `json_too_complex`, `too_many_tasks`, and catalog diagnostic codes as stable operational outcomes.
 

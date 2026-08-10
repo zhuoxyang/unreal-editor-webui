@@ -1,6 +1,12 @@
 import { BridgeProtocolError, type BridgeMethodName } from './bridge'
 import { parseTaskStatus } from './task-model'
-import type { ProjectContext, TaskResult, WebUISettings } from './types/bridge'
+import type {
+  NativeToolCatalogDiagnosticCode,
+  ProjectContext,
+  TaskResult,
+  ToolCatalogBridgeResult,
+  WebUISettings,
+} from './types/bridge'
 import type {
   CommandLoadError,
   CommandMetadata,
@@ -23,6 +29,15 @@ const MAX_SCHEMA_DEPTH = 16
 const MAX_DEFAULT_DEPTH = 32
 const MAX_DEFAULT_NODES = 10_000
 const SUPPORTED_PERMISSIONS = new Set(['read', 'write', 'destructive'])
+const TOOL_CATALOG_DIAGNOSTIC_CODES = new Set<NativeToolCatalogDiagnosticCode>([
+  'catalog_too_large',
+  'catalog_read_failed',
+  'catalog_invalid_json',
+  'catalog_invalid_encoding',
+  'catalog_resource_limit',
+  'catalog_invalid_schema_version',
+  'catalog_unsupported_version',
+])
 const ROOT_SCHEMA_KEYS = new Set(['type', 'properties', 'required', 'additionalProperties'])
 const COMMON_PROPERTY_KEYS = ['type', 'description', 'default', 'enum']
 const PROPERTY_KEYS_BY_TYPE: Record<SchemaPropertyType, ReadonlySet<string>> = {
@@ -610,4 +625,50 @@ export function decodeProjectContext(value: unknown): ProjectContext {
     fail(methodName, 'requires a non-empty storageNamespace string no longer than 128 characters.')
   }
   return value as ProjectContext
+}
+
+export function decodeToolCatalogBridgeResult(value: unknown): ToolCatalogBridgeResult {
+  const methodName: BridgeMethodName = 'gettoolcatalog'
+  if (!isRecord(value)) {
+    fail(methodName, 'must be an object.')
+  }
+  ensureAllowedKeys(
+    value,
+    new Set(['protocolVersion', 'source', 'catalog', 'diagnosticCode']),
+    methodName,
+    'catalog transport',
+  )
+  for (const key of ['protocolVersion', 'source', 'catalog', 'diagnosticCode']) {
+    if (!hasOwn(value, key)) {
+      fail(methodName, `is missing field "${key}".`)
+    }
+  }
+  if (value.protocolVersion !== 1) {
+    fail(methodName, 'requires protocolVersion 1.')
+  }
+
+  if (value.source === 'project') {
+    if (!isRecord(value.catalog) || value.diagnosticCode !== null) {
+      fail(methodName, 'project source requires an object catalog and null diagnosticCode.')
+    }
+    return value as ToolCatalogBridgeResult
+  }
+  if (value.source === 'missing') {
+    if (value.catalog !== null || value.diagnosticCode !== null) {
+      fail(methodName, 'missing source requires null catalog and diagnosticCode.')
+    }
+    return value as ToolCatalogBridgeResult
+  }
+  if (value.source === 'invalid') {
+    if (
+      value.catalog !== null
+      || typeof value.diagnosticCode !== 'string'
+      || !TOOL_CATALOG_DIAGNOSTIC_CODES.has(value.diagnosticCode as NativeToolCatalogDiagnosticCode)
+    ) {
+      fail(methodName, 'invalid source requires null catalog and a supported diagnosticCode.')
+    }
+    return value as ToolCatalogBridgeResult
+  }
+
+  fail(methodName, 'requires source project, missing, or invalid.')
 }

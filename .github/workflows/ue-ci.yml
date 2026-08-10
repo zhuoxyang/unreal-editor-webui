@@ -349,12 +349,25 @@ jobs:
           $ProjectDir = Join-Path $env:RUNNER_TEMP $ProjectDirName
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
           $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"
-          $ProjectOutput = @(powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION)
+          $CatalogMarker = [guid]::NewGuid().ToString("N")
+          if ($CatalogMarker -cnotmatch "^[0-9a-f]{32}$") { throw "Generated tool catalog marker is invalid." }
+          $CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"
+          $ProjectOutput = @(
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 `
+              -ProjectDir $ProjectDir `
+              -PluginSourceDir $PluginPackageDir `
+              -EngineAssociation $env:UE_VERSION `
+              -ToolCatalogTemplate $CatalogTemplate `
+              -ToolCatalogMarker $CatalogMarker
+          )
           if ($LASTEXITCODE -ne 0) { throw "Host project creation failed with exit code $LASTEXITCODE." }
           if ($ProjectOutput.Count -ne 1) { throw "Host project creation returned $($ProjectOutput.Count) output lines; expected exactly one project path." }
           $ProjectPath = $ProjectOutput[0]
           if (-not (Test-Path -LiteralPath $ProjectPath -PathType Leaf)) { throw "Host project was not created: $ProjectPath" }
-          "HOST_PROJECT=$ProjectPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            "HOST_PROJECT=$ProjectPath"
+            "UE_WEBUI_CATALOG_MARKER=$CatalogMarker"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run UE automation tests
         shell: powershell
@@ -377,6 +390,7 @@ jobs:
             "UnrealEditorWebUI.Bridge.DocumentSessionIsolation",
             "UnrealEditorWebUI.Bridge.ListTasksSummary",
             "UnrealEditorWebUI.Bridge.PackagedRegistryPing",
+            "UnrealEditorWebUI.Bridge.ProjectToolCatalog",
             "UnrealEditorWebUI.Bridge.PreflightValidation",
             "UnrealEditorWebUI.Bridge.ResourceLimitsAndProjectContext",
             "UnrealEditorWebUI.Bridge.TimeoutAndRemovalRules",

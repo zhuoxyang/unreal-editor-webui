@@ -2,7 +2,9 @@
 #include "UnrealEditorWebUISettings.h"
 
 #include "Async/Async.h"
+#include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
+#include "HAL/PlatformFileManager.h"
 #include "IPythonScriptPlugin.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/App.h"
@@ -31,9 +33,14 @@ namespace
     constexpr int32 MaxTaskEventJsonUtf8Bytes = 64 * 1024;
     constexpr int32 MaxPermissionPolicyCharacters = 16 * 1024;
     constexpr int32 MaxSettingsJsonCharacters = 64 * 1024;
+    constexpr int64 MaxToolCatalogFileBytes = 128 * 1024;
+    constexpr int32 MaxToolCatalogJsonDepth = 16;
+    constexpr int32 MaxToolCatalogJsonNodes = 10 * 1000;
     constexpr int32 MaxPostMessageCharacters = 16 * 1024;
     constexpr int32 MaxTaskIdCharacters = 128;
     constexpr int64 MaxRetainedTaskResponseCharacters = 16LL * 1024LL * 1024LL;
+    constexpr const TCHAR* ToolCatalogDirectoryName = TEXT("UnrealEditorWebUI");
+    constexpr const TCHAR* ToolCatalogFileName = TEXT("ToolCatalog.json");
 
     FString WriteJsonObject(const TSharedRef<FJsonObject>& JsonObject)
     {
@@ -154,6 +161,266 @@ namespace
             RequestId,
             TEXT("response_too_large"),
             TEXT("Serialized bridge response exceeds the maximum size of 4 MiB UTF-8."));
+    }
+
+    TSharedRef<FJsonObject> MakeToolCatalogResult(
+        const FString& Source,
+        const TSharedPtr<FJsonObject>& Catalog,
+        const FString& DiagnosticCode = FString())
+    {
+        const TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
+        Result->SetNumberField(TEXT("protocolVersion"), 1);
+        Result->SetStringField(TEXT("source"), Source);
+        if (Catalog.IsValid())
+        {
+            Result->SetObjectField(TEXT("catalog"), Catalog.ToSharedRef());
+        }
+        else
+        {
+            Result->SetField(TEXT("catalog"), MakeShared<FJsonValueNull>());
+        }
+        if (DiagnosticCode.IsEmpty())
+        {
+            Result->SetField(TEXT("diagnosticCode"), MakeShared<FJsonValueNull>());
+        }
+        else
+        {
+            Result->SetStringField(TEXT("diagnosticCode"), DiagnosticCode);
+        }
+        return Result;
+    }
+
+    bool IsUtf8ContinuationByte(uint8 Byte)
+    {
+        return Byte >= 0x80 && Byte <= 0xBF;
+    }
+
+    bool DecodeStrictUtf8(const TArray<uint8>& Bytes, FString& Output)
+    {
+        int32 Offset = 0;
+        if (Bytes.Num() >= 3 && Bytes[0] == 0xEF && Bytes[1] == 0xBB && Bytes[2] == 0xBF)
+        {
+            Offset = 3;
+        }
+
+        int32 Index = Offset;
+        while (Index < Bytes.Num())
+        {
+            const uint8 Lead = Bytes[Index];
+            if (Lead == 0)
+            {
+                return false;
+            }
+            if (Lead <= 0x7F)
+            {
+                ++Index;
+                continue;
+            }
+
+            int32 SequenceLength = 0;
+            if (Lead >= 0xC2 && Lead <= 0xDF)
+            {
+                SequenceLength = 2;
+            }
+            else if (Lead >= 0xE0 && Lead <= 0xEF)
+            {
+                SequenceLength = 3;
+            }
+            else if (Lead >= 0xF0 && Lead <= 0xF4)
+            {
+                SequenceLength = 4;
+            }
+            else
+            {
+                return false;
+            }
+
+            if (Index + SequenceLength > Bytes.Num())
+            {
+                return false;
+            }
+            const uint8 Second = Bytes[Index + 1];
+            if (!IsUtf8ContinuationByte(Second)
+                || (Lead == 0xE0 && Second < 0xA0)
+                || (Lead == 0xED && Second > 0x9F)
+                || (Lead == 0xF0 && Second < 0x90)
+                || (Lead == 0xF4 && Second > 0x8F))
+            {
+                return false;
+            }
+            for (int32 ContinuationIndex = 2; ContinuationIndex < SequenceLength; ++ContinuationIndex)
+            {
+                if (!IsUtf8ContinuationByte(Bytes[Index + ContinuationIndex]))
+                {
+                    return false;
+                }
+            }
+            Index += SequenceLength;
+        }
+
+        const int32 Utf8Length = Bytes.Num() - Offset;
+        if (Utf8Length == 0)
+        {
+            Output.Reset();
+            return true;
+        }
+        const FUTF8ToTCHAR Converter(
+            reinterpret_cast<const ANSICHAR*>(Bytes.GetData() + Offset),
+            Utf8Length);
+        Output = FString(Converter.Length(), Converter.Get());
+        return true;
+    }
+
+    bool IsWithinToolCatalogJsonComplexity(const FString& Json)
+    {
+        int32 Depth = 0;
+        int32 Nodes = 1;
+        bool bInString = false;
+        bool bEscaped = false;
+        for (const TCHAR Character : Json)
+        {
+            if (bInString)
+            {
+                if (bEscaped)
+                {
+                    bEscaped = false;
+                }
+                else if (Character == TEXT('\\'))
+                {
+                    bEscaped = true;
+                }
+                else if (Character == TEXT('"'))
+                {
+                    bInString = false;
+                }
+                continue;
+            }
+
+            if (Character == TEXT('"'))
+            {
+                bInString = true;
+            }
+            else if (Character == TEXT('{') || Character == TEXT('['))
+            {
+                ++Depth;
+                ++Nodes;
+                if (Depth > MaxToolCatalogJsonDepth || Nodes > MaxToolCatalogJsonNodes)
+                {
+                    return false;
+                }
+            }
+            else if (Character == TEXT('}') || Character == TEXT(']'))
+            {
+                Depth = FMath::Max(0, Depth - 1);
+            }
+            else if (Character == TEXT(','))
+            {
+                ++Nodes;
+                if (Nodes > MaxToolCatalogJsonNodes)
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    FString BuildToolCatalogResponse(const FString& ProjectConfigDir)
+    {
+        if (ProjectConfigDir.IsEmpty())
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_read_failed")));
+        }
+
+        const FString CatalogPath = FPaths::Combine(
+            ProjectConfigDir,
+            ToolCatalogDirectoryName,
+            ToolCatalogFileName);
+        IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+        if (!PlatformFile.FileExists(*CatalogPath))
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("missing"), nullptr));
+        }
+
+        TUniquePtr<IFileHandle> FileHandle(PlatformFile.OpenRead(*CatalogPath));
+        if (!FileHandle)
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_read_failed")));
+        }
+        const int64 FileSize = FileHandle->Size();
+        if (FileSize < 0)
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_read_failed")));
+        }
+        if (FileSize > MaxToolCatalogFileBytes)
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_too_large")));
+        }
+
+        TArray<uint8> CatalogBytes;
+        CatalogBytes.SetNumUninitialized(static_cast<int32>(FileSize));
+        if (FileSize > 0 && !FileHandle->Read(CatalogBytes.GetData(), FileSize))
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_read_failed")));
+        }
+
+        FString CatalogJson;
+        if (!DecodeStrictUtf8(CatalogBytes, CatalogJson))
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_invalid_encoding")));
+        }
+        if (!IsWithinToolCatalogJsonComplexity(CatalogJson))
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_resource_limit")));
+        }
+
+        TSharedPtr<FJsonObject> Catalog;
+        const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(CatalogJson);
+        if (!FJsonSerializer::Deserialize(Reader, Catalog) || !Catalog.IsValid())
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_invalid_json")));
+        }
+
+        double SchemaVersion = 0.0;
+        const TSharedPtr<FJsonValue> SchemaVersionValue = Catalog->TryGetField(TEXT("schemaVersion"));
+        if (!SchemaVersionValue.IsValid()
+            || SchemaVersionValue->Type != EJson::Number
+            || !SchemaVersionValue->TryGetNumber(SchemaVersion)
+            || !FMath::IsFinite(SchemaVersion)
+            || SchemaVersion != FMath::FloorToDouble(SchemaVersion))
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_invalid_schema_version")));
+        }
+        if (SchemaVersion != 1.0)
+        {
+            return MakeBoundedSuccessResponse(
+                FString(),
+                MakeToolCatalogResult(TEXT("invalid"), nullptr, TEXT("catalog_unsupported_version")));
+        }
+
+        return MakeBoundedSuccessResponse(
+            FString(),
+            MakeToolCatalogResult(TEXT("project"), Catalog));
     }
 
     TSharedRef<FJsonObject> ParseJsonObjectOrEmpty(const FString& Json)
@@ -712,6 +979,12 @@ FString UUnrealEditorWebUIBridge::TestOnlyBuildProjectStorageNamespace(
     return BuildProjectStorageNamespace(ProjectIdentity);
 }
 
+FString UUnrealEditorWebUIBridge::TestOnlyGetToolCatalogFromProjectConfigDir(
+    const FString& ProjectConfigDir) const
+{
+    return BuildToolCatalogResponse(ProjectConfigDir);
+}
+
 void UUnrealEditorWebUIBridge::TestOnlyCompleteTaskWithResponse(
     const FString& TaskId,
     const FString& ResponseJson,
@@ -1180,6 +1453,11 @@ FString UUnrealEditorWebUIBridge::GetProjectContext() const
         TEXT("storageNamespace"),
         BuildProjectStorageNamespace(ProjectIdentity));
     return MakeBoundedSuccessResponse(FString(), Result);
+}
+
+FString UUnrealEditorWebUIBridge::GetToolCatalog() const
+{
+    return BuildToolCatalogResponse(FPaths::ProjectConfigDir());
 }
 
 FString UUnrealEditorWebUIBridge::SetWebUISettings(const FString& SettingsJson)
