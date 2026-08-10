@@ -238,6 +238,21 @@ await window.ue.editorwebui.setwebuisettings(
 );
 ```
 
+## Health and Support Report
+
+The workspace header includes a health status control. It checks the optional
+`getwebuihealth()` bridge method and reports only categorical runtime state: public plugin and
+`major.minor.patch` engine versions, packaged or loopback document scope, Python availability,
+per-call privileged confirmation, document-session task isolation, project persistence, catalog
+fallback, and command discovery counts.
+
+The generated schema-v1 support report is built from an explicit frontend allowlist and is capped
+at 4 KiB UTF-8. Its `health.overallStatus` and ordered `health.reasonCodes` are derived from the
+same decoded snapshot shown by the panel. It never copies settings, URLs, paths, project names or
+namespaces, catalog or command contents, module errors, task ids, payloads, responses, logs, raw
+bridge errors, host identity, or credentials. The report is not uploaded or persisted. If CEF
+cannot grant clipboard access, the read-only preview is selected for manual copying instead.
+
 ## Python Command Registry
 
 Register commands in `Python/unreal_editor_webui_registry.py`:

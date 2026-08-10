@@ -388,6 +388,106 @@
   color: #f0c979;
 }
 
+.bridge-health {
+  position: relative;
+  z-index: 10;
+}
+
+.bridge-health > button {
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.bridge-health[data-health-overall-status="healthy"] > button {
+  background: rgba(34, 197, 94, 0.14);
+  color: #86efac;
+}
+
+.bridge-health[data-health-overall-status="checking"] > button {
+  background: rgba(59, 130, 246, 0.14);
+  color: #93c5fd;
+}
+
+.bridge-health[data-health-overall-status="degraded"] > button {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+}
+
+.bridge-health[data-health-overall-status="unavailable"] > button,
+.bridge-health[data-health-overall-status="unhealthy"] > button,
+.bridge-health[data-health-overall-status="error"] > button {
+  background: rgba(244, 63, 94, 0.14);
+  color: #fda4af;
+}
+
+.bridge-health-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: grid;
+  width: min(500px, calc(100vw - 56px));
+  max-height: min(720px, calc(100vh - 120px));
+  overflow: auto;
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px;
+  background: #111827;
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.bridge-health-panel h2,
+.bridge-health-panel h3,
+.bridge-health-panel p {
+  margin: 0;
+}
+
+.bridge-health-panel dl {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.bridge-health-panel dl div {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+}
+
+.bridge-health-panel dt {
+  color: var(--text);
+}
+
+.bridge-health-panel dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text-h);
+}
+
+.support-report {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.support-report textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.32);
+  color: #bfdbfe;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -971,5 +1071,15 @@ details pre {
   .tool-shell-header,
   .workspace-tool-header {
     flex-direction: column;
+  }
+
+  .header-statuses {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .bridge-health-panel {
+    right: auto;
+    left: 0;
   }
 }

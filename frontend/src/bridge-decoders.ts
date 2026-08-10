@@ -5,6 +5,9 @@ import type {
   ProjectContext,
   TaskResult,
   ToolCatalogBridgeResult,
+  WebUIDocumentScope,
+  WebUIHealth,
+  WebUIPythonRuntime,
   WebUISettings,
 } from './types/bridge'
 import type {
@@ -38,6 +41,25 @@ const TOOL_CATALOG_DIAGNOSTIC_CODES = new Set<NativeToolCatalogDiagnosticCode>([
   'catalog_invalid_schema_version',
   'catalog_unsupported_version',
 ])
+const WEB_UI_DOCUMENT_SCOPES = new Set<WebUIDocumentScope>([
+  'packaged',
+  'loopback_http',
+  'loopback_https',
+  'inactive',
+])
+const WEB_UI_PYTHON_RUNTIMES = new Set<WebUIPythonRuntime>(['available', 'unavailable'])
+const WEB_UI_HEALTH_KEYS = new Set([
+  'protocolVersion',
+  'bridgeProtocolVersion',
+  'pluginVersion',
+  'engineVersion',
+  'documentScope',
+  'pythonRuntime',
+  'privilegedConfirmation',
+  'taskSessionIsolation',
+])
+const CANONICAL_PLUGIN_VERSION = /^[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*$/
+const CANONICAL_ENGINE_VERSION = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/
 const ROOT_SCHEMA_KEYS = new Set(['type', 'properties', 'required', 'additionalProperties'])
 const COMMON_PROPERTY_KEYS = ['type', 'description', 'default', 'enum']
 const PROPERTY_KEYS_BY_TYPE: Record<SchemaPropertyType, ReadonlySet<string>> = {
@@ -625,6 +647,71 @@ export function decodeProjectContext(value: unknown): ProjectContext {
     fail(methodName, 'requires a non-empty storageNamespace string no longer than 128 characters.')
   }
   return value as ProjectContext
+}
+
+export function decodeWebUIHealth(value: unknown): WebUIHealth {
+  const methodName: BridgeMethodName = 'getwebuihealth'
+  if (!isRecord(value)) {
+    fail(methodName, 'must be an object.')
+  }
+
+  ensureAllowedKeys(value, WEB_UI_HEALTH_KEYS, methodName, 'health')
+  for (const key of WEB_UI_HEALTH_KEYS) {
+    if (!hasOwn(value, key)) {
+      fail(methodName, `is missing field "${key}".`)
+    }
+  }
+
+  if (value.protocolVersion !== 1) {
+    fail(methodName, 'requires protocolVersion 1.')
+  }
+  if (value.bridgeProtocolVersion !== 1) {
+    fail(methodName, 'requires bridgeProtocolVersion 1.')
+  }
+  if (
+    typeof value.pluginVersion !== 'string'
+    || value.pluginVersion.length === 0
+    || value.pluginVersion.length > 64
+    || !CANONICAL_PLUGIN_VERSION.test(value.pluginVersion)
+  ) {
+    fail(methodName, 'requires a canonical pluginVersion of at most 64 alphanumeric dot-or-hyphen segments.')
+  }
+  if (
+    typeof value.engineVersion !== 'string'
+    || value.engineVersion.length > 32
+    || !CANONICAL_ENGINE_VERSION.test(value.engineVersion)
+  ) {
+    fail(methodName, 'requires engineVersion in canonical major.minor.patch form.')
+  }
+  if (
+    typeof value.documentScope !== 'string'
+    || !WEB_UI_DOCUMENT_SCOPES.has(value.documentScope as WebUIDocumentScope)
+  ) {
+    fail(methodName, 'requires a supported documentScope.')
+  }
+  if (
+    typeof value.pythonRuntime !== 'string'
+    || !WEB_UI_PYTHON_RUNTIMES.has(value.pythonRuntime as WebUIPythonRuntime)
+  ) {
+    fail(methodName, 'requires pythonRuntime available or unavailable.')
+  }
+  if (value.privilegedConfirmation !== 'per_call') {
+    fail(methodName, 'requires privilegedConfirmation per_call.')
+  }
+  if (value.taskSessionIsolation !== 'document') {
+    fail(methodName, 'requires taskSessionIsolation document.')
+  }
+
+  return {
+    protocolVersion: 1,
+    bridgeProtocolVersion: 1,
+    pluginVersion: value.pluginVersion,
+    engineVersion: value.engineVersion,
+    documentScope: value.documentScope as WebUIDocumentScope,
+    pythonRuntime: value.pythonRuntime as WebUIPythonRuntime,
+    privilegedConfirmation: 'per_call',
+    taskSessionIsolation: 'document',
+  }
 }
 
 export function decodeToolCatalogBridgeResult(value: unknown): ToolCatalogBridgeResult {

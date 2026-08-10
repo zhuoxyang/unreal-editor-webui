@@ -15,6 +15,8 @@ export type ProjectStorageContext = {
   persistenceEnabled: boolean
 }
 
+export type ProjectContextLoadStatus = 'loading' | 'ready' | 'unavailable'
+
 const DISABLED_CONTEXT: ProjectStorageContext = {
   projectName: 'Unknown project',
   storageNamespace: null,
@@ -56,10 +58,18 @@ export function useProjectContext({ bridgeReady, callBridgeQuiet, log }: UseProj
   }, [bridgeHasProjectContext, callBridgeQuiet, log])
 
   const currentResolution = resolution?.caller === callBridgeQuiet ? resolution : null
+  const projectContextStatus: ProjectContextLoadStatus = !bridgeHasProjectContext
+    ? 'unavailable'
+    : !currentResolution
+      ? 'loading'
+      : currentResolution.context
+        ? 'ready'
+        : 'unavailable'
   return {
     projectContext: bridgeHasProjectContext && currentResolution?.context
       ? { ...currentResolution.context, persistenceEnabled: true }
       : DISABLED_CONTEXT,
     projectContextReady: bridgeHasProjectContext ? currentResolution !== null : true,
+    projectContextStatus,
   }
 }

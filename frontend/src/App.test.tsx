@@ -222,3 +222,148 @@ describe('command discovery diagnostics', () => {
     expect(screen.getAllByText('asset.scan').length).toBeGreaterThan(0)
   })
 })
+
+describe('health and support report', () => {
+  it('aggregates decoded status without exporting project, catalog, command, or task details', async () => {
+    const projectName = 'Secret Host Project'
+    const storageNamespace = 'project-secret-namespace'
+    const moduleName = 'secret.command.module'
+    const moduleError = 'C:/Users/private/source.py?token=do-not-export'
+    const taskId = 'task-secret-id'
+    const taskPayload = 'payload-secret-value'
+    const taskResponse = 'response-secret-value'
+    installBridge(
+      [{
+        taskId,
+        command: 'secret.command',
+        payload: { value: taskPayload },
+        status: 'completed',
+        progress: 100,
+        logs: ['log-secret-value'],
+        responseJson: taskResponse,
+      }],
+      {
+        getwebuihealth: vi.fn(async () => bridgeResponse({
+          protocolVersion: 1,
+          bridgeProtocolVersion: 1,
+          pluginVersion: '0.1.1',
+          engineVersion: '5.8.0',
+          documentScope: 'packaged',
+          pythonRuntime: 'available',
+          privilegedConfirmation: 'per_call',
+          taskSessionIsolation: 'document',
+        })),
+        getprojectcontext: vi.fn(async () => bridgeResponse({
+          protocolVersion: 1,
+          projectName,
+          storageNamespace,
+        })),
+        gettoolcatalog: vi.fn(async () => bridgeResponse({
+          protocolVersion: 1,
+          source: 'project',
+          catalog: customToolCatalog(),
+          diagnosticCode: null,
+        })),
+      },
+      [{ module: moduleName, error: moduleError }],
+    )
+
+    const { container } = render(<App />)
+    await waitFor(() => expect(container.querySelector('[data-health-overall-status]')).toHaveAttribute(
+      'data-health-overall-status',
+      'degraded',
+    ))
+    await screen.findByText('secret.command')
+
+    fireEvent.click(container.querySelector('[data-health-panel-toggle]') as HTMLButtonElement)
+    fireEvent.click(container.querySelector('[data-support-report-generate]') as HTMLButtonElement)
+    const preview = container.querySelector('textarea[data-support-report-preview]') as HTMLTextAreaElement
+    const report = JSON.parse(preview.value) as Record<string, unknown>
+
+    expect(report).toMatchObject({
+      reportVersion: 1,
+      product: 'unreal-editor-webui',
+      health: {
+        overallStatus: 'degraded',
+        reasonCodes: ['health_registry_modules_rejected'],
+      },
+      native: {
+        protocolVersion: 1,
+        bridgeProtocolVersion: 1,
+        pluginVersion: '0.1.1',
+        engineVersion: '5.8.0',
+        documentScope: 'packaged',
+        pythonRuntime: 'available',
+      },
+      bridge: { lifecycle: 'ready', diagnosticCode: null },
+      project: { persistence: 'enabled' },
+      registry: { status: 'ready', availableCount: 2, loadErrorCount: 1 },
+      catalog: { status: 'ready', source: 'project', schemaVersion: 1, diagnosticCode: null },
+      tasks: { completed: 1, total: 1 },
+    })
+    for (const secret of [
+      projectName,
+      storageNamespace,
+      moduleName,
+      moduleError,
+      taskId,
+      taskPayload,
+      taskResponse,
+      'secret.command',
+      'log-secret-value',
+      'project-custom',
+      'stage-custom',
+      'category-custom',
+    ]) {
+      expect(preview.value).not.toContain(secret)
+    }
+  })
+
+  it('retries only the privacy-safe native health request from the health panel', async () => {
+    const getWebUIHealth = vi.fn(async () => bridgeResponse({
+      protocolVersion: 1,
+      bridgeProtocolVersion: 1,
+      pluginVersion: '0.1.1',
+      engineVersion: '5.8.0',
+      documentScope: 'packaged',
+      pythonRuntime: 'available',
+      privilegedConfirmation: 'per_call',
+      taskSessionIsolation: 'document',
+    }))
+    const getProjectContext = vi.fn(async () => bridgeResponse({
+      protocolVersion: 1,
+      projectName: 'Retry Project',
+      storageNamespace: 'retry-project',
+    }))
+    const getToolCatalog = vi.fn(async () => bridgeResponse({
+      protocolVersion: 1,
+      source: 'project',
+      catalog: customToolCatalog(),
+      diagnosticCode: null,
+    }))
+    installBridge([], {
+      getwebuihealth: getWebUIHealth,
+      getprojectcontext: getProjectContext,
+      gettoolcatalog: getToolCatalog,
+    })
+    const executeCommand = vi.mocked(window.ue!.editorwebui!.executecommand)
+
+    const { container } = render(<App />)
+    await waitFor(() => expect(container.querySelector('[data-health-overall-status]')).toHaveAttribute(
+      'data-health-overall-status',
+      'healthy',
+    ))
+    getWebUIHealth.mockClear()
+    getProjectContext.mockClear()
+    getToolCatalog.mockClear()
+    executeCommand.mockClear()
+
+    fireEvent.click(container.querySelector('[data-health-panel-toggle]') as HTMLButtonElement)
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+
+    await waitFor(() => expect(getWebUIHealth).toHaveBeenCalledOnce())
+    expect(getProjectContext).not.toHaveBeenCalled()
+    expect(getToolCatalog).not.toHaveBeenCalled()
+    expect(executeCommand).not.toHaveBeenCalled()
+  })
+})

@@ -24,6 +24,7 @@ describe('useProjectContext', () => {
 
     await waitFor(() => expect(result.current.projectContextReady).toBe(true))
     expect(result.current.projectContext.storageNamespace).toBe('project-a1b2')
+    expect(result.current.projectContextStatus).toBe('ready')
   })
 
   it('falls back without reading a global namespace when the method is unavailable', () => {
@@ -40,6 +41,7 @@ describe('useProjectContext', () => {
       storageNamespace: null,
       persistenceEnabled: false,
     })
+    expect(result.current.projectContextStatus).toBe('unavailable')
   })
 
   it('fails closed when project context lookup fails', async () => {
@@ -54,6 +56,7 @@ describe('useProjectContext', () => {
 
     await waitFor(() => expect(result.current.projectContextReady).toBe(true))
     expect(result.current.projectContext).toMatchObject({ storageNamespace: null, persistenceEnabled: false })
+    expect(result.current.projectContextStatus).toBe('unavailable')
     expect(log).toHaveBeenCalledWith(expect.stringContaining('context unavailable'))
   })
 
@@ -82,6 +85,7 @@ describe('useProjectContext', () => {
     rerender({ caller: secondCaller })
 
     expect(result.current.projectContextReady).toBe(false)
+    expect(result.current.projectContextStatus).toBe('loading')
     expect(result.current.projectContext).toMatchObject({
       storageNamespace: null,
       persistenceEnabled: false,

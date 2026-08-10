@@ -1,17 +1,18 @@
+import type { ReactNode } from 'react'
 import type { ToolCatalogLoadStatus, ToolCatalogSource } from '../hooks/useToolCatalog'
 
 type ToolShellHeaderProps = {
-  bridgeReady: boolean
   catalogSource: ToolCatalogSource
   catalogStatus: ToolCatalogLoadStatus
   catalogSchemaVersion: 1
+  healthPanel: ReactNode
 }
 
 export function ToolShellHeader({
-  bridgeReady,
   catalogSource,
   catalogStatus,
   catalogSchemaVersion,
+  healthPanel,
 }: ToolShellHeaderProps) {
   return (
     <section className="tool-shell-header">
@@ -23,9 +24,7 @@ export function ToolShellHeader({
         </p>
       </div>
       <div className="header-statuses">
-        <span className={bridgeReady ? 'status ready' : 'status'}>
-          {bridgeReady ? 'Bridge ready' : 'Bridge unavailable'}
-        </span>
+        {healthPanel}
         <span
           className={`catalog-source ${catalogStatus}`}
           data-tool-catalog-source={catalogSource}

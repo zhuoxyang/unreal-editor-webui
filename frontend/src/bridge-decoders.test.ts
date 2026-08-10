@@ -7,6 +7,7 @@ import {
   decodeTaskListResult,
   decodeTaskResult,
   decodeToolCatalogBridgeResult,
+  decodeWebUIHealth,
   decodeWebUISettings,
 } from './bridge-decoders'
 
@@ -129,6 +130,54 @@ describe('bridge result decoders', () => {
     expect(() => decodeProjectContext({ protocolVersion: 1, projectName: 'Example', storageNamespace: '' })).toThrow(
       'storageNamespace',
     )
+  })
+
+  it('strictly validates the Web UI health v1 result', () => {
+    const health = {
+      protocolVersion: 1,
+      bridgeProtocolVersion: 1,
+      pluginVersion: '0.1.1',
+      engineVersion: '5.8.0',
+      documentScope: 'packaged',
+      pythonRuntime: 'available',
+      privilegedConfirmation: 'per_call',
+      taskSessionIsolation: 'document',
+    }
+
+    expect(decodeWebUIHealth(health)).toEqual(health)
+    expect(() => decodeWebUIHealth({ ...health, protocolVersion: 2 })).toThrow('protocolVersion 1')
+    expect(() => decodeWebUIHealth({ ...health, bridgeProtocolVersion: 2 })).toThrow('bridgeProtocolVersion 1')
+    expect(() => decodeWebUIHealth({ ...health, resolvedUrl: 'file:///C:/Users/private/index.html' })).toThrow(
+      'unsupported keyword "resolvedUrl"',
+    )
+    const missingPythonRuntime: Record<string, unknown> = { ...health }
+    delete missingPythonRuntime.pythonRuntime
+    expect(() => decodeWebUIHealth(missingPythonRuntime)).toThrow('missing field "pythonRuntime"')
+  })
+
+  it.each([
+    ['pluginVersion', '', 'canonical pluginVersion'],
+    ['pluginVersion', '0.1.1_secret', 'canonical pluginVersion'],
+    ['pluginVersion', '0..1', 'canonical pluginVersion'],
+    ['pluginVersion', `1.${'2'.repeat(64)}`, 'canonical pluginVersion'],
+    ['engineVersion', '5.8', 'major.minor.patch'],
+    ['engineVersion', '05.8.0', 'major.minor.patch'],
+    ['documentScope', 'remote', 'supported documentScope'],
+    ['pythonRuntime', 'unknown', 'pythonRuntime available or unavailable'],
+    ['privilegedConfirmation', 'once', 'privilegedConfirmation per_call'],
+    ['taskSessionIsolation', 'global', 'taskSessionIsolation document'],
+  ])('rejects an invalid Web UI health %s value', (field, value, expectedMessage) => {
+    expect(() => decodeWebUIHealth({
+      protocolVersion: 1,
+      bridgeProtocolVersion: 1,
+      pluginVersion: '0.1.1',
+      engineVersion: '5.8.0',
+      documentScope: 'loopback_https',
+      pythonRuntime: 'unavailable',
+      privilegedConfirmation: 'per_call',
+      taskSessionIsolation: 'document',
+      [field]: value,
+    })).toThrow(expectedMessage)
   })
 
   it('strictly validates native tool catalog transport envelopes', () => {

@@ -12,6 +12,7 @@ export type {
   TaskResult,
   TaskStatus,
   ToolCatalogBridgeResult,
+  WebUIHealth,
   WebUISettings,
 } from './types/bridge'
 
@@ -29,6 +30,7 @@ declare global {
         setwebuisettings(settingsJson: string): Promise<string>
         getprojectcontext?(): Promise<string>
         gettoolcatalog?(): Promise<string>
+        getwebuihealth?(): Promise<string>
       }
     }
   }

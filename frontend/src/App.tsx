@@ -1,5 +1,6 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import './App.css'
+import { BridgeHealthPanel } from './components/BridgeHealthPanel'
 import { CommandInspectorPanel } from './components/CommandInspectorPanel'
 import { ResultRenderer } from './components/ResultRenderer'
 import { ToolShellBottom } from './components/ToolShellBottom'
@@ -16,7 +17,9 @@ import { useTasks } from './hooks/useTasks'
 import { useToolPreferences } from './hooks/useToolPreferences'
 import { useToolCatalog } from './hooks/useToolCatalog'
 import { useToolWorkspace } from './hooks/useToolWorkspace'
+import { useWebUIHealth } from './hooks/useWebUIHealth'
 import { hasCommandResult } from './schema-form'
+import type { SupportReportInput } from './support-report'
 import { commandHasDryRun } from './types/command'
 
 function App() {
@@ -30,11 +33,23 @@ function App() {
   }, [])
 
   const { bridgeReady, callBridge, callBridgeQuiet } = useEditorBridge(log)
-  const { projectContext, projectContextReady } = useProjectContext({ bridgeReady, callBridgeQuiet, log })
+  const {
+    projectContext,
+    projectContextReady,
+    projectContextStatus,
+  } = useProjectContext({ bridgeReady, callBridgeQuiet, log })
+  const {
+    canRetryHealth,
+    health,
+    healthDiagnosticCode,
+    healthStatus,
+    retryHealth,
+  } = useWebUIHealth({ bridgeReady, callBridgeQuiet, log })
   const {
     canAutoRewrite,
     canRetryCatalog,
     catalog,
+    catalogDiagnosticCode,
     catalogDiagnostic,
     catalogReady,
     catalogSource,
@@ -80,6 +95,57 @@ function App() {
     removeTask,
     taskList,
   } = useTasks({ bridgeReady, callBridge, callBridgeQuiet, log })
+
+  const taskCounts = useMemo(() => {
+    const counts = {
+      queued: 0,
+      running: 0,
+      completed: 0,
+      failed: 0,
+      cancelled: 0,
+      timedOut: 0,
+    }
+    for (const task of taskList) {
+      if (task.status === 'timed_out') {
+        counts.timedOut += 1
+      } else if (task.status in counts) {
+        counts[task.status as keyof Omit<typeof counts, 'timedOut'>] += 1
+      }
+    }
+    return counts
+  }, [taskList])
+
+  const supportReportInput: SupportReportInput = {
+    protocolVersion: health?.protocolVersion ?? null,
+    bridgeProtocolVersion: health?.bridgeProtocolVersion ?? null,
+    pluginVersion: health?.pluginVersion ?? null,
+    engineVersion: health?.engineVersion ?? null,
+    documentScope: health?.documentScope ?? null,
+    pythonRuntime: health?.pythonRuntime ?? null,
+    privilegedConfirmation: health?.privilegedConfirmation ?? null,
+    taskSessionIsolation: health?.taskSessionIsolation ?? null,
+    bridgeLifecycle: healthStatus,
+    bridgeDiagnosticCode: healthDiagnosticCode,
+    projectPersistenceStatus: projectContextStatus === 'loading'
+      ? 'loading'
+      : projectContext.persistenceEnabled
+        ? 'enabled'
+        : 'disabled',
+    registryStatus: commandsStatus,
+    registryAvailableCount: commands.length,
+    registryLoadErrorCount: commandsLoadErrors.length,
+    catalogStatus,
+    catalogSource,
+    catalogSchemaVersion: catalog.schemaVersion,
+    catalogDiagnosticCode,
+    queuedTaskCount: taskCounts.queued,
+    runningTaskCount: taskCounts.running,
+    completedTaskCount: taskCounts.completed,
+    failedTaskCount: taskCounts.failed,
+    cancelledTaskCount: taskCounts.cancelled,
+    timedOutTaskCount: taskCounts.timedOut,
+  }
+
   const {
     commandInvocations,
     commandResults,
@@ -150,10 +216,18 @@ function App() {
       data-tool-catalog-schema-version={catalog.schemaVersion}
     >
       <ToolShellHeader
-        bridgeReady={bridgeReady}
         catalogSchemaVersion={catalog.schemaVersion}
         catalogSource={catalogSource}
         catalogStatus={catalogStatus}
+        healthPanel={(
+          <BridgeHealthPanel
+            canRetryHealth={canRetryHealth}
+            health={health}
+            healthStatus={healthStatus}
+            onRetryHealth={retryHealth}
+            supportReportInput={supportReportInput}
+          />
+        )}
       />
 
       <section className="tool-shell-layout">
