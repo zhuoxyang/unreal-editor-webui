@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import documentationCatalog from '../../docs/examples/tool-catalog.v1.json'
 import {
   MAX_TOOL_CATALOG_PROJECTS,
   STARTER_TOOL_CATALOG,
@@ -7,6 +6,12 @@ import {
   decodeToolCatalogV1,
   toolCategoryIcon,
 } from './tool-catalog'
+
+const DOCUMENTATION_CATALOG_PATH = '../../docs/examples/tool-catalog.v1.json'
+const documentationCatalog = import.meta.glob(
+  '../../docs/examples/tool-catalog.v1.json',
+  { eager: true, import: 'default' },
+)[DOCUMENTATION_CATALOG_PATH]
 
 function customCatalog() {
   return {
