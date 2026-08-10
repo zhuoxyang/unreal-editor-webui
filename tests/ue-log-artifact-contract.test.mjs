@@ -32,6 +32,8 @@ const EXPECTED_PACKAGE_UPLOAD_PATH =
   '${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}'
 const EXPECTED_BUILD_ENVIRONMENT_PATH =
   '${{ runner.temp }}/UnrealEditorWebUI-BuildEnvironment-${{ github.run_id }}-${{ github.run_attempt }}/BuildEnvironment.json'
+const PYTHON_RESTRICTIVE_MODE_ARGUMENT =
+  '-ini:Engine:[ConsoleVariables]:Engine.Python.IsPythonInRestrictiveMode=1'
 const EXPECTED_LOG_PATHS = [
   '${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}.log',
   '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log',
@@ -185,6 +187,51 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     RUN_SUFFIX_ASSIGNMENT,
     '$PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"',
     'scripts/create-host-project.ps1 $ProjectDir $PluginPackageDir $env:UE_VERSION',
+  ])
+})
+
+test('UE 5.8 editor launches isolate CI from user-global Python startup scripts', () => {
+  assert.equal(JOB.env.UE_PYTHON_STARTUP_ISOLATION, PYTHON_RESTRICTIVE_MODE_ARGUMENT)
+
+  const editorSteps = [
+    'Run UE automation tests',
+    'Run packaged bridge smoke',
+    'Run native settings smoke',
+    'Run GUI CEF binding and task event test',
+  ]
+  for (const name of editorSteps) {
+    const run = stepNamed(name).run
+    assertOrdered(run, [
+      '$PythonIsolationArgs = @()',
+      'if ($env:UE_VERSION -eq "5.8")',
+      '$PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION',
+      '$env:HOST_PROJECT @PythonIsolationArgs',
+    ])
+    assert.equal(
+      run.split('$PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION').length - 1,
+      1,
+      `${name} must set the restrictive-mode override exactly once`,
+    )
+  }
+
+  const editorLaunches = STEPS.flatMap((step) =>
+    [...(step.run ?? '').matchAll(/^\s*& \$Editor(?:Cmd)?\b.*$/gmu)],
+  )
+  assert.equal(editorLaunches.length, 4, 'every protected UE editor launch must be enumerated')
+  for (const launch of editorLaunches) {
+    assert.match(launch[0], /\$env:HOST_PROJECT @PythonIsolationArgs\b/u)
+  }
+})
+
+test('UE 5.3 validation rejects user-global Python startup scripts before packaging', () => {
+  const prerequisites = stepNamed('Validate runner prerequisites').run
+
+  assertOrdered(prerequisites, [
+    'if ($env:UE_VERSION -eq "5.3")',
+    '[Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)',
+    '$UserPythonStartupScript = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"',
+    'Test-Path -LiteralPath $UserPythonStartupScript -PathType Leaf',
+    'UE 5.3 cannot isolate user-global Python startup scripts.',
   ])
 })
 

@@ -56,7 +56,7 @@ Runner prerequisites:
 - The selected Unreal Engine version at its standard `C:\Program Files\Epic Games\UE_...` path.
 - Visual Studio 2022 C++ toolchain and Windows SDK.
 - Network access so the pinned `actions/setup-node` step can provision Node.js/npm for frontend packaging.
-- No user-global Unreal Python startup script that logs errors during commandlets.
+- UE 5.8 CI launches the editor with restrictive Python mode enabled before plugin initialization, excluding user-global startup scripts from the validation process. UE 5.3 does not expose the same isolation control, so its preflight rejects a user-global `init_unreal.py` and requires a clean dedicated runner profile.
 
 Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions each registration from a clean root and uses an ephemeral one-job runner.
 
