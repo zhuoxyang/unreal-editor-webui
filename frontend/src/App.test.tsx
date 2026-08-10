@@ -11,6 +11,27 @@ function bridgeError(message: string) {
   return JSON.stringify({ id: null, ok: false, error: { code: 'test_error', message } })
 }
 
+function customToolCatalog() {
+  return {
+    schemaVersion: 1,
+    projects: [{ id: 'project-custom', name: 'Custom Project', stages: ['stage-custom'] }],
+    stages: [{ id: 'stage-custom', label: 'Custom Stage' }],
+    categories: [
+      { id: 'all', label: 'All', icon: 'grid' },
+      { id: 'favorites', label: 'Favorites', icon: 'star' },
+      { id: 'recent', label: 'Recent', icon: 'recent' },
+      { id: 'category-custom', label: 'Custom Category', icon: 'assets' },
+    ],
+    defaultPreferences: {
+      projectId: 'project-custom',
+      stageId: 'stage-custom',
+      categoryId: 'category-custom',
+      favorites: [],
+      openTabs: [],
+    },
+  }
+}
+
 function installBridge(
   tasks: unknown[],
   overrides: Partial<NonNullable<NonNullable<Window['ue']>['editorwebui']>> = {},
@@ -130,6 +151,62 @@ describe('tool preferences', () => {
 
     expect(await screen.findByDisplayValue('Project Neon')).toBeInTheDocument()
     expect((await screen.findAllByText('asset.longScan')).length).toBeGreaterThan(0)
+  })
+
+  it('renders a valid runtime catalog and marks its default selections active', async () => {
+    installBridge([], {
+      getprojectcontext: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        projectName: 'Custom Host',
+        storageNamespace: 'custom-host',
+      })),
+      gettoolcatalog: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        source: 'project',
+        catalog: customToolCatalog(),
+        diagnosticCode: null,
+      })),
+    })
+
+    const { container } = render(<App />)
+
+    await waitFor(() => expect(container.querySelector('main')).toHaveAttribute(
+      'data-tool-catalog-source',
+      'project',
+    ))
+    expect(container.querySelector('main')).toHaveAttribute('data-tool-catalog-schema-version', '1')
+    expect(await screen.findByDisplayValue('Custom Project')).toBeInTheDocument()
+    expect(container.querySelector('[data-tool-project-id="project-custom"]')).toHaveProperty('selected', true)
+    expect(container.querySelector('[data-tool-stage-id="stage-custom"]')).toHaveAttribute('aria-pressed', 'true')
+    expect(container.querySelector('[data-tool-category-id="category-custom"]')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Project catalog · schema v1')).toBeInTheDocument()
+  })
+
+  it('uses a fixed starter diagnostic without exposing raw invalid catalog fields', async () => {
+    const secretPath = 'C:/Users/private/secret-catalog.json'
+    installBridge([], {
+      getprojectcontext: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        projectName: 'Invalid Host',
+        storageNamespace: 'invalid-host',
+      })),
+      gettoolcatalog: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        source: 'project',
+        catalog: { ...customToolCatalog(), machinePath: secretPath },
+        diagnosticCode: null,
+      })),
+    })
+
+    const { container } = render(<App />)
+
+    await waitFor(() => expect(container.querySelector('main')).toHaveAttribute(
+      'data-tool-catalog-source',
+      'starter',
+    ))
+    expect((await screen.findAllByText(/does not satisfy schema v1/)).length).toBeGreaterThan(0)
+    expect(container.textContent).not.toContain(secretPath)
+    expect(screen.getByText('Starter catalog · schema v1')).toBeInTheDocument()
   })
 })
 

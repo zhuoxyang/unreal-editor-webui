@@ -23,6 +23,8 @@ The repository now contains a minimal Unreal Engine editor plugin starter. The a
 - Editable React startup settings form backed by `getwebuisettings` and `setwebuisettings`.
 - Command-specific table result views for starter asset commands.
 - Recent payload reuse and schema-default presets in the command console.
+- Strict schema-v1 runtime project/stage/category catalog loading from a fixed project Config path,
+  with bundled fallback and preference reconciliation.
 - Clean package script that stages the plugin without local frontend dependencies.
 - Starter asset commands for selected Content Browser assets and Asset Registry path listing.
 - Static `Web/index.html` smoke-test UI.
@@ -30,11 +32,9 @@ The repository now contains a minimal Unreal Engine editor plugin starter. The a
 
 ## Near-Term Goals
 
-1. Compile, run native Automation, packaged bridge smoke, and GUI CEF end-to-end validation in UE 5.8.
-2. Add more command-specific result renderers for validation reports.
-3. Document plugin installation, rebuild, and troubleshooting steps from a clean UE project.
-4. Expand the asset-tool demo with validation and batch operations.
-5. Add optional validation/status widgets for Web UI startup and bridge safety options.
+1. Add more command-specific result renderers for validation reports.
+2. Expand the asset-tool demo with validation and batch operations.
+3. Add optional validation/status widgets for Web UI startup and bridge safety options.
 
 ## Design Direction
 
@@ -71,6 +71,8 @@ Runtime/game UI support is intentionally out of scope for the initial version.
 - Frontend can generate runnable forms from command metadata.
 - Frontend can search commands, filter by permission, load schema defaults, and reuse recent payloads.
 - Frontend can track active/completed tasks without relying on a fixed short polling timeout.
+- Frontend can load a project-controlled runtime catalog, reconcile preferences, and fall back
+  without rewriting custom ids when the catalog is temporarily invalid.
 - Running editor-thread tasks are shown as non-cancellable instead of exposing a misleading cancel action.
 - Frontend can edit startup settings and display bridge validation errors.
 - Python registry validates nested objects, arrays, numeric bounds, string bounds, defaults, and dry-run schema markers.

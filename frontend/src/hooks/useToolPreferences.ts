@@ -5,42 +5,62 @@ import {
   MAX_FAVORITE_COMMANDS,
   MAX_OPEN_TABS,
   saveToolPreferences,
-  TOOL_PROJECTS,
   type ToolCategoryId,
   type ToolProjectId,
   type ToolStageId,
 } from '../tool-manifest'
+import { STARTER_TOOL_CATALOG, type ToolCatalogV1 } from '../tool-catalog'
 
-export function useToolPreferences(storageNamespace?: string | null) {
-  const [initialLoad] = useState(() => loadToolPreferencesState(storageNamespace))
+type ToolPreferenceRuntimeOptions = {
+  catalogReady?: boolean
+  canAutoRewrite?: boolean
+}
+
+export function useToolPreferences(
+  storageNamespace?: string | null,
+  catalog: ToolCatalogV1 = STARTER_TOOL_CATALOG,
+  {
+    catalogReady = true,
+    canAutoRewrite = true,
+  }: ToolPreferenceRuntimeOptions = {},
+) {
+  const [initialLoad] = useState(() => loadToolPreferencesState(
+    catalogReady ? storageNamespace : null,
+    catalog,
+  ))
   const [toolPreferences, setToolPreferences] = useState(initialLoad.value)
   const [workspaceTabs, setWorkspaceTabs] = useState<string[]>(initialLoad.value.openTabs)
   const [favoriteCommands, setFavoriteCommands] = useState<string[]>(initialLoad.value.favorites)
   const hasUserChangedRef = useRef(false)
-  const hasMountedRef = useRef(false)
   const suppressNextSaveRef = useRef(false)
 
   useEffect(() => {
-    if (!hasMountedRef.current) {
-      hasMountedRef.current = true
-      if (initialLoad.needsRewrite) {
-        saveToolPreferences(initialLoad.value, storageNamespace)
-      }
+    if (!catalogReady) {
       return
     }
 
-    const loaded = loadToolPreferencesState(storageNamespace)
+    let stopped = false
+    const loaded = loadToolPreferencesState(storageNamespace, catalog)
     hasUserChangedRef.current = false
     suppressNextSaveRef.current = true
-    setToolPreferences(loaded.value)
-    setWorkspaceTabs(loaded.value.openTabs)
-    setFavoriteCommands(loaded.value.favorites)
-    if (loaded.needsRewrite) {
-      saveToolPreferences(loaded.value, storageNamespace)
+    if (loaded.needsRewrite && canAutoRewrite) {
+      saveToolPreferences(loaded.value, storageNamespace, catalog)
     }
-  }, [initialLoad, storageNamespace])
+    void Promise.resolve().then(() => {
+      if (stopped) return
+      setToolPreferences(loaded.value)
+      setWorkspaceTabs(loaded.value.openTabs)
+      setFavoriteCommands(loaded.value.favorites)
+    })
+    return () => {
+      stopped = true
+    }
+  }, [canAutoRewrite, catalog, catalogReady, storageNamespace])
 
   useEffect(() => {
+    if (!catalogReady || !canAutoRewrite) {
+      return
+    }
     if (suppressNextSaveRef.current) {
       suppressNextSaveRef.current = false
       return
@@ -52,9 +72,9 @@ export function useToolPreferences(storageNamespace?: string | null) {
       ...toolPreferences,
       favorites: favoriteCommands,
       openTabs: workspaceTabs,
-    }, storageNamespace)
+    }, storageNamespace, catalog)
     hasUserChangedRef.current = false
-  }, [favoriteCommands, storageNamespace, toolPreferences, workspaceTabs])
+  }, [canAutoRewrite, catalog, catalogReady, favoriteCommands, storageNamespace, toolPreferences, workspaceTabs])
 
   function replaceWorkspaceTabs(value: SetStateAction<string[]>) {
     hasUserChangedRef.current = true
@@ -93,8 +113,13 @@ export function useToolPreferences(storageNamespace?: string | null) {
   function updateToolProject(projectId: ToolProjectId) {
     hasUserChangedRef.current = true
     setToolPreferences((preferences) => {
-      const project = TOOL_PROJECTS.find((item) => item.id === projectId) || TOOL_PROJECTS[0]
-      const nextStage = project.stages.includes(preferences.stageId) ? preferences.stageId : project.stages[0]
+      const project = catalog.projects.find((item) => item.id === projectId)
+      if (!project) return preferences
+      const nextStage = project.stages.includes(preferences.stageId)
+        ? preferences.stageId
+        : project.stages.includes(catalog.defaultPreferences.stageId)
+          ? catalog.defaultPreferences.stageId
+          : project.stages[0]
       return {
         ...preferences,
         projectId: project.id,
@@ -106,22 +131,25 @@ export function useToolPreferences(storageNamespace?: string | null) {
   function updateToolStage(stageId: ToolStageId) {
     hasUserChangedRef.current = true
     setToolPreferences((preferences) => {
-      const project = TOOL_PROJECTS.find((item) => item.id === preferences.projectId) || TOOL_PROJECTS[0]
+      const project = catalog.projects.find((item) => item.id === preferences.projectId)
+        || catalog.projects.find((item) => item.id === catalog.defaultPreferences.projectId)
+        || catalog.projects[0]
       return project.stages.includes(stageId) ? { ...preferences, stageId } : preferences
     })
   }
 
   function updateToolCategory(categoryId: ToolCategoryId) {
     hasUserChangedRef.current = true
-    setToolPreferences((preferences) => ({
-      ...preferences,
-      categoryId,
-    }))
+    setToolPreferences((preferences) => (
+      catalog.categories.some((category) => category.id === categoryId)
+        ? { ...preferences, categoryId }
+        : preferences
+    ))
   }
 
   function resetToolPreferences() {
     clearToolPreferences(storageNamespace)
-    const defaults = loadToolPreferencesState(storageNamespace).value
+    const defaults = loadToolPreferencesState(storageNamespace, catalog).value
     hasUserChangedRef.current = true
     setToolPreferences(defaults)
     setFavoriteCommands(defaults.favorites)

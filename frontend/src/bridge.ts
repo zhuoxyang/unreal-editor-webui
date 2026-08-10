@@ -6,7 +6,14 @@ import type {
   ChangeSetOperationStatus,
 } from './types/bridge'
 
-export type { BridgeResponse, ProjectContext, TaskResult, TaskStatus, WebUISettings } from './types/bridge'
+export type {
+  BridgeResponse,
+  ProjectContext,
+  TaskResult,
+  TaskStatus,
+  ToolCatalogBridgeResult,
+  WebUISettings,
+} from './types/bridge'
 
 declare global {
   interface Window {
@@ -21,6 +28,7 @@ declare global {
         getwebuisettings(): Promise<string>
         setwebuisettings(settingsJson: string): Promise<string>
         getprojectcontext?(): Promise<string>
+        gettoolcatalog?(): Promise<string>
       }
     }
   }

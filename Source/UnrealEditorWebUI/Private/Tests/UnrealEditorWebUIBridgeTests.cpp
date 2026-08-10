@@ -2,8 +2,14 @@
 
 #include "UnrealEditorWebUIBridge.h"
 
+#include "Containers/StringConv.h"
 #include "Dom/JsonObject.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformMisc.h"
 #include "Misc/AutomationTest.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Guid.h"
+#include "Misc/Paths.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
@@ -71,6 +77,37 @@ namespace
         return FString();
     }
 
+    FString GetCatalogDiagnosticCode(const TSharedPtr<FJsonObject>& Result)
+    {
+        if (!Result.IsValid())
+        {
+            return FString();
+        }
+        FString DiagnosticCode;
+        Result->TryGetStringField(TEXT("diagnosticCode"), DiagnosticCode);
+        return DiagnosticCode;
+    }
+
+    bool IsNullJsonField(const TSharedPtr<FJsonObject>& Object, const FString& FieldName)
+    {
+        if (!Object.IsValid())
+        {
+            return false;
+        }
+        const TSharedPtr<FJsonValue> Value = Object->TryGetField(FieldName);
+        return Value.IsValid() && Value->Type == EJson::Null;
+    }
+
+    bool HasExactToolCatalogResultKeys(const TSharedPtr<FJsonObject>& Result)
+    {
+        return Result.IsValid()
+            && Result->Values.Num() == 4
+            && Result->HasField(TEXT("protocolVersion"))
+            && Result->HasField(TEXT("source"))
+            && Result->HasField(TEXT("catalog"))
+            && Result->HasField(TEXT("diagnosticCode"));
+    }
+
     FString GetTaskStatus(UUnrealEditorWebUIBridge* Bridge, const FString& TaskId)
     {
         const TSharedPtr<FJsonObject> Result = ParseResultObject(Bridge->GetTask(TaskId));
@@ -131,6 +168,347 @@ bool FUnrealEditorWebUIPackagedRegistryPingTest::RunTest(const FString& Paramete
         }
     }
 
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIProjectToolCatalogTest,
+    "UnrealEditorWebUI.Bridge.ProjectToolCatalog",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIProjectToolCatalogTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    const FString ExpectedHostMarker = FPlatformMisc::GetEnvironmentVariable(TEXT("UE_WEBUI_CATALOG_MARKER"));
+    if (!ExpectedHostMarker.IsEmpty())
+    {
+        const FString HostResponseJson = Bridge->GetToolCatalog();
+        const TSharedPtr<FJsonObject> HostResult = ParseResultObject(HostResponseJson);
+        TestTrue(TEXT("The CI host project catalog is available through the production getter"), HostResult.IsValid());
+        if (HostResult.IsValid())
+        {
+            TestTrue(TEXT("The CI host catalog result has only the documented fields"), HasExactToolCatalogResultKeys(HostResult));
+            TestEqual(TEXT("The CI host catalog uses protocol version 1"), HostResult->GetIntegerField(TEXT("protocolVersion")), 1);
+            TestEqual(
+                TEXT("The CI host project reports a project catalog source"),
+                HostResult->GetStringField(TEXT("source")),
+                FString(TEXT("project")));
+            TestTrue(TEXT("The CI host project catalog has no transport diagnostic"), IsNullJsonField(HostResult, TEXT("diagnosticCode")));
+            const TSharedPtr<FJsonObject>* HostCatalog = nullptr;
+            TestTrue(TEXT("The CI host catalog is embedded as an object"), HostResult->TryGetObjectField(TEXT("catalog"), HostCatalog));
+            if (HostCatalog != nullptr && HostCatalog->IsValid())
+            {
+                const TArray<TSharedPtr<FJsonValue>>* Projects = nullptr;
+                TestTrue(TEXT("The CI host catalog contains projects"), (*HostCatalog)->TryGetArrayField(TEXT("projects"), Projects));
+                TestEqual(TEXT("The CI host catalog contains exactly one project"), Projects != nullptr ? Projects->Num() : -1, 1);
+                if (Projects != nullptr && Projects->Num() == 1)
+                {
+                    const TSharedPtr<FJsonObject> Project = (*Projects)[0]->AsObject();
+                    TestTrue(TEXT("The CI host project entry is an object"), Project.IsValid());
+                    if (Project.IsValid())
+                    {
+                        TestEqual(
+                            TEXT("The production getter preserves the exact fresh project id"),
+                            Project->GetStringField(TEXT("id")),
+                            FString::Printf(TEXT("project-%s"), *ExpectedHostMarker));
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        AddInfo(TEXT("UE_WEBUI_CATALOG_MARKER is unset; running isolated loader coverage without the CI host assertion."));
+    }
+
+    const FString TestRoot = FPaths::Combine(
+        FPaths::ProjectSavedDir(),
+        TEXT("Automation"),
+        FString::Printf(TEXT("ToolCatalog-%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+    const FString ConfigDir = FPaths::Combine(TestRoot, TEXT("Config"));
+    const FString CatalogDir = FPaths::Combine(ConfigDir, TEXT("UnrealEditorWebUI"));
+    const FString CatalogPath = FPaths::Combine(CatalogDir, TEXT("ToolCatalog.json"));
+    IFileManager& FileManager = IFileManager::Get();
+    FString FullAutomationRoot = FPaths::ConvertRelativePathToFull(FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Automation")));
+    FString FullTestRoot = FPaths::ConvertRelativePathToFull(TestRoot);
+    FPaths::NormalizeDirectoryName(FullAutomationRoot);
+    FPaths::NormalizeDirectoryName(FullTestRoot);
+    const bool bSafeTestRoot = FullTestRoot.StartsWith(FullAutomationRoot + TEXT("/"))
+        && FPaths::GetCleanFilename(FullTestRoot).StartsWith(TEXT("ToolCatalog-"));
+    const bool bFreshTestRoot = !FileManager.DirectoryExists(*FullTestRoot);
+    TestTrue(TEXT("The isolated catalog root stays under the project Automation directory"), bSafeTestRoot);
+    TestTrue(TEXT("The GUID-scoped catalog root starts fresh"), bFreshTestRoot);
+    if (!bSafeTestRoot || !bFreshTestRoot)
+    {
+        return false;
+    }
+
+    const TSharedPtr<FJsonObject> MissingResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestTrue(TEXT("A missing project catalog returns a result"), MissingResult.IsValid());
+    if (MissingResult.IsValid())
+    {
+        TestTrue(TEXT("A missing catalog result has only the documented fields"), HasExactToolCatalogResultKeys(MissingResult));
+        TestEqual(TEXT("A missing catalog result uses protocol version 1"), MissingResult->GetIntegerField(TEXT("protocolVersion")), 1);
+        TestEqual(TEXT("A missing project catalog selects the missing state"), MissingResult->GetStringField(TEXT("source")), FString(TEXT("missing")));
+        TestTrue(TEXT("A missing project catalog has a null catalog"), IsNullJsonField(MissingResult, TEXT("catalog")));
+        TestTrue(TEXT("A missing project catalog has no native diagnostic"), IsNullJsonField(MissingResult, TEXT("diagnosticCode")));
+    }
+
+    TestTrue(TEXT("The isolated catalog directory is created"), FileManager.MakeDirectory(*CatalogDir, true));
+    const FString ValidCatalog =
+        TEXT("{\"schemaVersion\":1,")
+        TEXT("\"projects\":[{\"id\":\"unit-project\",\"name\":\"Unit Project\",\"description\":\"Native loader fixture\",\"stages\":[\"unit-stage\"]}],")
+        TEXT("\"stages\":[{\"id\":\"unit-stage\",\"label\":\"Unit Stage\"}],")
+        TEXT("\"categories\":[{\"id\":\"all\",\"label\":\"All\",\"icon\":\"grid\"},{\"id\":\"favorites\",\"label\":\"Favorites\",\"icon\":\"star\"},{\"id\":\"recent\",\"label\":\"Recent\",\"icon\":\"recent\"}],")
+        TEXT("\"defaultPreferences\":{\"projectId\":\"unit-project\",\"stageId\":\"unit-stage\",\"categoryId\":\"all\",\"favorites\":[],\"openTabs\":[]}}");
+    TestTrue(
+        TEXT("A valid catalog fixture is written"),
+        FFileHelper::SaveStringToFile(
+            ValidCatalog,
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> ValidResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestTrue(TEXT("A valid project catalog returns a result"), ValidResult.IsValid());
+    if (ValidResult.IsValid())
+    {
+        TestTrue(TEXT("A valid catalog result has only the documented fields"), HasExactToolCatalogResultKeys(ValidResult));
+        TestEqual(TEXT("A valid project catalog selects the project source"), ValidResult->GetStringField(TEXT("source")), FString(TEXT("project")));
+        TestTrue(TEXT("A valid project catalog has no transport diagnostic"), IsNullJsonField(ValidResult, TEXT("diagnosticCode")));
+        const TSharedPtr<FJsonObject>* Catalog = nullptr;
+        TestTrue(TEXT("A valid project catalog is embedded as an object"), ValidResult->TryGetObjectField(TEXT("catalog"), Catalog));
+        if (Catalog != nullptr && Catalog->IsValid())
+        {
+            TestEqual(TEXT("The native loader preserves schema version 1"), (*Catalog)->GetIntegerField(TEXT("schemaVersion")), 1);
+        }
+    }
+
+    const TArray<TPair<FString, FString>> InvalidSchemaVersions = {
+        {TEXT("{}"), TEXT("catalog_invalid_schema_version")},
+        {TEXT("{\"schemaVersion\":\"1\"}"), TEXT("catalog_invalid_schema_version")},
+        {TEXT("{\"schemaVersion\":true}"), TEXT("catalog_invalid_schema_version")},
+        {TEXT("{\"schemaVersion\":1.5}"), TEXT("catalog_invalid_schema_version")},
+        {TEXT("{\"schemaVersion\":0}"), TEXT("catalog_unsupported_version")},
+        {TEXT("{\"schemaVersion\":2}"), TEXT("catalog_unsupported_version")},
+    };
+    for (int32 Index = 0; Index < InvalidSchemaVersions.Num(); ++Index)
+    {
+        TestTrue(
+            *FString::Printf(TEXT("Invalid schema-version fixture %d is written"), Index),
+            FFileHelper::SaveStringToFile(
+                InvalidSchemaVersions[Index].Key,
+                *CatalogPath,
+                FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+        const TSharedPtr<FJsonObject> InvalidVersionResult = ParseResultObject(
+            Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+        TestEqual(
+            *FString::Printf(TEXT("Invalid schema-version fixture %d fails deterministically"), Index),
+            GetCatalogDiagnosticCode(InvalidVersionResult),
+            InvalidSchemaVersions[Index].Value);
+        TestTrue(
+            *FString::Printf(TEXT("Invalid schema-version fixture %d does not return a catalog"), Index),
+            IsNullJsonField(InvalidVersionResult, TEXT("catalog")));
+    }
+
+    TestTrue(
+        TEXT("An invalid-root catalog fixture is written"),
+        FFileHelper::SaveStringToFile(
+            TEXT("[]"),
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> InvalidJsonResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("A non-object catalog is rejected as invalid JSON input"),
+        GetCatalogDiagnosticCode(InvalidJsonResult),
+        FString(TEXT("catalog_invalid_json")));
+
+    const FString UnicodeCatalog = ValidCatalog.Replace(
+        TEXT("Native loader fixture"),
+        TEXT("\u76EE\u5F55 fixture"));
+    const FTCHARToUTF8 UnicodeUtf8(*UnicodeCatalog);
+    TArray<uint8> BomUnicodeBytes = {0xEF, 0xBB, 0xBF};
+    BomUnicodeBytes.Append(
+        reinterpret_cast<const uint8*>(UnicodeUtf8.Get()),
+        UnicodeUtf8.Length());
+    TestTrue(TEXT("A UTF-8 BOM and multibyte fixture is written"), FFileHelper::SaveArrayToFile(BomUnicodeBytes, *CatalogPath));
+    const TSharedPtr<FJsonObject> BomUnicodeResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("A UTF-8 BOM and valid multibyte text pass the encoding gate"),
+        BomUnicodeResult.IsValid() ? BomUnicodeResult->GetStringField(TEXT("source")) : FString(),
+        FString(TEXT("project")));
+
+    auto AppendAsciiBytes = [](TArray<uint8>& Bytes, const ANSICHAR* Text)
+    {
+        while (*Text != '\0')
+        {
+            Bytes.Add(static_cast<uint8>(*Text));
+            ++Text;
+        }
+    };
+    TArray<uint8> FourByteUtf8;
+    AppendAsciiBytes(FourByteUtf8, "{\"schemaVersion\":1,\"emoji\":\"");
+    FourByteUtf8.Add(0xF0);
+    FourByteUtf8.Add(0x9F);
+    FourByteUtf8.Add(0x98);
+    FourByteUtf8.Add(0x80);
+    AppendAsciiBytes(FourByteUtf8, "\"}");
+    TestTrue(TEXT("A four-byte UTF-8 fixture is written"), FFileHelper::SaveArrayToFile(FourByteUtf8, *CatalogPath));
+    const TSharedPtr<FJsonObject> FourByteUtf8Result = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("A valid four-byte UTF-8 sequence passes the encoding gate"),
+        FourByteUtf8Result.IsValid() ? FourByteUtf8Result->GetStringField(TEXT("source")) : FString(),
+        FString(TEXT("project")));
+
+    struct FInvalidUtf8Case
+    {
+        FString Name;
+        TArray<uint8> Bytes;
+    };
+    const TArray<FInvalidUtf8Case> InvalidUtf8Cases = {
+        {TEXT("UTF-16 BOM"), {0xFF, 0xFE, 0x7B, 0x7D}},
+        {TEXT("lone continuation"), {0x80}},
+        {TEXT("two-byte overlong"), {0xC0, 0x80}},
+        {TEXT("three-byte overlong"), {0xE0, 0x80, 0x80}},
+        {TEXT("UTF-16 surrogate"), {0xED, 0xA0, 0x80}},
+        {TEXT("out-of-range code point"), {0xF4, 0x90, 0x80, 0x80}},
+        {TEXT("truncated sequence"), {0xE2, 0x82}},
+        {TEXT("embedded NUL"), {0x7B, 0x00, 0x7D}},
+    };
+    for (const FInvalidUtf8Case& TestCase : InvalidUtf8Cases)
+    {
+        TestTrue(
+            *FString::Printf(TEXT("The %s fixture is written"), *TestCase.Name),
+            FFileHelper::SaveArrayToFile(TestCase.Bytes, *CatalogPath));
+        const TSharedPtr<FJsonObject> InvalidEncodingResult = ParseResultObject(
+            Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+        TestEqual(
+            *FString::Printf(TEXT("The %s fixture is rejected before JSON parsing"), *TestCase.Name),
+            GetCatalogDiagnosticCode(InvalidEncodingResult),
+            FString(TEXT("catalog_invalid_encoding")));
+        TestTrue(
+            *FString::Printf(TEXT("The %s fixture does not return a catalog"), *TestCase.Name),
+            IsNullJsonField(InvalidEncodingResult, TEXT("catalog")));
+    }
+
+    const FString MaximumDepth =
+        TEXT("{\"schemaVersion\":1,\"value\":")
+        + FString::ChrN(15, TEXT('['))
+        + TEXT("0")
+        + FString::ChrN(15, TEXT(']'))
+        + TEXT("}");
+    TestTrue(
+        TEXT("A maximum-depth fixture is written"),
+        FFileHelper::SaveStringToFile(
+            MaximumDepth,
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> MaximumDepthResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("JSON at depth 16 passes the complexity gate"),
+        MaximumDepthResult.IsValid() ? MaximumDepthResult->GetStringField(TEXT("source")) : FString(),
+        FString(TEXT("project")));
+
+    const FString ExcessiveDepth =
+        TEXT("{\"schemaVersion\":1,\"value\":")
+        + FString::ChrN(16, TEXT('['))
+        + TEXT("0")
+        + FString::ChrN(16, TEXT(']'))
+        + TEXT("}");
+    TestTrue(
+        TEXT("An excessive-depth fixture is written"),
+        FFileHelper::SaveStringToFile(
+            ExcessiveDepth,
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> ExcessiveDepthResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("Excessive JSON depth is rejected before DOM construction"),
+        GetCatalogDiagnosticCode(ExcessiveDepthResult),
+        FString(TEXT("catalog_resource_limit")));
+
+    auto BuildNodeCatalog = [](int32 ValueCount)
+    {
+        FString Json = TEXT("{\"schemaVersion\":1,\"values\":[");
+        Json.Reserve(Json.Len() + (ValueCount * 2) + 2);
+        for (int32 Index = 0; Index < ValueCount; ++Index)
+        {
+            if (Index > 0)
+            {
+                Json.AppendChar(TEXT(','));
+            }
+            Json.AppendChar(TEXT('0'));
+        }
+        Json += TEXT("]}");
+        return Json;
+    };
+    TestTrue(
+        TEXT("A 10,000-node fixture is written"),
+        FFileHelper::SaveStringToFile(
+            BuildNodeCatalog(9997),
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> MaximumNodesResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("JSON at 10,000 structural nodes passes the complexity gate"),
+        MaximumNodesResult.IsValid() ? MaximumNodesResult->GetStringField(TEXT("source")) : FString(),
+        FString(TEXT("project")));
+
+    TestTrue(
+        TEXT("A 10,001-node fixture is written"),
+        FFileHelper::SaveStringToFile(
+            BuildNodeCatalog(9998),
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> ExcessiveNodesResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("JSON above 10,000 structural nodes is rejected before DOM construction"),
+        GetCatalogDiagnosticCode(ExcessiveNodesResult),
+        FString(TEXT("catalog_resource_limit")));
+
+    const FString ExactSizePrefix = TEXT("{\"schemaVersion\":1,\"padding\":\"");
+    const FString ExactSizeSuffix = TEXT("\"}");
+    const int32 ExactPaddingCharacters = (128 * 1024) - ExactSizePrefix.Len() - ExactSizeSuffix.Len();
+    const FString ExactSizeCatalog =
+        ExactSizePrefix
+        + FString::ChrN(ExactPaddingCharacters, TEXT(','))
+        + ExactSizeSuffix;
+    TestTrue(
+        TEXT("An exact 128 KiB catalog fixture is written"),
+        FFileHelper::SaveStringToFile(
+            ExactSizeCatalog,
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> ExactSizeResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("A catalog exactly at 128 KiB passes the byte and string-aware complexity gates"),
+        ExactSizeResult.IsValid() ? ExactSizeResult->GetStringField(TEXT("source")) : FString(),
+        FString(TEXT("project")));
+
+    TestTrue(
+        TEXT("An oversized catalog fixture is written"),
+        FFileHelper::SaveStringToFile(
+            ExactSizeCatalog.LeftChop(ExactSizeSuffix.Len()) + TEXT(",") + ExactSizeSuffix,
+            *CatalogPath,
+            FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));
+    const TSharedPtr<FJsonObject> OversizedResult = ParseResultObject(
+        Bridge->TestOnlyGetToolCatalogFromProjectConfigDir(ConfigDir));
+    TestEqual(
+        TEXT("A catalog over 128 KiB is rejected before parsing"),
+        GetCatalogDiagnosticCode(OversizedResult),
+        FString(TEXT("catalog_too_large")));
+
+    TestTrue(TEXT("The isolated catalog fixture directory is removed"), FileManager.DeleteDirectory(*FullTestRoot, false, true));
     return true;
 }
 

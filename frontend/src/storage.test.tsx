@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useRecentExecutions } from './hooks/useRecentExecutions'
 import { useToolPreferences } from './hooks/useToolPreferences'
 import {
@@ -24,6 +24,7 @@ import {
   toolPreferencesStorageKey,
   type ToolPreferenceState,
 } from './tool-manifest'
+import { STARTER_TOOL_CATALOG, decodeToolCatalogV1 } from './tool-catalog'
 import type { CommandMetadata } from './types/command'
 
 const TEST_COMMAND: CommandMetadata = {
@@ -44,7 +45,29 @@ function execution(index: number): RecentExecution {
   }
 }
 
+function customCatalog() {
+  return decodeToolCatalogV1({
+    schemaVersion: 1,
+    projects: [{ id: 'project-custom', name: 'Custom', stages: ['stage-custom'] }],
+    stages: [{ id: 'stage-custom', label: 'Custom Stage' }],
+    categories: [
+      { id: 'all', label: 'All', icon: 'grid' },
+      { id: 'favorites', label: 'Favorites', icon: 'star' },
+      { id: 'recent', label: 'Recent', icon: 'recent' },
+      { id: 'category-custom', label: 'Custom', icon: 'assets' },
+    ],
+    defaultPreferences: {
+      projectId: 'project-custom',
+      stageId: 'stage-custom',
+      categoryId: 'category-custom',
+      favorites: [],
+      openTabs: [],
+    },
+  })
+}
+
 afterEach(() => {
+  vi.restoreAllMocks()
   window.localStorage.clear()
 })
 
@@ -221,6 +244,25 @@ describe('tool preference storage', () => {
     expect(loadToolPreferencesState('project-a').value.favorites).not.toContain('global.favorite')
     expect(window.localStorage.getItem(toolPreferencesStorageKey('project-a'))).toBeNull()
   })
+
+  it('reconciles runtime identifiers deterministically while preserving command lists', () => {
+    const catalog = customCatalog()
+    const normalized = normalizeToolPreferences({
+      projectId: 'project-removed',
+      stageId: 'stage-removed',
+      categoryId: 'category-removed',
+      favorites: ['asset.scan', 'asset.missing'],
+      openTabs: ['asset.scan', 'asset.missing'],
+    }, catalog)
+
+    expect(normalized).toEqual({
+      projectId: 'project-custom',
+      stageId: 'stage-custom',
+      categoryId: 'category-custom',
+      favorites: ['asset.scan', 'asset.missing'],
+      openTabs: ['asset.scan', 'asset.missing'],
+    })
+  })
 })
 
 describe('persistence hooks', () => {
@@ -311,6 +353,79 @@ describe('persistence hooks', () => {
 
     expect(window.localStorage.getItem(RECENT_EXECUTIONS_STORAGE_KEY)).toBe(futureRecent)
     expect(window.localStorage.getItem(TOOL_PREFERENCES_STORAGE_KEY)).toBe(futurePreferences)
+  })
+
+  it('does not automatically overwrite custom ids while an invalid catalog uses starter fallback', async () => {
+    const storageNamespace = 'project-invalid-catalog'
+    const storageKey = toolPreferencesStorageKey(storageNamespace)
+    const stored = JSON.stringify({
+      schemaVersion: TOOL_PREFERENCES_SCHEMA_VERSION,
+      data: {
+        projectId: 'project-custom',
+        stageId: 'stage-custom',
+        categoryId: 'category-custom',
+        favorites: ['asset.scan'],
+        openTabs: ['asset.scan'],
+      },
+    })
+    window.localStorage.setItem(storageKey, stored)
+
+    const custom = customCatalog()
+    const preferences = renderHook(
+      ({ catalog, canAutoRewrite }) => useToolPreferences(
+        storageNamespace,
+        catalog,
+        { canAutoRewrite },
+      ),
+      {
+        initialProps: {
+          catalog: STARTER_TOOL_CATALOG,
+          canAutoRewrite: false,
+        },
+      },
+    )
+
+    await waitFor(() => expect(preferences.result.current.toolPreferences.projectId).toBe('aurora'))
+    act(() => preferences.result.current.toggleFavoriteCommand('memory.only'))
+    expect(preferences.result.current.favoriteCommands).toContain('memory.only')
+    expect(window.localStorage.getItem(storageKey)).toBe(stored)
+    preferences.rerender({ catalog: STARTER_TOOL_CATALOG, canAutoRewrite: false })
+    expect(window.localStorage.getItem(storageKey)).toBe(stored)
+
+    preferences.rerender({ catalog: custom, canAutoRewrite: true })
+    await waitFor(() => expect(preferences.result.current.toolPreferences).toMatchObject({
+      projectId: 'project-custom',
+      stageId: 'stage-custom',
+      categoryId: 'category-custom',
+    }))
+    expect(preferences.result.current.favoriteCommands).toEqual(['asset.scan'])
+  })
+
+  it('rewrites a valid catalog reconciliation once and then remains stable', async () => {
+    const storageNamespace = 'project-valid-catalog'
+    const storageKey = toolPreferencesStorageKey(storageNamespace)
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      schemaVersion: TOOL_PREFERENCES_SCHEMA_VERSION,
+      data: {
+        projectId: 'project-removed',
+        stageId: 'stage-removed',
+        categoryId: 'category-removed',
+        favorites: ['asset.scan'],
+        openTabs: ['asset.scan'],
+      },
+    }))
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const catalog = customCatalog()
+
+    const preferences = renderHook(() => useToolPreferences(storageNamespace, catalog))
+
+    await waitFor(() => expect(preferences.result.current.toolPreferences.projectId).toBe('project-custom'))
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(storageKey) || '').data).toMatchObject({
+      projectId: 'project-custom',
+      stageId: 'stage-custom',
+      categoryId: 'category-custom',
+    }))
+    expect(setItem.mock.calls.filter(([key]) => key === storageKey)).toHaveLength(1)
   })
 
   it('replaces a future schema only after an explicit user change', () => {

@@ -31,6 +31,8 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 - Exposes command metadata through `system.commands`.
 - Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
 - Supports command search, permission filtering, schema defaults, project-scoped recent payload reuse, and editable startup settings in the React console.
+- Loads an optional schema-v1 project/stage/category catalog at runtime from the fixed project
+  `Config/UnrealEditorWebUI/ToolCatalog.json` path, with strict validation and a safe bundled fallback.
 - Requires confirmation before running `write` or `destructive` commands, including a native editor confirmation in the bridge path.
 - Shows command-specific result views for starter asset commands.
 - Includes starter commands:
@@ -66,6 +68,11 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 4. Regenerate project files.
 5. Build the Unreal Engine 5.8 editor target.
 6. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
+
+Optional: copy [`docs/examples/tool-catalog.v1.json`](docs/examples/tool-catalog.v1.json) to
+`<Project>/Config/UnrealEditorWebUI/ToolCatalog.json` and edit its validated display data to
+configure the rack without rebuilding the React bundle. The catalog cannot add or authorize
+commands; Python command registration and native permission checks remain authoritative.
 
 ## Frontend Development
 

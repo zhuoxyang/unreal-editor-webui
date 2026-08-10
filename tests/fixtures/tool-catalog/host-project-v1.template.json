@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "projects": [
+    {
+      "id": "project-__UE_WEBUI_CATALOG_MARKER__",
+      "name": "CI Project __UE_WEBUI_CATALOG_MARKER__",
+      "description": "Trusted host-project catalog fixture",
+      "stages": ["stage-__UE_WEBUI_CATALOG_MARKER__"]
+    }
+  ],
+  "stages": [
+    {
+      "id": "stage-__UE_WEBUI_CATALOG_MARKER__",
+      "label": "CI Stage __UE_WEBUI_CATALOG_MARKER__"
+    }
+  ],
+  "categories": [
+    { "id": "all", "label": "All tools", "icon": "grid" },
+    { "id": "favorites", "label": "Favorites", "icon": "star" },
+    { "id": "recent", "label": "Recent", "icon": "recent" },
+    {
+      "id": "category-__UE_WEBUI_CATALOG_MARKER__",
+      "label": "CI Category __UE_WEBUI_CATALOG_MARKER__",
+      "icon": "assets"
+    }
+  ],
+  "defaultPreferences": {
+    "projectId": "project-__UE_WEBUI_CATALOG_MARKER__",
+    "stageId": "stage-__UE_WEBUI_CATALOG_MARKER__",
+    "categoryId": "category-__UE_WEBUI_CATALOG_MARKER__",
+    "favorites": ["system.ping"],
+    "openTabs": []
+  }
+}

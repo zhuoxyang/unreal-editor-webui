@@ -79,3 +79,32 @@ export type ProjectContext = {
   storageNamespace: string
 }
 
+export type NativeToolCatalogDiagnosticCode =
+  | 'catalog_too_large'
+  | 'catalog_read_failed'
+  | 'catalog_invalid_json'
+  | 'catalog_invalid_encoding'
+  | 'catalog_resource_limit'
+  | 'catalog_invalid_schema_version'
+  | 'catalog_unsupported_version'
+
+export type ToolCatalogBridgeResult =
+  | {
+      protocolVersion: 1
+      source: 'project'
+      catalog: Record<string, unknown>
+      diagnosticCode: null
+    }
+  | {
+      protocolVersion: 1
+      source: 'missing'
+      catalog: null
+      diagnosticCode: null
+    }
+  | {
+      protocolVersion: 1
+      source: 'invalid'
+      catalog: null
+      diagnosticCode: NativeToolCatalogDiagnosticCode
+    }
+

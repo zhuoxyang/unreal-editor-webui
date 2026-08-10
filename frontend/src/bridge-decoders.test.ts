@@ -6,6 +6,7 @@ import {
   decodeRemoveTaskResult,
   decodeTaskListResult,
   decodeTaskResult,
+  decodeToolCatalogBridgeResult,
   decodeWebUISettings,
 } from './bridge-decoders'
 
@@ -128,5 +129,52 @@ describe('bridge result decoders', () => {
     expect(() => decodeProjectContext({ protocolVersion: 1, projectName: 'Example', storageNamespace: '' })).toThrow(
       'storageNamespace',
     )
+  })
+
+  it('strictly validates native tool catalog transport envelopes', () => {
+    const projectCatalog = { schemaVersion: 1 }
+    expect(decodeToolCatalogBridgeResult({
+      protocolVersion: 1,
+      source: 'project',
+      catalog: projectCatalog,
+      diagnosticCode: null,
+    })).toMatchObject({ source: 'project', catalog: projectCatalog })
+    expect(decodeToolCatalogBridgeResult({
+      protocolVersion: 1,
+      source: 'missing',
+      catalog: null,
+      diagnosticCode: null,
+    })).toMatchObject({ source: 'missing' })
+
+    for (const diagnosticCode of [
+      'catalog_too_large',
+      'catalog_read_failed',
+      'catalog_invalid_json',
+      'catalog_invalid_encoding',
+      'catalog_resource_limit',
+      'catalog_invalid_schema_version',
+      'catalog_unsupported_version',
+    ]) {
+      expect(decodeToolCatalogBridgeResult({
+        protocolVersion: 1,
+        source: 'invalid',
+        catalog: null,
+        diagnosticCode,
+      })).toMatchObject({ source: 'invalid', diagnosticCode })
+    }
+
+    expect(() => decodeToolCatalogBridgeResult({
+      protocolVersion: 1,
+      source: 'project',
+      catalog: projectCatalog,
+      diagnosticCode: null,
+      path: 'C:/private/project',
+    })).toThrow('unsupported keyword')
+    expect(() => decodeToolCatalogBridgeResult({
+      protocolVersion: 1,
+      source: 'invalid',
+      catalog: null,
+      diagnosticCode: 'catalog_unknown',
+    })).toThrow('supported diagnosticCode')
   })
 })

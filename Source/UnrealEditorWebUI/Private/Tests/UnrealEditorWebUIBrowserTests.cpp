@@ -2,6 +2,7 @@
 
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/Guid.h"
@@ -14,11 +15,30 @@ namespace
     constexpr double BrowserInjectionIntervalSeconds = 0.5;
     const FName WebUITabName(TEXT("UnrealEditorWebUI"));
 
-    FString BuildBrowserTestScript(const FString& Nonce)
+    bool IsValidCatalogMarker(const FString& Marker)
+    {
+        if (Marker.Len() != 32)
+        {
+            return false;
+        }
+
+        for (const TCHAR Character : Marker)
+        {
+            if (!((Character >= TEXT('0') && Character <= TEXT('9'))
+                || (Character >= TEXT('a') && Character <= TEXT('f'))))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    FString BuildBrowserTestScript(const FString& Nonce, const FString& CatalogMarker)
     {
         return FString::Printf(
             TEXT("(function(){")
             TEXT("var nonce='%s';")
+            TEXT("var catalogMarker='%s';")
             TEXT("var passTitle='UEWEBUI_E2E_PASS:'+nonce;")
             TEXT("var failTitle='UEWEBUI_E2E_FAIL:'+nonce+':';")
             TEXT("var waitTitle='UEWEBUI_E2E_WAIT:'+nonce+':';")
@@ -34,6 +54,17 @@ namespace
             TEXT("return item&&item.type==='task.status'&&item.taskId===state.taskId&&item.status==='completed';});}")
             TEXT("function reactBridgeReady(){var element=document.querySelector('.status.ready');")
             TEXT("return !!element&&(element.textContent||'').trim()==='Bridge ready';}")
+            TEXT("function selected(element){return !!element&&(element.selected===true")
+            TEXT("||element.classList.contains('active')||element.getAttribute('aria-selected')==='true'")
+            TEXT("||element.getAttribute('aria-pressed')==='true');}")
+            TEXT("function projectCatalogReady(){")
+            TEXT("var root=document.querySelector('[data-tool-catalog-source=\"project\"][data-tool-catalog-schema-version=\"1\"]');")
+            TEXT("if(!root){return false;}")
+            TEXT("var project=root.querySelector('[data-tool-project-id=\"project-'+catalogMarker+'\"]');")
+            TEXT("var stage=root.querySelector('[data-tool-stage-id=\"stage-'+catalogMarker+'\"]');")
+            TEXT("var category=root.querySelector('[data-tool-category-id=\"category-'+catalogMarker+'\"]');")
+            TEXT("return selected(project)&&selected(stage)&&selected(category);")
+            TEXT("}")
             TEXT("function renderedCompletedEvent(){return Array.prototype.some.call(document.querySelectorAll('.log-panel'),function(panel){")
             TEXT("var heading=panel.querySelector('h2');return heading&&(heading.textContent||'').trim()==='Message Log'")
             TEXT("&&(panel.textContent||'').indexOf('task.status '+state.taskId+' completed')!==-1;});}")
@@ -61,6 +92,7 @@ namespace
             TEXT("if(!bridge()){phase('bridge');state.readySince=0;return;}")
             TEXT("if(!document.querySelector('.app-shell')){phase('react');state.readySince=0;return;}")
             TEXT("if(!reactBridgeReady()){phase('bridge-ready');state.readySince=0;return;}")
+            TEXT("if(!projectCatalogReady()){phase('tool-catalog');state.readySince=0;return;}")
             TEXT("if(!state.readySince){phase('settling');state.readySince=Date.now();return;}")
             TEXT("if(Date.now()-state.readySince<500){phase('settling');return;}")
             TEXT("var pagePath=(window.location.pathname||'').toLowerCase();")
@@ -81,15 +113,19 @@ namespace
             TEXT("window.setInterval(function(){void start();void verify();},100);")
             TEXT("void start();")
             TEXT("})();"),
-            *Nonce);
+            *Nonce,
+            *CatalogMarker);
     }
 
     class FUnrealEditorWebUIBrowserRoundTripCommand final : public IAutomationLatentCommand
     {
     public:
-        explicit FUnrealEditorWebUIBrowserRoundTripCommand(FAutomationTestBase* InTest)
+        FUnrealEditorWebUIBrowserRoundTripCommand(
+            FAutomationTestBase* InTest,
+            const FString& InCatalogMarker)
             : Test(InTest)
             , Nonce(FGuid::NewGuid().ToString(EGuidFormats::Digits))
+            , CatalogMarker(InCatalogMarker)
             , StartedAt(FPlatformTime::Seconds())
             , LastInjectionAt(0.0)
         {
@@ -131,7 +167,7 @@ namespace
             const FString FailPrefix = FString::Printf(TEXT("UEWEBUI_E2E_FAIL:%s:"), *Nonce);
             if (Title == PassTitle)
             {
-                Test->AddInfo(TEXT("Packaged React page, CEF JavaScript binding, React bridge-ready state, system.ping task, DOM event log, and TaskCard round trip passed."));
+                Test->AddInfo(TEXT("Packaged React page, project tool-catalog DOM, CEF JavaScript binding, React bridge-ready state, system.ping task, DOM event log, and TaskCard round trip passed."));
                 Tab->RequestCloseTab();
                 return true;
             }
@@ -155,7 +191,7 @@ namespace
 
             if (Now - LastInjectionAt >= BrowserInjectionIntervalSeconds)
             {
-                BrowserWidget->ExecuteJavascript(BuildBrowserTestScript(Nonce));
+                BrowserWidget->ExecuteJavascript(BuildBrowserTestScript(Nonce, CatalogMarker));
                 LastInjectionAt = Now;
             }
 
@@ -165,6 +201,7 @@ namespace
     private:
         FAutomationTestBase* Test;
         FString Nonce;
+        FString CatalogMarker;
         double StartedAt;
         double LastInjectionAt;
         TSharedPtr<SDockTab> Tab;
@@ -180,7 +217,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FUnrealEditorWebUIBrowserBindingAndTaskEventTest::RunTest(const FString& Parameters)
 {
     static_cast<void>(Parameters);
-    ADD_LATENT_AUTOMATION_COMMAND(FUnrealEditorWebUIBrowserRoundTripCommand(this));
+    const FString CatalogMarker = FPlatformMisc::GetEnvironmentVariable(TEXT("UE_WEBUI_CATALOG_MARKER"));
+    if (!IsValidCatalogMarker(CatalogMarker))
+    {
+        AddError(TEXT("UE_WEBUI_CATALOG_MARKER must be exactly 32 lowercase hexadecimal characters."));
+        return false;
+    }
+
+    ADD_LATENT_AUTOMATION_COMMAND(FUnrealEditorWebUIBrowserRoundTripCommand(this, CatalogMarker));
     return true;
 }
 

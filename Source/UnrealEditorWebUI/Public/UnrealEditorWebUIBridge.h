@@ -69,6 +69,9 @@ public:
     UFUNCTION()
     FString GetProjectContext() const;
 
+    UFUNCTION()
+    FString GetToolCatalog() const;
+
 #if WITH_DEV_AUTOMATION_TESTS
     FString TestOnlyCreateTask(
         const FString& RequestJson,
@@ -84,6 +87,7 @@ public:
         const FString& RequestId,
         const FString& PreflightJson) const;
     FString TestOnlyBuildProjectStorageNamespace(const FString& ProjectIdentity) const;
+    FString TestOnlyGetToolCatalogFromProjectConfigDir(const FString& ProjectConfigDir) const;
     void TestOnlyCompleteTaskWithResponse(
         const FString& TaskId,
         const FString& ResponseJson,

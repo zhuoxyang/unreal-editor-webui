@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { RecentExecution } from '../recent-executions'
 import type { ToolPreferenceState } from '../tool-manifest'
 import type { CommandMetadata } from '../types/command'
+import { decodeToolCatalogV1 } from '../tool-catalog'
 import { useToolWorkspace } from './useToolWorkspace'
 
 type WorkspaceOptions = Parameters<typeof useToolWorkspace>[0]
@@ -309,5 +310,64 @@ describe('useToolWorkspace', () => {
 
     rerender(workspaceOptions({ commandSearch: 'diagnostic', selectedCommandName: null }))
     expect(result.current.selectedCommand?.name).toBe('system.ping')
+  })
+
+  it('filters dynamic catalog categories and stages through exact metadata ids and tags', () => {
+    const catalog = decodeToolCatalogV1({
+      schemaVersion: 1,
+      projects: [{
+        id: 'project-custom',
+        name: 'Custom',
+        stages: ['stage-all', 'stage-custom'],
+      }],
+      stages: [
+        { id: 'stage-all', label: 'All Stages' },
+        { id: 'stage-custom', label: 'Custom Stage' },
+      ],
+      categories: [
+        { id: 'all', label: 'All', icon: 'grid' },
+        { id: 'favorites', label: 'Favorites', icon: 'star' },
+        { id: 'recent', label: 'Recent', icon: 'recent' },
+        { id: 'category-custom', label: 'Custom', icon: 'assets' },
+      ],
+      defaultPreferences: {
+        projectId: 'project-custom',
+        stageId: 'stage-all',
+        categoryId: 'all',
+        favorites: [],
+        openTabs: [],
+      },
+    })
+    const commands = [
+      command('custom.category', 'Exact category.', 'read', 'category-custom', ['stage:stage-custom'], 'CC'),
+      command('custom.tags', 'Tagged category.', 'read', 'Misc', ['category:category-custom', 'stage-custom'], 'CT'),
+      command('custom.wrong-stage', 'Wrong stage.', 'read', 'category-custom', ['stage:other'], 'CW'),
+      command('custom.wrong-category', 'Wrong category.', 'read', 'Other', ['stage-custom'], 'CO'),
+    ]
+    const { result } = renderHook(() => useToolWorkspace(workspaceOptions({
+      catalog,
+      commands,
+      toolPreferences: {
+        projectId: 'project-custom',
+        stageId: 'stage-custom',
+        categoryId: 'category-custom',
+      },
+    })))
+
+    expect(stageIds(result.current.availableStages)).toEqual(['stage-all', 'stage-custom'])
+    expect(commandNames(result.current.filteredCommands)).toEqual(['custom.category', 'custom.tags'])
+
+    const defaultStage = renderHook(() => useToolWorkspace(workspaceOptions({
+      catalog,
+      commands,
+      toolPreferences: {
+        projectId: 'project-custom',
+        stageId: 'stage-all',
+        categoryId: 'all',
+      },
+    })))
+    expect(commandNames(defaultStage.result.current.filteredCommands)).toEqual(
+      commands.map((item) => item.name),
+    )
   })
 })
