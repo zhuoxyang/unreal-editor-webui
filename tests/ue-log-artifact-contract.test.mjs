@@ -377,7 +377,7 @@ test('packaged GUI proves the closed health report through product DOM without l
   ])
   assert.match(
     BROWSER_TEST_SOURCE,
-    /healthy native\/project\/catalog\/registry product state, redacted support-report DOM/iu,
+    /healthy native\/project\/catalog\/registry product state, allowlisted support-report DOM/iu,
   )
 })
 
