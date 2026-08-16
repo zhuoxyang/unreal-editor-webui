@@ -247,6 +247,105 @@ bool FUnrealEditorWebUIPackagedRegistryPingTest::RunTest(const FString& Paramete
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FUnrealEditorWebUIThirdPartyToolPacksTest,
+    "UnrealEditorWebUI.Bridge.ThirdPartyToolPacks",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameters)
+{
+    static_cast<void>(Parameters);
+
+    const FString FixtureMarker = FPlatformMisc::GetEnvironmentVariable(TEXT("UE_WEBUI_TOOL_PACK_TEST"));
+    if (FixtureMarker.IsEmpty())
+    {
+        AddInfo(TEXT("UE_WEBUI_TOOL_PACK_TEST is unset; the packaged host owns third-party Tool Pack coverage."));
+        return true;
+    }
+    TestEqual(TEXT("The packaged host enables Tool Pack fixture assertions"), FixtureMarker, FString(TEXT("1")));
+    if (FixtureMarker != TEXT("1"))
+    {
+        return false;
+    }
+
+    UUnrealEditorWebUIBridge* Bridge = NewObject<UUnrealEditorWebUIBridge>();
+    const FString CatalogueJson = Bridge->ExecuteCommand(
+        TEXT("{\"id\":\"tool-pack-catalogue\",\"command\":\"system.commands\",\"payload\":{}}"));
+    const TSharedPtr<FJsonObject> CatalogueResponse = ParseJsonObject(CatalogueJson);
+    TestTrue(TEXT("The Tool Pack catalogue returns a JSON object"), CatalogueResponse.IsValid());
+    if (!CatalogueResponse.IsValid())
+    {
+        return false;
+    }
+
+    bool bCatalogueOk = false;
+    TestTrue(TEXT("The Tool Pack catalogue exposes an ok field"), CatalogueResponse->TryGetBoolField(TEXT("ok"), bCatalogueOk));
+    TestTrue(*FString::Printf(TEXT("The Tool Pack catalogue succeeds: %s"), *CatalogueJson), bCatalogueOk);
+    const TSharedPtr<FJsonObject> Catalogue = ParseResultObject(CatalogueJson);
+    TestTrue(TEXT("The Tool Pack catalogue includes a result object"), Catalogue.IsValid());
+    if (!Catalogue.IsValid())
+    {
+        return false;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* LoadErrors = nullptr;
+    TestTrue(TEXT("The Tool Pack catalogue includes loadErrors"), Catalogue->TryGetArrayField(TEXT("loadErrors"), LoadErrors));
+    TestEqual(TEXT("The packaged host has no command load errors"), LoadErrors != nullptr ? LoadErrors->Num() : -1, 0);
+
+    const TArray<TSharedPtr<FJsonValue>>* Commands = nullptr;
+    TestTrue(TEXT("The Tool Pack catalogue includes commands"), Catalogue->TryGetArrayField(TEXT("commands"), Commands));
+    bool bFoundAssetFixture = false;
+    bool bFoundLevelFixture = false;
+    if (Commands != nullptr)
+    {
+        for (const TSharedPtr<FJsonValue>& CommandValue : *Commands)
+        {
+            const TSharedPtr<FJsonObject> Command = CommandValue.IsValid() ? CommandValue->AsObject() : nullptr;
+            FString CommandName;
+            if (Command.IsValid() && Command->TryGetStringField(TEXT("name"), CommandName))
+            {
+                bFoundAssetFixture |= CommandName == TEXT("fixture.asset.echo");
+                bFoundLevelFixture |= CommandName == TEXT("fixture.level.echo");
+            }
+        }
+    }
+    TestTrue(TEXT("The first independent Tool Pack is discoverable"), bFoundAssetFixture);
+    TestTrue(TEXT("The second independent Tool Pack is discoverable"), bFoundLevelFixture);
+
+    const auto VerifyEcho = [this, Bridge](
+        const TCHAR* RequestId,
+        const TCHAR* CommandName,
+        const TCHAR* ExpectedPack,
+        const TCHAR* ExpectedValue)
+    {
+        const FString RequestJson = FString::Printf(
+            TEXT("{\"id\":\"%s\",\"command\":\"%s\",\"payload\":{\"value\":\"%s\"}}"),
+            RequestId,
+            CommandName,
+            ExpectedValue);
+        const FString ResponseJson = Bridge->ExecuteCommand(RequestJson);
+        const TSharedPtr<FJsonObject> Response = ParseJsonObject(ResponseJson);
+        bool bOk = false;
+        TestTrue(*FString::Printf(TEXT("%s returns JSON"), CommandName), Response.IsValid());
+        TestTrue(
+            *FString::Printf(TEXT("%s exposes an ok field"), CommandName),
+            Response.IsValid() && Response->TryGetBoolField(TEXT("ok"), bOk));
+        TestTrue(*FString::Printf(TEXT("%s executes through the shared bridge: %s"), CommandName, *ResponseJson), bOk);
+
+        const TSharedPtr<FJsonObject> Result = ParseResultObject(ResponseJson);
+        TestTrue(*FString::Printf(TEXT("%s returns a result object"), CommandName), Result.IsValid());
+        if (Result.IsValid())
+        {
+            TestEqual(*FString::Printf(TEXT("%s identifies its Tool Pack"), CommandName), Result->GetStringField(TEXT("toolPack")), FString(ExpectedPack));
+            TestEqual(*FString::Printf(TEXT("%s round-trips its payload"), CommandName), Result->GetStringField(TEXT("value")), FString(ExpectedValue));
+        }
+    };
+
+    VerifyEcho(TEXT("tool-pack-asset"), TEXT("fixture.asset.echo"), TEXT("asset"), TEXT("asset-value"));
+    VerifyEcho(TEXT("tool-pack-level"), TEXT("fixture.level.echo"), TEXT("level"), TEXT("level-value"));
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FUnrealEditorWebUIProjectToolCatalogTest,
     "UnrealEditorWebUI.Bridge.ProjectToolCatalog",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

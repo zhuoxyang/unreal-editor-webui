@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,6 +26,10 @@ const TOOL_CATALOG_TEMPLATE = join(
 )
 const CATALOG_MARKER_PLACEHOLDER = '__UE_WEBUI_CATALOG_MARKER__'
 const VALID_MARKER = '0123456789abcdef0123456789abcdef'
+const TOOL_PACK_FIXTURES = [
+  join(REPOSITORY_ROOT, 'tests', 'fixtures', 'ue-tool-packs', 'AssetToolsFixture'),
+  join(REPOSITORY_ROOT, 'tests', 'fixtures', 'ue-tool-packs', 'LevelToolsFixture'),
+]
 
 function createTestRoot() {
   const root = mkdtempSync(join(tmpdir(), 'unreal webui host project-'))
@@ -43,6 +48,7 @@ function runCreateHostProject({
   pluginSource,
   toolCatalogTemplate,
   toolCatalogMarker,
+  toolPackSourceDirs = [],
 }) {
   const args = [
     '-NoProfile',
@@ -62,6 +68,9 @@ function runCreateHostProject({
   }
   if (toolCatalogMarker !== undefined) {
     args.push('-ToolCatalogMarker', toolCatalogMarker)
+  }
+  if (toolPackSourceDirs.length > 0) {
+    args.push('-ToolPackSourceDirsJson', JSON.stringify(toolPackSourceDirs))
   }
 
   return spawnSync('powershell.exe', args, {
@@ -176,6 +185,97 @@ test(
         ),
         false,
       )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'Windows host-project creation installs and enables multiple independent Tool Packs',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const { root, pluginSource } = createTestRoot()
+    const projectDir = join(root, 'generated host')
+    try {
+      const result = runCreateHostProject({
+        projectDir,
+        pluginSource,
+        toolPackSourceDirs: TOOL_PACK_FIXTURES,
+      })
+      assertSucceeded(result)
+
+      const project = JSON.parse(
+        readFileSync(join(projectDir, 'HostProject.uproject'), 'utf8').replace(/^\uFEFF/u, ''),
+      )
+      const enabledPlugins = new Map(
+        project.Plugins.map(({ Name, Enabled }) => [Name, Enabled]),
+      )
+      assert.equal(enabledPlugins.get('UnrealEditorWebUI'), true)
+      assert.equal(enabledPlugins.get('AssetToolsFixture'), true)
+      assert.equal(enabledPlugins.get('LevelToolsFixture'), true)
+
+      for (const fixture of TOOL_PACK_FIXTURES) {
+        const pluginName = fixture.split(/[\\/]/u).at(-1)
+        const installedRoot = join(projectDir, 'Plugins', pluginName)
+        assert.ok(existsSync(join(installedRoot, `${pluginName}.uplugin`)))
+        assert.ok(
+          existsSync(
+            join(installedRoot, 'Content', 'UnrealEditorWebUI', 'ToolPack.json'),
+          ),
+        )
+        assert.ok(existsSync(join(installedRoot, 'Content', 'Python')))
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'Windows host-project creation rejects duplicate Tool Pack inputs before writing',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const { root, pluginSource } = createTestRoot()
+    const projectDir = join(root, 'generated host')
+    try {
+      const result = runCreateHostProject({
+        projectDir,
+        pluginSource,
+        toolPackSourceDirs: [TOOL_PACK_FIXTURES[0], TOOL_PACK_FIXTURES[0]],
+      })
+      assert.equal(result.error, undefined)
+      assert.notEqual(result.status, 0)
+      assert.equal(existsSync(projectDir), false)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'Windows host-project creation rejects Unicode-escaped duplicate manifest keys',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const { root, pluginSource } = createTestRoot()
+    const projectDir = join(root, 'generated host')
+    const toolPackSource = join(root, 'UnicodeDuplicateFixture')
+    cpSync(TOOL_PACK_FIXTURES[0], toolPackSource, { recursive: true })
+    writeFileSync(
+      join(toolPackSource, 'Content', 'UnrealEditorWebUI', 'ToolPack.json'),
+      String.raw`{"schemaVersion":1,"\u0073chemaVersion":1,"id":"com.openai.fixture.asset-tools","requiredCoreApi":1,"pythonPackage":"ue_webui_asset_tools_fixture","commandNamespace":"fixture.asset"}`,
+      'utf8',
+    )
+
+    try {
+      const result = runCreateHostProject({
+        projectDir,
+        pluginSource,
+        toolPackSourceDirs: [toolPackSource],
+      })
+      assert.equal(result.error, undefined)
+      assert.notEqual(result.status, 0)
+      assert.equal(existsSync(projectDir), false)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

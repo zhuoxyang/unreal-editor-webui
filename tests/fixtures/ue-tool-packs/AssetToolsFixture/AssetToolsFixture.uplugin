@@ -1,0 +1,17 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Asset Tools Fixture",
+  "Description": "Content-only Tool Pack fixture for Unreal Editor WebUI validation.",
+  "Category": "Testing",
+  "CanContainContent": true,
+  "NoCode": true,
+  "Installed": false,
+  "Plugins": [
+    {
+      "Name": "UnrealEditorWebUI",
+      "Enabled": true
+    }
+  ]
+}

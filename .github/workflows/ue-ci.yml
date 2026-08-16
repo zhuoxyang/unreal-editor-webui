@@ -73,7 +73,9 @@ jobs:
           node --test tests/ue-build-environment.test.mjs
 
       - name: Test package registry guards
-        run: node --test tests/package-plugin-registry-guard.test.mjs
+        run: |
+          node --test tests/package-plugin-registry-guard.test.mjs
+          node --test tests/create-tool-pack.test.mjs
 
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
@@ -144,6 +146,7 @@ jobs:
           $Scripts = @(
             "scripts/package-plugin.ps1",
             "scripts/create-host-project.ps1",
+            "scripts/create-tool-pack.ps1",
             "scripts/setup-ue-runner.ps1",
             "scripts/validate-git-cache-tools.ps1"
           )
@@ -352,22 +355,35 @@ jobs:
           $CatalogMarker = [guid]::NewGuid().ToString("N")
           if ($CatalogMarker -cnotmatch "^[0-9a-f]{32}$") { throw "Generated tool catalog marker is invalid." }
           $CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"
+          $ToolPackSourceDirsJson = "[]"
+          if ($env:UE_VERSION -eq "5.8") {
+            $ToolPackSourceDirs = @(
+              (Join-Path $PWD "tests/fixtures/ue-tool-packs/AssetToolsFixture")
+              (Join-Path $PWD "tests/fixtures/ue-tool-packs/LevelToolsFixture")
+            )
+            $ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress
+          }
           $ProjectOutput = @(
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 `
               -ProjectDir $ProjectDir `
               -PluginSourceDir $PluginPackageDir `
               -EngineAssociation $env:UE_VERSION `
               -ToolCatalogTemplate $CatalogTemplate `
-              -ToolCatalogMarker $CatalogMarker
+              -ToolCatalogMarker $CatalogMarker `
+              -ToolPackSourceDirsJson $ToolPackSourceDirsJson
           )
           if ($LASTEXITCODE -ne 0) { throw "Host project creation failed with exit code $LASTEXITCODE." }
           if ($ProjectOutput.Count -ne 1) { throw "Host project creation returned $($ProjectOutput.Count) output lines; expected exactly one project path." }
           $ProjectPath = $ProjectOutput[0]
           if (-not (Test-Path -LiteralPath $ProjectPath -PathType Leaf)) { throw "Host project was not created: $ProjectPath" }
-          @(
+          $HostEnvironment = @(
             "HOST_PROJECT=$ProjectPath"
             "UE_WEBUI_CATALOG_MARKER=$CatalogMarker"
-          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          )
+          if ($env:UE_VERSION -eq "5.8") {
+            $HostEnvironment += "UE_WEBUI_TOOL_PACK_TEST=1"
+          }
+          $HostEnvironment | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run UE automation tests
         shell: powershell
@@ -397,6 +413,9 @@ jobs:
             "UnrealEditorWebUI.Bridge.WebUIHealth",
             "UnrealEditorWebUI.Settings.URLAllowlist"
           )
+          if ($env:UE_VERSION -eq "5.8") {
+            $RequiredTests += "UnrealEditorWebUI.Bridge.ThirdPartyToolPacks"
+          }
           foreach ($TestPath in $RequiredTests) {
             $Pattern = "Test Completed\. Result=\{Success\}.*Path=\{$([regex]::Escape($TestPath))\}"
             if (-not [regex]::IsMatch($LogText, $Pattern)) {
