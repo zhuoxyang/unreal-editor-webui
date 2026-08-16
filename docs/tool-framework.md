@@ -18,6 +18,15 @@ The frontend combines this metadata with the active, runtime-decoded project/sta
 decide where tools appear. A catalog organizes discovered commands; it never registers,
 authorizes, or executes a command.
 
+## Third-Party Command Plugins
+
+Independent teams can ship content-only Tool Pack plugins that all use one installed
+`UnrealEditorWebUI` core. The core discovers a fixed manifest and Python package from each enabled
+plugin, while the public SDK keeps extensions out of the internal registry implementation. Packs
+are isolated at registration time, namespaced, and surfaced in the same `system.commands`
+catalogue. See [Third-Party Tool Packs](tool-packs.md) for the layout, manifest, scaffolder,
+installation flow, compatibility rules, and trust boundary.
+
 ## Project And Stage Catalog
 
 The starter frontend includes sample projects and stages:

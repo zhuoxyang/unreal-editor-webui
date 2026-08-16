@@ -28,6 +28,8 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Shows active/completed task records in a React task panel with summary reconciliation, lazy detail loading, cancellation, and cleanup controls.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
+- Discovers commands from independent content-only Tool Pack plugins through the stable
+  `unreal_editor_webui_sdk` API, so many tools can share one installed core plugin.
 - Exposes command metadata through `system.commands`.
 - Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
 - Supports command search, permission filtering, schema defaults, project-scoped recent payload reuse, and editable startup settings in the React console.
@@ -51,6 +53,32 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 
 ## Install In A UE Project
 
+### Prebuilt Plugin (Recommended)
+
+1. Download the UE 5.8 plugin zip and matching `.sha256` file from the
+   [latest release](https://github.com/zhuoxyang/unreal-editor-webui/releases/latest).
+2. Verify the archive before extracting it. On Windows:
+
+   ```powershell
+   Get-FileHash .\UnrealEditorWebUI-*-UE58.zip -Algorithm SHA256
+   ```
+
+   Compare the printed hash with the downloaded checksum file.
+3. Extract the archive's `UnrealEditorWebUI` directory to
+   `<Project>/Plugins/UnrealEditorWebUI`.
+4. Open the project, enable `UnrealEditorWebUI` if prompted, and restart the editor. Its plugin
+   descriptor enables `WebBrowserWidget` and `PythonScriptPlugin`.
+5. Choose `Window > Unreal Editor WebUI`, run `system.ping`, and confirm that it returns `pong`.
+
+Third-party Tool Packs use SDK API 1, which is supported by the current post-v0.2.0 source.
+The v0.2.0 prebuilt archive does not contain the SDK or Tool Pack loader; the first prebuilt
+release expected to include them is v0.3.0. Until then, use the source installation below.
+
+### Build From Source
+
+Source development additionally requires a supported Node.js version, Visual Studio 2022 with
+the C++ toolchain and Windows SDK, and an Unreal Engine 5.8 source-capable project.
+
 1. Copy or clone this repository into your project's `Plugins/UnrealEditorWebUI` directory.
 2. Build the complete React UI before opening the plugin:
 
@@ -73,6 +101,9 @@ Optional: copy [`docs/examples/tool-catalog.v1.json`](docs/examples/tool-catalog
 `<Project>/Config/UnrealEditorWebUI/ToolCatalog.json` and edit its validated display data to
 configure the rack without rebuilding the React bundle. The catalog cannot add or authorize
 commands; Python command registration and native permission checks remain authoritative.
+
+To add separately distributed commands without modifying this repository, install one or more
+[third-party Tool Packs](docs/tool-packs.md) alongside the core plugin.
 
 ## Frontend Development
 
@@ -143,7 +174,9 @@ powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
 The output directory must not already exist. On Windows, `BuildPlugin` writes to a short random directory under the system temp root when that root is on the output volume, avoiding UnrealBuildTool's 260-character action-path limit; the helper then publishes it with a same-volume, no-overwrite directory move. On Unix, `BuildPlugin` writes to a private sibling, the helper atomically reserves the final name before populating it, and `SourceManifest.json` moves last as the completion marker. A concurrently created or stale final path is never overwritten. A successful package includes `SourceManifest.json`, which binds every pre-UBT staged file to either its Git blob in the selected commit or the isolated frontend build. Use the helper scripts for release packages; calling `RunUAT BuildPlugin` directly neither builds `Web/dist` nor establishes this source boundary.
 
 See `docs/validation.md` for the latest local validation status.
-See `docs/tool-framework.md` for the tool rack manifest, prototype policy, and UE CI runner notes.
+See `docs/tool-framework.md` for the project catalog, prototype policy, and UE CI runner notes.
+See `docs/tool-packs.md` for the stable third-party Python SDK, manifest, scaffolder, and multi-pack
+installation model.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
 See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums, SBOMs, and release boundaries.
 
@@ -151,6 +184,7 @@ See `docs/release-process.md` for exact-commit UE artifact verification, candida
 
 - `docs/architecture.md`: full Web UI -> `SWebBrowser` -> C++ bridge -> Python registry -> UE API architecture, including task event pushback.
 - `docs/integration-guide.md`: external Web app bridge contract, request/response envelopes, task APIs, error codes, and trusted-origin requirements.
+- `docs/tool-packs.md`: content-only third-party plugin contract for sharing one core WebUI across multiple tools.
 
 ## JavaScript Command Example
 
@@ -253,13 +287,18 @@ namespaces, catalog or command contents, module errors, task ids, payloads, resp
 bridge errors, host identity, or credentials. The report is not uploaded or persisted. If CEF
 cannot grant clipboard access, the read-only preview is selected for manual copying instead.
 
-## Python Command Registry
+## Python Commands And Tool Packs
 
-Register commands in `Python/unreal_editor_webui_registry.py`:
+Built-in commands live under `Python/unreal_editor_webui_commands`. Third-party commands should
+live in a separate Tool Pack plugin and import the stable SDK; they must not edit or import the
+internal registry directly:
 
 ```python
+from unreal_editor_webui_sdk import command
+
+
 @command(
-    "asset.scan",
+    "studio.assets.scan",
     description="Scan project assets.",
     permission="read",
     schema={
@@ -275,6 +314,10 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
+The Tool Pack manifest declares and enforces the `studio.assets` namespace. See
+[`docs/tool-packs.md`](docs/tool-packs.md) for the fixed plugin layout, scaffold command,
+compatibility contract, whole-pack rollback behavior, and multi-pack installation steps.
+
 `system.commands.metadataVersion` and every command entry's `metadataVersion` are the version of both the command-catalogue shape and its schema contract. Version 1 uses a strict JSON-schema-like subset. Every property schema declares exactly one of `object`, `array`, `string`, `integer`, `number`, or `boolean`; `null` and union types are not supported. The complete v1 keyword set is:
 
 - payload root: `type: "object"`, `properties`, `required`, and boolean `additionalProperties`
@@ -287,7 +330,11 @@ def scan_assets(payload):
 
 Unknown keywords, incompatible constraints, invalid defaults, inverted bounds, and required names that are not declared properties fail registration. Defaults are recursively applied before payload validation, so a required property with a valid default may be omitted by the caller. The shared executable contract examples live in `tests/fixtures/command-schema-v1.json`.
 
-Command modules are loaded independently. If a module violates the v1 contract, its partial registrations are rolled back and `system.commands.loadErrors` reports the module and error; commands from healthy modules remain available. Consumers should surface these diagnostics instead of treating them as a failure of the entire catalogue.
+Built-in command modules are loaded independently. A third-party Tool Pack is loaded atomically:
+if any of its modules violates the contract, every registration from that pack is rolled back.
+`system.commands.loadErrors` reports the bounded diagnostic while commands from healthy packs and
+core modules remain available. Consumers should surface these diagnostics instead of treating
+them as a failure of the entire catalogue.
 
 `write` and `destructive` commands require a bridge-supplied exact-command capability after native confirmation, so command permissions are not only frontend labels. Every real privileged invocation receives a fresh, payload-specific confirmation; approvals are never cached or reusable, and a dry run cannot authorize a later write. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 
