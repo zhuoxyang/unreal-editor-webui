@@ -43,16 +43,25 @@ if (($OutputRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) 
 }
 
 $TargetDirectory = [System.IO.Path]::GetFullPath((Join-Path $OutputRoot $Name))
-$RootWithSeparator = $OutputRoot.TrimEnd(
-    [System.IO.Path]::DirectorySeparatorChar,
-    [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
-$PathComparison = if ($env:OS -eq "Windows_NT") {
+$PathComparison = if (
+    [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+) {
     [System.StringComparison]::OrdinalIgnoreCase
 }
 else {
     [System.StringComparison]::Ordinal
 }
-if (-not $TargetDirectory.StartsWith($RootWithSeparator, $PathComparison)) {
+$OutputRootComparisonKey = $OutputRootItem.FullName.TrimEnd(
+    [System.IO.Path]::DirectorySeparatorChar,
+    [System.IO.Path]::AltDirectorySeparatorChar)
+$TargetParent = [System.IO.Directory]::GetParent($TargetDirectory)
+if ($null -eq $TargetParent -or
+    -not [System.String]::Equals(
+        $TargetParent.FullName.TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar),
+        $OutputRootComparisonKey,
+        $PathComparison)) {
     throw "The generated Tool Pack path must remain inside OutputDirectory."
 }
 if (Test-Path -LiteralPath $TargetDirectory) {
@@ -71,7 +80,14 @@ if ($PythonPackage -cnotmatch "\A[a-z][a-z0-9_]{1,255}\z") {
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $StagingDirectory = Join-Path $OutputRoot (".create-tool-pack-" + [guid]::NewGuid().ToString("N"))
 $StagingDirectory = [System.IO.Path]::GetFullPath($StagingDirectory)
-if (-not $StagingDirectory.StartsWith($RootWithSeparator, $PathComparison)) {
+$StagingParent = [System.IO.Directory]::GetParent($StagingDirectory)
+if ($null -eq $StagingParent -or
+    -not [System.String]::Equals(
+        $StagingParent.FullName.TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar),
+        $OutputRootComparisonKey,
+        $PathComparison)) {
     throw "The private staging path must remain inside OutputDirectory."
 }
 

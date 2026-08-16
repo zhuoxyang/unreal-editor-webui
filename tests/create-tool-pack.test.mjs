@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
@@ -52,6 +52,7 @@ function runCreateToolPack({
   name = 'StudioAssetTools',
   id = 'com.studio.asset-tools',
   commandNamespace = 'studio.assets',
+  environment = process.env,
 }) {
   return spawnSync(
     powershellExecutable,
@@ -74,6 +75,7 @@ function runCreateToolPack({
     {
       cwd: REPOSITORY_ROOT,
       encoding: 'utf8',
+      env: environment,
       windowsHide: true,
     },
   )
@@ -146,7 +148,16 @@ test(
     assert.ok(powershellAvailable, 'PowerShell is required in CI')
     const root = mkdtempSync(join(tmpdir(), 'unreal webui tool pack-'))
     try {
-      const result = runCreateToolPack({ outputDirectory: root })
+      const environment = { ...process.env }
+      for (const key of Object.keys(environment)) {
+        if (key.toLowerCase() === 'os') delete environment[key]
+      }
+      const outputDirectoryWithoutTrailingSeparator =
+        process.platform === 'win32'
+          ? `${root[0].toLowerCase()}${root.slice(1)}`
+          : root
+      const outputDirectory = `${outputDirectoryWithoutTrailingSeparator}${sep}`
+      const result = runCreateToolPack({ outputDirectory, environment })
       assertSucceeded(result)
 
       const targetDirectory = join(root, 'StudioAssetTools')
