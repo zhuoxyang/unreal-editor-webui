@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from unreal_editor_webui_sdk import command
 from unreal_editor_webui_registry import (
     COMMAND_LOAD_ERRORS,
     COMMAND_METADATA,
     METADATA_VERSION,
-    command,
 )
 
 

@@ -157,7 +157,7 @@ def apply_rename_batch(
     dry_run: bool = True,
     save: bool = False,
 ) -> dict[str, Any]:
-    from unreal_editor_webui_registry import CommandExecutionError
+    from unreal_editor_webui_sdk import CommandExecutionError
 
     session = WriteSession("asset.renameBatch", dry_run=dry_run, save=save)
     library = _editor_asset_library()

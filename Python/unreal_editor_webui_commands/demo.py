@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from typing import Any
 
-from unreal_editor_webui_registry import command
+from unreal_editor_webui_sdk import command
 
 
 @command(
