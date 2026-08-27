@@ -56,9 +56,10 @@ if (-not (Test-Path -LiteralPath $RunScript -PathType Leaf) -or
     throw "The requested ephemeral runner is not configured."
 }
 $Bootstrap = Get-Content -LiteralPath $BootstrapEvidence -Raw | ConvertFrom-Json
-if ($Bootstrap.schemaVersion -ne 1 -or
+if ($Bootstrap.schemaVersion -ne 2 -or
     [string]$Bootstrap.variant -cne $Variant -or
     [string]$Bootstrap.wave -cne $Wave -or
+    [string]$Bootstrap.state -cne "configured" -or
     $Bootstrap.ephemeral -ne $true -or
     $Bootstrap.noDefaultLabels -ne $true -or
     [string]$Bootstrap.runnerVersion -cne "2.337.0" -or

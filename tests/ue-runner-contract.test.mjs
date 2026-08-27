@@ -25,6 +25,7 @@ const SETUP = read('scripts/setup-ue-runner.ps1')
 const INVOKE = read('scripts/invoke-ue-runner-setup.ps1')
 const START = read('scripts/start-ue-runner.ps1')
 const FLEET = read('scripts/start-ue-runner-fleet.ps1')
+const REGISTRATION_CLEANUP = read('scripts/remove-ue-runner-registration.ps1')
 const CLEANUP = read('scripts/remove-ue-runner-wave.ps1')
 const SESSION = read('scripts/test-interactive-runner-session.ps1')
 const DIAGNOSTICS = read('scripts/write-ue-runner-diagnostics.ps1')
@@ -81,8 +82,58 @@ test('registration material stays out of the controller handoff and persisted ev
   assert.match(SETUP, /SecureStringToBSTR/u)
   assert.match(SETUP, /ZeroFreeBSTR/u)
   assert.doesNotMatch(SETUP, /GITHUB_RUNNER_TOKEN|Set-Content[^\n]*RegistrationToken/iu)
-  const bootstrap = SETUP.slice(SETUP.indexOf('$BootstrapEvidencePath'))
+  const bootstrapStart = SETUP.indexOf('$BootstrapIdentity =')
+  const bootstrap = SETUP.slice(bootstrapStart, SETUP.indexOf('$NodeArchiveName', bootstrapStart))
+  assert.ok(bootstrapStart >= 0)
   assert.doesNotMatch(bootstrap, /PlainRegistrationToken|RegistrationToken|--token/iu)
+})
+
+test('failed setup has fail-closed automatic and exact-registration recovery paths', () => {
+  assertOrdered(SETUP, [
+    '$RunnerRootCreated = $false',
+    '$RegistrationAttempted = $false',
+    'try {',
+    'New-Item -ItemType Directory -Path $RunnerRootFullPath',
+    '$RunnerRootCreated = $true',
+    'state = "provisioning"',
+    'Write-BootstrapIdentity -RootPath $RunnerRootFullPath -Identity $BootstrapIdentity',
+    '$BootstrapIdentity.state = "registration-attempted"',
+    'Write-BootstrapIdentity -RootPath $RunnerRootFullPath -Identity $BootstrapIdentity',
+    '$RegistrationAttempted = $true',
+    '& $ConfigPath @ConfigArguments',
+    '$BootstrapIdentity.state = "configured"',
+    'Write-BootstrapIdentity -RootPath $RunnerRootFullPath -Identity $BootstrapIdentity',
+    'catch {',
+    'if (-not $RegistrationAttempted)',
+    'if ($RunnerRootCreated)',
+    'foreach ($RollbackAncestor in @($LocalAppDataPath, $ControlledRoot, $RunnerBase))',
+    'Assert-NoReparseTree -LiteralPath $RollbackRootPath',
+    'Get-Process -Name "Runner.Listener", "Runner.Worker", "Runner.PluginHost"',
+    'Remove-Item -LiteralPath $RollbackRootPath -Recurse -Force',
+    'if (Test-Path -LiteralPath $RunnerRootFullPath)',
+  ])
+  assert.match(SETUP, /schemaVersion = 2/u)
+  assert.match(SETUP, /\[System\.IO\.File\]::Replace/u)
+  assert.match(SETUP, /Runner setup rollback refuses a tree containing a reparse point/u)
+  assert.match(SETUP, /remove-ue-runner-registration\.ps1/u)
+
+  assert.match(REGISTRATION_CLEANUP, /\[ValidateSet\("ue54", "ue55", "ue58"\)\]/u)
+  assert.match(REGISTRATION_CLEANUP, /\[ValidateSet\("build", "rez"\)\]/u)
+  assert.match(REGISTRATION_CLEANUP, /\$GitHubRegistrationRemoved/u)
+  assert.match(REGISTRATION_CLEANUP, /\$Bootstrap\.schemaVersion -ne 2/u)
+  assert.match(REGISTRATION_CLEANUP, /"provisioning", "registration-attempted", "configured"/u)
+  assertOrdered(REGISTRATION_CLEANUP, [
+    'Assert-NoReparseTree -LiteralPath $TargetPath',
+    '$BootstrapPath = Join-Path $TargetPath',
+    'Get-Process -Name "Runner.Listener", "Runner.Worker", "Runner.PluginHost"',
+    'Remove-Item -LiteralPath $TargetPath -Recurse -Force',
+    'if (Test-Path -LiteralPath $TargetPath)',
+  ])
+
+  for (const source of [START, FLEET, CLEANUP]) {
+    assert.match(source, /\$Bootstrap\.schemaVersion -ne 2/u)
+    assert.match(source, /\[string\]\$Bootstrap\.state -cne "configured"/u)
+  }
 })
 
 test('session probe proves a dedicated standard user on the active input desktop', () => {

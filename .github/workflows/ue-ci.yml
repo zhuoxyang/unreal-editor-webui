@@ -177,6 +177,7 @@ jobs:
             "scripts/invoke-ue-runner-setup.ps1",
             "scripts/start-ue-runner.ps1",
             "scripts/start-ue-runner-fleet.ps1",
+            "scripts/remove-ue-runner-registration.ps1",
             "scripts/remove-ue-runner-wave.ps1",
             "scripts/test-interactive-runner-session.ps1",
             "scripts/write-ue-runner-diagnostics.ps1",

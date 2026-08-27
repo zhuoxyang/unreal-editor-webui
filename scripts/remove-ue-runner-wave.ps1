@@ -44,18 +44,24 @@ foreach ($ControlledDirectory in @($env:LOCALAPPDATA, $ControlledRoot, $RunnerBa
     }
 }
 $RunnerBaseFullPath = [System.IO.Path]::GetFullPath($RunnerBase)
-$RunnerBasePrefix = $RunnerBaseFullPath.TrimEnd('\') + '\'
 $Targets = @()
 foreach ($Variant in @("ue54", "ue55", "ue58")) {
     $Target = Join-Path $RunnerBaseFullPath "$Wave-$Variant"
     if (-not (Test-Path -LiteralPath $Target -PathType Container)) {
         throw "All three exact runner roots must exist before wave cleanup."
     }
-    $TargetPath = (Resolve-Path -LiteralPath $Target).Path
-    $TargetItem = Get-Item -LiteralPath $TargetPath -Force
-    if (-not ($TargetPath + '\').StartsWith($RunnerBasePrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-        (Split-Path -Leaf $TargetPath) -cne "$Wave-$Variant" -or
+    $TargetItem = Get-Item -LiteralPath $Target -Force
+    if (-not $TargetItem.PSIsContainer -or
         ($TargetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "A runner cleanup target is unsafe."
+    }
+    $TargetPath = [System.IO.Path]::GetFullPath($Target)
+    $TargetParent = (Split-Path -Parent $TargetPath).TrimEnd('\')
+    if (-not [string]::Equals(
+            $TargetParent,
+            $RunnerBaseFullPath.TrimEnd('\'),
+            [System.StringComparison]::OrdinalIgnoreCase
+        ) -or (Split-Path -Leaf $TargetPath) -cne "$Wave-$Variant") {
         throw "A runner cleanup target is unsafe."
     }
     Assert-NoReparseTree -LiteralPath $TargetPath
@@ -64,9 +70,10 @@ foreach ($Variant in @("ue54", "ue55", "ue58")) {
         throw "A runner cleanup target has no bootstrap identity."
     }
     $Bootstrap = Get-Content -LiteralPath $BootstrapPath -Raw | ConvertFrom-Json
-    if ($Bootstrap.schemaVersion -ne 1 -or
+    if ($Bootstrap.schemaVersion -ne 2 -or
         [string]$Bootstrap.variant -cne $Variant -or
         [string]$Bootstrap.wave -cne $Wave -or
+        [string]$Bootstrap.state -cne "configured" -or
         $Bootstrap.ephemeral -ne $true) {
         throw "A runner cleanup target has an invalid bootstrap identity."
     }
@@ -84,10 +91,12 @@ foreach ($RunnerProcess in $RunnerProcesses) {
     catch {
         throw "Could not verify whether a runner listener is still using the cleanup targets."
     }
+    if ([string]::IsNullOrWhiteSpace($ListenerPath)) {
+        throw "Could not verify whether a runner listener is still using the cleanup targets."
+    }
     foreach ($Target in $Targets) {
         $TargetPrefix = $Target.TrimEnd('\') + '\'
-        if (-not [string]::IsNullOrWhiteSpace($ListenerPath) -and
-            $ListenerPath.StartsWith($TargetPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($ListenerPath.StartsWith($TargetPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "A runner listener is still using the requested cleanup wave."
         }
     }
@@ -95,5 +104,8 @@ foreach ($RunnerProcess in $RunnerProcesses) {
 
 foreach ($Target in $Targets) {
     Remove-Item -LiteralPath $Target -Recurse -Force
+    if (Test-Path -LiteralPath $Target) {
+        throw "A runner root still exists after wave cleanup."
+    }
 }
 Write-Output "Removed three verified local runner roots for the completed wave."
