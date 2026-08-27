@@ -127,8 +127,13 @@ Runner prerequisites:
   runner profile because those versions cannot provide the same isolation guarantee.
 
 Each job tests a package in a source-stripped temporary host and rejects plugin rebuild markers.
-That same-machine binary-only simulation is not a clean no-compiler/no-Node consumer result;
-independent VM acceptance remains a mandatory release gate.
+That same-machine binary-only simulation does not satisfy the independent Windows Sandbox gate.
+The gate records the six-field external-consumer baseline for Node.js/npm command resolution,
+external system Python, Visual Studio, MSVC, and Windows SDK development files, while deliberately
+excluding UBT, bundled .NET, and embedded Python in the read-only UE mapping. It also requires no
+compile/rebuild or runtime-install markers in each matching launch, so it must not be summarized as
+a generic no-compiler/no-build-tool machine. The real three-guest run remains a mandatory release
+gate and has not yet been performed; see [Clean-Host Windows Sandbox Acceptance](clean-host-acceptance.md).
 
 Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions six clean profile-local registrations and launches two sequential waves of three ephemeral one-job runners.
 

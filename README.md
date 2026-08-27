@@ -225,12 +225,20 @@ scaffolder, and multi-pack installation model.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
 See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums,
 frontend npm dependency metadata, signed provenance, and release boundaries.
+See [`docs/clean-host-acceptance.md`](docs/clean-host-acceptance.md) for the reproducible Windows
+Sandbox 3 x 3 clean-consumer gate and its privacy-safe evidence boundary.
 See `docs/rez-packaging.md` for offline Rez recipes, external plugin-root activation, and payload locks.
 
 The protected workflow's temporary host removes packaged plugin `Source` and `Intermediate` before
 tests and rejects recompilation markers. This is a binary-only simulation on a build machine, not
-a clean no-compiler/no-Node consumer result. A release still requires independent clean-VM positive
-installs and cross-version rejection tests.
+proof of the Windows Sandbox external-consumer baseline. That baseline records six closed results:
+no Node.js command and no npm command resolved through guest command resolution/PATH, no usable
+system-Python command or external system Python runtime, no Visual Studio installation, no MSVC
+compiler, and no Windows SDK development files. The read-only UE mapping's bundled UBT, .NET, and
+embedded Python are engine payloads and are deliberately outside those six claims. Every matching
+launch must still show no compile/rebuild or runtime-install markers. Publication remains blocked
+until three independent Sandbox guests produce finalized evidence for all three matching launches
+and all six cross-version prelaunch rejections; the real Sandbox run has not yet been performed.
 
 ## Architecture And Integration Docs
 

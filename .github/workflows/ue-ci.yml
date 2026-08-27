@@ -72,10 +72,14 @@ jobs:
         run: |
           node --check scripts/ue-release-variants.mjs
           node --check scripts/ue-build-environment.mjs
+          node --check scripts/validate-clean-host-evidence.mjs
           node --test tests/ue-build-environment.test.mjs
           node --test tests/ue-build-environment-variants.test.mjs
           node --test tests/ue-multi-variant-contract.test.mjs
           node --test tests/ue-runner-contract.test.mjs
+          node --test tests/validate-clean-host-evidence.test.mjs
+          node --test tests/run-clean-host-acceptance-guest.test.mjs
+          node --test tests/clean-host-acceptance-contract.test.mjs
 
       - name: Test package registry guards
         run: |
@@ -181,7 +185,9 @@ jobs:
             "scripts/remove-ue-runner-wave.ps1",
             "scripts/test-interactive-runner-session.ps1",
             "scripts/write-ue-runner-diagnostics.ps1",
-            "scripts/validate-git-cache-tools.ps1"
+            "scripts/validate-git-cache-tools.ps1",
+            "scripts/invoke-clean-host-acceptance.ps1",
+            "scripts/run-clean-host-acceptance-guest.ps1"
           )
           foreach ($Script in $Scripts) {
             $Tokens = $null
