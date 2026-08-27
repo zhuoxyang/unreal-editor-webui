@@ -28,8 +28,8 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 - Pushes task status events from C++ to the Web UI with `SWebBrowser::ExecuteJavascript`.
 - Shows active/completed task records in a React task panel with summary reconciliation, lazy detail loading, cancellation, and cleanup controls.
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
-- Discovers commands from independent content-only Tool Pack plugins through the stable
-  `unreal_editor_webui_sdk` API, so many tools can share one installed core plugin.
+- Discovers commands from independent Tool Pack payloads in content-only or existing code plugins
+  through the stable `unreal_editor_webui_sdk` API, so many tools can share one installed core plugin.
 - Exposes command metadata through `system.commands` and bounded provider status through
   `system.toolPacks`.
 - Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
@@ -186,7 +186,7 @@ See `docs/release-process.md` for exact-commit UE artifact verification, candida
 
 - `docs/architecture.md`: full Web UI -> `SWebBrowser` -> C++ bridge -> Python registry -> UE API architecture, including task event pushback.
 - `docs/integration-guide.md`: external Web app bridge contract, request/response envelopes, task APIs, error codes, and trusted-origin requirements.
-- `docs/tool-packs.md`: content-only third-party plugin contract for sharing one core WebUI across multiple tools.
+- `docs/tool-packs.md`: third-party plugin contract for sharing one core WebUI across multiple tools.
 
 ## JavaScript Command Example
 
@@ -292,8 +292,8 @@ cannot grant clipboard access, the read-only preview is selected for manual copy
 ## Python Commands And Tool Packs
 
 Built-in commands live under `Python/unreal_editor_webui_commands`. Third-party commands should
-live in a separate Tool Pack plugin and import the stable SDK; they must not edit or import the
-internal registry directly:
+live in a dedicated Tool Pack or an existing business plugin and import the stable SDK; they must
+not edit or import the internal registry directly:
 
 ```python
 from unreal_editor_webui_sdk import command

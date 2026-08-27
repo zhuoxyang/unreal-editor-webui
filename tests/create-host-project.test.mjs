@@ -17,6 +17,7 @@ import test from 'node:test'
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CREATE_HOST_PROJECT = join(REPOSITORY_ROOT, 'scripts', 'create-host-project.ps1')
+const ADD_TOOL_PACK = join(REPOSITORY_ROOT, 'scripts', 'add-tool-pack.ps1')
 const TOOL_CATALOG_TEMPLATE = join(
   REPOSITORY_ROOT,
   'tests',
@@ -30,6 +31,13 @@ const TOOL_PACK_FIXTURES = [
   join(REPOSITORY_ROOT, 'tests', 'fixtures', 'ue-tool-packs', 'AssetToolsFixture'),
   join(REPOSITORY_ROOT, 'tests', 'fixtures', 'ue-tool-packs', 'LevelToolsFixture'),
 ]
+const BUSINESS_PLUGIN_FIXTURE = join(
+  REPOSITORY_ROOT,
+  'tests',
+  'fixtures',
+  'ue-tool-packs',
+  'ExistingBusinessPluginFixture',
+)
 
 function createTestRoot() {
   const root = mkdtempSync(join(tmpdir(), 'unreal webui host project-'))
@@ -78,6 +86,31 @@ function runCreateHostProject({
     encoding: 'utf8',
     windowsHide: true,
   })
+}
+
+function runAddToolPack(pluginDirectory) {
+  return spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      ADD_TOOL_PACK,
+      '-PluginDirectory',
+      pluginDirectory,
+      '-Id',
+      'com.openai.fixture.existing-business',
+      '-CommandNamespace',
+      'fixture.business',
+    ],
+    {
+      cwd: REPOSITORY_ROOT,
+      encoding: 'utf8',
+      windowsHide: true,
+    },
+  )
 }
 
 function assertSucceeded(result) {
@@ -226,6 +259,74 @@ test(
         )
         assert.ok(existsSync(join(installedRoot, 'Content', 'Python')))
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  },
+)
+
+test(
+  'Windows host-project creation accepts a Tool Pack payload in an existing code plugin',
+  { skip: process.platform !== 'win32' },
+  () => {
+    const { root, pluginSource } = createTestRoot()
+    const projectDir = join(root, 'generated host')
+    const businessPlugin = join(root, 'ExistingBusinessPluginFixture')
+    cpSync(BUSINESS_PLUGIN_FIXTURE, businessPlugin, { recursive: true })
+    try {
+      const addResult = runAddToolPack(businessPlugin)
+      assertSucceeded(addResult)
+
+      const result = runCreateHostProject({
+        projectDir,
+        pluginSource,
+        toolPackSourceDirs: [businessPlugin],
+      })
+      assertSucceeded(result)
+
+      const installedRoot = join(
+        projectDir,
+        'Plugins',
+        'ExistingBusinessPluginFixture',
+      )
+      const installedDescriptor = JSON.parse(
+        readFileSync(
+          join(installedRoot, 'ExistingBusinessPluginFixture.uplugin'),
+          'utf8',
+        ).replace(/^\uFEFF/u, ''),
+      )
+      assert.deepEqual(installedDescriptor.Modules, [
+        {
+          Name: 'ExistingBusinessPluginFixture',
+          Type: 'Editor',
+          LoadingPhase: 'Default',
+        },
+      ])
+      assert.equal(installedDescriptor.CanContainContent, true)
+      assert.equal(installedDescriptor.NoCode, undefined)
+      assert.equal(
+        installedDescriptor.Plugins.some(
+          (dependency) =>
+            dependency.Name === 'UnrealEditorWebUI'
+            && dependency.Enabled === true,
+        ),
+        true,
+      )
+      assert.ok(
+        existsSync(
+          join(installedRoot, 'Content', 'UnrealEditorWebUI', 'ToolPack.json'),
+        ),
+      )
+      assert.ok(
+        existsSync(
+          join(
+            installedRoot,
+            'Source',
+            'ExistingBusinessPluginFixture',
+            'ExistingBusinessPluginFixture.Build.cs',
+          ),
+        ),
+      )
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

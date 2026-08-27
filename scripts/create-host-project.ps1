@@ -140,9 +140,8 @@ foreach ($ToolPackSourceDir in $ToolPackSourceDirs) {
         throw "Tool Pack descriptor is not valid strict UTF-8 JSON: $ToolPackName"
     }
     if ($null -eq $ToolPackDescriptor -or
-        $ToolPackDescriptor.CanContainContent -ne $true -or
-        $ToolPackDescriptor.NoCode -ne $true) {
-        throw "Tool Pack must set CanContainContent and NoCode to true: $ToolPackName"
+        $ToolPackDescriptor.CanContainContent -ne $true) {
+        throw "Tool Pack host plugin must set CanContainContent to true: $ToolPackName"
     }
     $CoreDependencies = @(
         $ToolPackDescriptor.Plugins |

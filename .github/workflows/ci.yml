@@ -140,6 +140,8 @@ jobs:
           node --test tests/create-host-project.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test tests/create-tool-pack.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/add-tool-pack.test.mjs
 
       - name: Test Windows UE build-environment contracts
         shell: powershell
@@ -221,6 +223,7 @@ jobs:
             "scripts/package-plugin.ps1",
             "scripts/create-host-project.ps1",
             "scripts/create-tool-pack.ps1",
+            "scripts/add-tool-pack.ps1",
             "scripts/setup-ue-runner.ps1",
             "scripts/validate-git-cache-tools.ps1"
           )
@@ -242,6 +245,7 @@ jobs:
           node --check scripts/export-npm-dependencies.mjs
           node --check scripts/validate-github-action-references.mjs
           node --check scripts/validate-npm-lock-registry.mjs
+          node --check scripts/add-tool-pack.mjs
           node --test tests/download-verified-github-artifact.test.mjs
           node --test tests/resolve-ue-release-candidate.test.mjs
           node --test tests/ue-build-environment.test.mjs
@@ -251,6 +255,7 @@ jobs:
           node --test tests/npm-registry-entrypoints.test.mjs
           node --test tests/package-plugin-registry-guard.test.mjs
           node --test tests/create-tool-pack.test.mjs
+          node --test tests/add-tool-pack.test.mjs
           node --test tests/ue-log-artifact-contract.test.mjs
           node --test tests/ue-path-filter-contract.test.mjs
           node scripts/validate-npm-lock-registry.mjs package-lock.json

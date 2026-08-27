@@ -1,0 +1,30 @@
+{
+  "FileVersion": 3,
+  "Version": 17,
+  "VersionName": "2.4.1",
+  "FriendlyName": "Existing Business Plugin Fixture",
+  "Description": "Existing code-plugin fixture before a Tool Pack payload is added.",
+  "Category": "Testing",
+  "CreatedBy": "Example Studio",
+  "CreatedByURL": "https://example.invalid",
+  "DocsURL": "https://example.invalid/docs",
+  "CanContainContent": false,
+  "Installed": false,
+  "IsBetaVersion": true,
+  "SupportedTargetPlatforms": [
+    "Win64"
+  ],
+  "Modules": [
+    {
+      "Name": "ExistingBusinessPluginFixture",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "PythonScriptPlugin",
+      "Enabled": true
+    }
+  ]
+}
