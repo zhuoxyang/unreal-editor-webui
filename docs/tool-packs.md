@@ -1,8 +1,9 @@
 # Third-Party Tool Packs
 
 One installed `UnrealEditorWebUI` core plugin can host commands from many independent Unreal
-plugins. Each extension is a content-only **Tool Pack**: it declares a dependency on the core,
-ships a fixed manifest and a Python package, and imports only the stable
+plugins. A **Tool Pack payload** may live in a dedicated content-only plugin or an existing
+business plugin with C++ modules. In both cases the host plugin declares a dependency on the
+core, ships a fixed manifest and a Python package, and imports only the stable
 `unreal_editor_webui_sdk` API. Tool Pack authors do not edit or copy the core registry, bridge, or
 React application.
 
@@ -64,6 +65,59 @@ dependency:
   ]
 }
 ```
+
+`NoCode: true` describes this standalone scaffolder output; it is not part of the runtime Tool
+Pack contract.
+
+## Add A Pack To An Existing Business Plugin
+
+Project teams can keep their existing plugin repository and add only the Tool Pack payload. The
+plugin may already contain `Modules`, content, settings, and unrelated plugin dependencies.
+Run the script from this repository with its supported Node.js version available on `PATH`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/add-tool-pack.ps1 -PluginDirectory "D:\StudioPlugins\Plugins\StudioAssetTools" -Id com.studio.asset-tools -CommandNamespace studio.assets -WhatIf
+
+powershell -ExecutionPolicy Bypass -File scripts/add-tool-pack.ps1 -PluginDirectory "D:\StudioPlugins\Plugins\StudioAssetTools" -Id com.studio.asset-tools -CommandNamespace studio.assets
+```
+
+The first command validates and previews the operation without writing. The second command:
+
+- preserves every unrelated `.uplugin` field, existing `Modules`, and existing dependencies;
+- sets `CanContainContent` to `true`;
+- adds or normalizes one enabled `UnrealEditorWebUI` dependency;
+- creates the fixed manifest plus a unique
+  `ue_webui_toolpack_<plugin_name>` Python package and a smoke command.
+
+The script requires exactly one regular root `.uplugin`, parses it as strict UTF-8 JSON, rejects
+duplicate decoded JSON keys and ambiguous field casing, and refuses plugin directories or output
+paths that are reparse points. It never overwrites an existing `ToolPack.json` or generated Python
+package. Running it again reports a conflict and leaves the plugin unchanged.
+
+An existing code-plugin descriptor remains a code plugin:
+
+```json
+{
+  "FileVersion": 3,
+  "Version": 17,
+  "VersionName": "2.4.1",
+  "CanContainContent": true,
+  "Modules": [
+    {
+      "Name": "StudioAssetTools",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    { "Name": "UnrealEditorWebUI", "Enabled": true }
+  ]
+}
+```
+
+The runtime boundary is the manifest and Python package inside an enabled, mounted,
+content-capable plugin. It does not require `NoCode`, remove C++ modules, or copy the shared core
+into the business plugin.
 
 ## Manifest Contract
 
@@ -165,6 +219,10 @@ Install the core once, then copy any number of Tool Pack directories alongside i
 `-- StudioLevelTools/
 ```
 
+`StudioAssetTools` may be a dedicated Tool Pack or the team's existing business plugin. Other
+plugins can declare `UnrealEditorWebUI` as their shared dependency in exactly the same way; do not
+place a private copy of the core inside each business plugin.
+
 Enable all three plugins and restart Unreal Editor. Tool Pack discovery occurs once during core
 registry initialization; v1 does not hot-load, hot-unload, or reload packs.
 
@@ -190,6 +248,9 @@ Each Tool Pack can be versioned and distributed as its own Unreal plugin archive
 manifest and Python sources live under `Content/`, Unreal `BuildPlugin` includes them without a
 custom root-file filter. Recipients still need one compatible `UnrealEditorWebUI` core plugin;
 the `.uplugin` dependency expresses the requirement but does not download it.
+If the host business plugin contains C++ modules, build and distribute a separate plugin package
+for every supported Unreal Engine minor version; do not reuse its native binaries across UE
+versions.
 
 ## Isolation And Conflict Rules
 

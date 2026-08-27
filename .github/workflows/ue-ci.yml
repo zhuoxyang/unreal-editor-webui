@@ -76,6 +76,7 @@ jobs:
         run: |
           node --test tests/package-plugin-registry-guard.test.mjs
           node --test tests/create-tool-pack.test.mjs
+          node --test tests/add-tool-pack.test.mjs
 
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
@@ -147,6 +148,7 @@ jobs:
             "scripts/package-plugin.ps1",
             "scripts/create-host-project.ps1",
             "scripts/create-tool-pack.ps1",
+            "scripts/add-tool-pack.ps1",
             "scripts/setup-ue-runner.ps1",
             "scripts/validate-git-cache-tools.ps1"
           )

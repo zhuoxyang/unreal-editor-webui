@@ -20,10 +20,11 @@ authorizes, or executes a command.
 
 ## Third-Party Command Plugins
 
-Independent teams can ship content-only Tool Pack plugins that all use one installed
-`UnrealEditorWebUI` core. The core discovers a fixed manifest and Python package from each enabled
-plugin, while the public SDK keeps extensions out of the internal registry implementation. Packs
-are isolated at registration time, namespaced, and surfaced in the same `system.commands`
+Independent teams can ship Tool Pack payloads in dedicated content-only plugins or existing code
+plugins that all use one installed `UnrealEditorWebUI` core. The core discovers a fixed manifest
+and Python package from each enabled plugin, while the public SDK keeps extensions out of the
+internal registry implementation. Packs are isolated at registration time, namespaced, and
+surfaced in the same `system.commands`
 catalogue. The separate `system.toolPacks` status view reports loaded/rejected providers and maps
 each loaded provider to its bounded command-name list without changing command metadata v1. See
 [Third-Party Tool Packs](tool-packs.md) for the layout, manifest, scaffolder, installation flow,
