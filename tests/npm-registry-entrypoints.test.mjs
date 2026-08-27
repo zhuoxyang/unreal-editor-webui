@@ -477,7 +477,9 @@ test('release dependency validation is immediately before metadata generation', 
   const metadataIndex = steps.findIndex(
     (step) => step.name === 'Generate SBOM and locked dependency inventory',
   )
-  const archiveIndex = steps.findIndex((step) => step.name === 'Create candidate archive and SHA-256')
+  const archiveIndex = steps.findIndex(
+    (step) => step.name === 'Create three candidate archives and SHA-256 files',
+  )
 
   assert.equal(guardIndex + 1, metadataIndex, 'release lock guard must immediately precede metadata')
   assert.ok(guardIndex < archiveIndex, 'release lock guard must run before candidate assembly')

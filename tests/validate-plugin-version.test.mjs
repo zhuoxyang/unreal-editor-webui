@@ -196,6 +196,6 @@ test('keeps repository metadata and workflows on the validated contract', () => 
   )
   assert.match(
     releaseWorkflow,
-    /--compare-descriptor trusted-package\/UnrealEditorWebUI\.uplugin/u,
+    /for variant_id in ue54 ue55 ue58; do[\s\S]*?package="trusted-packages\/\$variant_id"[\s\S]*?--compare-descriptor "\$package\/UnrealEditorWebUI\.uplugin"/u,
   )
 })

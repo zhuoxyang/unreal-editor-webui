@@ -100,7 +100,12 @@ test('the protected self-hosted trust boundary stays unchanged', () => {
     'self-hosted',
     'windows',
     'gui',
-    "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'ue-5.3' || 'ue-5.8' }}",
+    '${{ matrix.runner_label }}',
   ])
+  assert.equal(job.strategy['max-parallel'], 1)
+  assert.equal(
+    job.strategy.matrix,
+    '${{ fromJSON(needs.ue-config-validation.outputs.release_matrix) }}',
+  )
   assert.equal(job.if, EXPECTED_TRUSTED_JOB_CONDITION)
 })

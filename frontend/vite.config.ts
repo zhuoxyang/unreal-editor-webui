@@ -25,6 +25,8 @@ export default defineConfig({
   ],
   base: './',
   build: {
+    target: 'chrome90',
+    cssTarget: 'chrome90',
     outDir: '../Web/dist',
     emptyOutDir: true,
     rollupOptions: {

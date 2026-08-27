@@ -21,6 +21,7 @@ import {
   EXPECTED_WORKFLOW_NAME,
   EXPECTED_WORKFLOW_PATH,
 } from '../scripts/ue-build-environment.mjs'
+import { requireReleaseVariant } from '../scripts/ue-release-variants.mjs'
 
 const REPOSITORY_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const SCRIPT_PATH = join(REPOSITORY_ROOT, 'scripts', 'ue-build-environment.mjs')
@@ -31,6 +32,7 @@ const RUN_ID = '30771833666'
 const RUN_ATTEMPT = '2'
 const PACKAGE_ARTIFACT_ID = '987654321'
 const WINDOWS_SDK_VERSION = '10.0.22621.0'
+const VARIANT = requireReleaseVariant('ue58')
 
 const VS2022_TOOLCHAIN_ROOT =
   'C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.44.35207'
@@ -42,9 +44,9 @@ function buildVersion(overrides = {}) {
   return {
     MajorVersion: 5,
     MinorVersion: 8,
-    PatchVersion: 1,
-    Changelist: 56057345,
-    CompatibleChangelist: 55116800,
+    PatchVersion: VARIANT.engine.patchVersion,
+    Changelist: VARIANT.engine.changelist,
+    CompatibleChangelist: VARIANT.engine.compatibleChangelist,
     IsLicenseeVersion: 0,
     IsPromotedBuild: 1,
     BranchName: '++UE5+Release-5.8',
@@ -73,7 +75,7 @@ function sourceManifest(overrides = {}) {
 
 function ubaLog({
   year = '',
-  productVersion = '14.44.35228',
+  productVersion = VARIANT.toolchain.productVersion,
   toolchainFamilyVersion = '14.44.35207',
   toolchainRoot = VS2022_TOOLCHAIN_ROOT,
   sdkVersion = WINDOWS_SDK_VERSION,
@@ -133,13 +135,38 @@ function createFixture({ logs = [ubaLog()], referencedIndexes = [0], build = bui
   writeFileSync(buildVersionPath, JSON.stringify(build), 'utf8')
   const sourceManifestPath = join(root, 'SourceManifest.json')
   writeFileSync(sourceManifestPath, JSON.stringify(manifest), 'utf8')
+  const editorVersionPath = join(root, 'UnrealEditor.version')
+  writeFileSync(
+    editorVersionPath,
+    JSON.stringify({ ...build, BuildId: VARIANT.engine.buildId }),
+    'utf8',
+  )
+  const packageDirectory = join(root, 'package')
+  const binariesDirectory = join(packageDirectory, 'Binaries', 'Win64')
+  mkdirSync(binariesDirectory, { recursive: true })
+  writeFileSync(
+    join(packageDirectory, 'UnrealEditorWebUI.uplugin'),
+    JSON.stringify({ Installed: true, EngineVersion: `${VARIANT.engineAssociation}.0` }),
+    'utf8',
+  )
+  writeFileSync(
+    join(binariesDirectory, 'UnrealEditor.modules'),
+    JSON.stringify({
+      BuildId: VARIANT.engine.buildId,
+      Modules: { UnrealEditorWebUI: 'UnrealEditor-UnrealEditorWebUI.dll' },
+    }),
+    'utf8',
+  )
+  writeFileSync(join(binariesDirectory, 'UnrealEditor-UnrealEditorWebUI.dll'), 'binary')
   return {
     root,
     logDirectory,
     logPaths,
     consoleLog,
     buildVersionPath,
+    editorVersionPath,
     sourceManifestPath,
+    packageDirectory,
     output: join(root, 'BuildEnvironment.json'),
     canonicalOutput: join(root, 'BuildEnvironment.canonical.json'),
   }
@@ -149,12 +176,26 @@ function cleanup(fixture) {
   rmSync(fixture.root, { recursive: true, force: true })
 }
 
+function restoreExactEditorVersion(fixture) {
+  writeFileSync(
+    fixture.editorVersionPath,
+    JSON.stringify({ ...buildVersion(), BuildId: VARIANT.engine.buildId }),
+    'utf8',
+  )
+}
+
 function createArguments(fixture, overrides = {}) {
   const values = {
     'console-log': fixture.consoleLog,
     'log-directory': fixture.logDirectory,
     'build-version': fixture.buildVersionPath,
+    'editor-version': fixture.editorVersionPath,
     'source-manifest': fixture.sourceManifestPath,
+    'package-directory': fixture.packageDirectory,
+    variant: VARIANT.id,
+    'embedded-python-version': VARIANT.embeddedPythonVersion,
+    'cef-product-version': VARIANT.cefProductVersion,
+    'cef-chromium-version': VARIANT.cefChromiumVersion,
     'package-artifact-id': PACKAGE_ARTIFACT_ID,
     'package-artifact-name': EXPECTED_PACKAGE_ARTIFACT_NAME,
     'package-artifact-digest': PACKAGE_DIGEST,
@@ -183,6 +224,7 @@ function verifyArguments(fixture, overrides = {}) {
     'package-artifact-name': EXPECTED_PACKAGE_ARTIFACT_NAME,
     'package-artifact-digest': PACKAGE_DIGEST,
     'canonical-output': fixture.canonicalOutput,
+    variant: VARIANT.id,
     ...overrides,
   }
   return Object.entries(values).flatMap(([key, value]) => [`--${key}`, String(value)])
@@ -207,7 +249,7 @@ function assertCliSuccess(result) {
   assert.equal(result.status, 0, outputOf(result))
 }
 
-function expectedCompiler2022(productVersion = '14.44.35228') {
+function expectedCompiler2022(productVersion = VARIANT.toolchain.productVersion) {
   return {
     kind: 'msvc',
     visualStudioVersion: '2022',
@@ -477,10 +519,11 @@ test('accepts repeated identical tuples and rejects conflicts within or across r
 
 test('enforces both approved compiler-product version boundaries', () => {
   const cases = [
-    ['14.44.35211', '14.44.35207', VS2022_TOOLCHAIN_ROOT, true],
+    [VARIANT.toolchain.productVersion, '14.44.35207', VS2022_TOOLCHAIN_ROOT, true],
+    ['14.44.35211', '14.44.35207', VS2022_TOOLCHAIN_ROOT, false],
     ['14.44.35210', '14.44.35207', VS2022_TOOLCHAIN_ROOT, false],
     ['14.45.0', '14.45.0', VS2022_TOOLCHAIN_ROOT, false],
-    ['14.50.35723', '14.50.35717', VS2026_TOOLCHAIN_ROOT, true],
+    ['14.50.35723', '14.50.35717', VS2026_TOOLCHAIN_ROOT, false],
     ['14.50.35722', '14.50.35717', VS2026_TOOLCHAIN_ROOT, false],
     ['14.51.0', '14.51.0', VS2026_TOOLCHAIN_ROOT, false],
   ]
@@ -489,22 +532,15 @@ test('enforces both approved compiler-product version boundaries', () => {
       logs: [ubaLog({ productVersion, toolchainFamilyVersion: familyVersion, toolchainRoot })],
     })
     try {
-      if (accepted) {
-        assert.doesNotThrow(() =>
-          collectUbtBuildEnvironment(fixture.consoleLog, fixture.logDirectory),
-        )
-      } else {
-        assert.throws(() =>
-          collectUbtBuildEnvironment(fixture.consoleLog, fixture.logDirectory),
-        )
-      }
+      const result = runCli('create', createArguments(fixture))
+      assert.equal(result.status === 0, accepted, outputOf(result))
     } finally {
       cleanup(fixture)
     }
   }
 })
 
-test('create emits a closed canonical v1 document and verify rebuilds the same bytes', () => {
+test('create emits a closed canonical v2 document and verify rebuilds the same bytes', () => {
   const fixture = createFixture({
     build: buildVersion({
       MachinePath: 'C:\\Users\\runner\\UE_5.8',
@@ -521,7 +557,9 @@ test('create emits a closed canonical v1 document and verify rebuilds the same b
     const document = JSON.parse(documentText)
 
     assert.deepEqual(document, {
-      schemaVersion: 1,
+      schemaVersion: 2,
+      releaseVariant: VARIANT.releaseVariant,
+      buildId: VARIANT.engine.buildId,
       repository: REPOSITORY,
       sourceCommit: SOURCE_COMMIT,
       workflow: {
@@ -535,9 +573,9 @@ test('create emits a closed canonical v1 document and verify rebuilds the same b
       unrealEngine: {
         majorVersion: 5,
         minorVersion: 8,
-        patchVersion: 1,
-        changelist: 56057345,
-        compatibleChangelist: 55116800,
+        patchVersion: VARIANT.engine.patchVersion,
+        changelist: VARIANT.engine.changelist,
+        compatibleChangelist: VARIANT.engine.compatibleChangelist,
         branchName: '++UE5+Release-5.8',
         isLicenseeVersion: false,
         isPromotedBuild: true,
@@ -548,6 +586,11 @@ test('create emits a closed canonical v1 document and verify rebuilds the same b
         nodeVersion: process.versions.node,
         nodeArchitecture: 'x64',
         npmVersion: '11.16.0',
+      },
+      runtime: {
+        embeddedPythonVersion: VARIANT.embeddedPythonVersion,
+        cefProductVersion: VARIANT.cefProductVersion,
+        cefChromiumVersion: VARIANT.cefChromiumVersion,
       },
       packageArtifact: {
         artifactId: Number(PACKAGE_ARTIFACT_ID),
@@ -592,19 +635,15 @@ test('create and verify preserve the UE zero compatible-changelist sentinel', ()
   }
 })
 
-test('create and verify accept a compatible changelist equal to the current changelist', () => {
+test('create rejects a relationally valid CompatibleChangelist outside the exact variant', () => {
   const fixture = createFixture({
-    build: buildVersion({ CompatibleChangelist: 56057345 }),
+    build: buildVersion({ CompatibleChangelist: VARIANT.engine.changelist }),
   })
   try {
-    assertCliSuccess(runCli('create', createArguments(fixture)))
-    const documentText = readFileSync(fixture.output, 'utf8')
-    const document = JSON.parse(documentText)
-    assert.equal(document.unrealEngine.changelist, 56057345)
-    assert.equal(document.unrealEngine.compatibleChangelist, 56057345)
-
-    assertCliSuccess(runCli('verify', verifyArguments(fixture)))
-    assert.equal(readFileSync(fixture.canonicalOutput, 'utf8'), documentText)
+    restoreExactEditorVersion(fixture)
+    const result = runCli('create', createArguments(fixture))
+    assert.equal(result.status, 1, outputOf(result))
+    assert.match(outputOf(result), /exact UE58-Win64 build/iu)
   } finally {
     cleanup(fixture)
   }
@@ -615,6 +654,7 @@ test('create and verify reject a compatible changelist newer than the current ch
     build: buildVersion({ CompatibleChangelist: 56057346 }),
   })
   try {
+    restoreExactEditorVersion(createFixtureValue)
     const result = runCli('create', createArguments(createFixtureValue))
     assert.equal(result.status, 1, outputOf(result))
     assert.match(outputOf(result), /must be zero or no greater than the UE changelist/iu)
@@ -666,6 +706,7 @@ test('create rejects malformed UE compatible changelists', () => {
       build: buildVersion({ CompatibleChangelist: compatibleChangelist }),
     })
     try {
+      restoreExactEditorVersion(fixture)
       const result = runCli('create', createArguments(fixture))
       assert.equal(result.status, 1, outputOf(result))
       assert.match(outputOf(result), /compatible changelist must be a safe non-negative integer/iu)

@@ -2,7 +2,10 @@
 
 ## Current Baseline
 
-The repository now contains a minimal Unreal Engine editor plugin starter. The active build and release validation target is UE 5.8 on Windows:
+The repository now contains a minimal Unreal Engine editor plugin starter. The maintained native
+release matrix is the closed Windows set UE 5.4.4, UE 5.5.4, and UE 5.8.0. Each exact minor has a
+separate BuildPlugin archive and BuildId; current-commit compatibility still requires the three
+protected GUI jobs rather than only the hosted/static contract:
 
 - Editor-only plugin descriptor with `WebBrowserWidget` and `PythonScriptPlugin` enabled.
 - C++ module that registers `Window > Unreal Editor WebUI`.
