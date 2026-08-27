@@ -185,13 +185,17 @@ test('runner preflight validates full engine, BuildId, Python, CEF, and interact
     'vswhere.exe',
     'VC/Tools/MSVC/',
     'Windows Kits\\10\\bin',
-    'Get-Process -Name explorer',
+    'scripts/test-interactive-runner-session.ps1',
   ]) assert.match(run, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
   assert.equal(step('Validate runner prerequisites').id, 'runner_identity')
   assert.match(run, /embedded_python_version=\$DetectedPythonVersion/u)
   assert.match(run, /cef_product_version=\$DetectedCefProductVersion/u)
   assert.match(run, /if \(\$env:UE_VERSION -ne "5\.8"\)/u)
   assert.match(run, /user-global Python startup scripts/u)
+  const sessionProbe = read('scripts/test-interactive-runner-session.ps1')
+  assert.match(sessionProbe, /Get-Process -Name explorer/u)
+  assert.match(sessionProbe, /WTSGetActiveConsoleSessionId/u)
+  assert.match(sessionProbe, /OpenInputDesktop/u)
 })
 
 test('all temporary package, host, test, report, and evidence paths include the variant id', () => {
@@ -215,7 +219,10 @@ test('all temporary package, host, test, report, and evidence paths include the 
     '${{ matrix.build_environment_artifact }}',
   )
   assert.match(step('Upload exact UE build-environment evidence').with.path, /matrix\.variant_id/u)
-  assert.equal(step('Upload UE logs').with.name, 'unreal-editor-webui-ue-logs-${{ matrix.variant_id }}')
+  assert.equal(
+    step('Upload allowlisted UE runner diagnostics').with.name,
+    'unreal-editor-webui-ue-diagnostics-${{ matrix.variant_id }}',
+  )
 })
 
 test('every variant host installs the retained three-pack v1/v2 coverage', () => {

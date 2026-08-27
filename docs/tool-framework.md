@@ -114,7 +114,8 @@ requires a Windows self-hosted runner with labels:
 - `windows`
 - `gui`
 - exactly one of `ue-5.4`, `ue-5.5`, or `ue-5.8`; the checked-in registry always runs the three
-  exact jobs serially for protected `main` validation.
+  exact jobs serially for protected `main` validation. A second three-listener wave then runs the
+  same exact variants for Rez external-path activation.
 
 Runner prerequisites:
 
@@ -129,6 +130,6 @@ Each job tests a package in a source-stripped temporary host and rejects plugin 
 That same-machine binary-only simulation is not a clean no-compiler/no-Node consumer result;
 independent VM acceptance remains issue #117.
 
-Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions each registration from a clean root and uses an ephemeral one-job runner.
+Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions six clean profile-local registrations and launches two sequential waves of three ephemeral one-job runners.
 
 See `docs/ue-ci-runner.md` for the pinned runner setup, trust boundary, branch protection checklist, and artifact policy. See `docs/release-process.md` for exact-commit release candidate verification.

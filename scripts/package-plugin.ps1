@@ -101,6 +101,44 @@ if (
 }
 
 $RunUATPath = (Resolve-Path -LiteralPath $RunUAT).Path
+$EngineDirectory = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $RunUATPath))
+$EngineBuildVersionPath = Join-Path $EngineDirectory "Build/Build.version"
+$HoudiniDescriptorPath = Join-Path $EngineDirectory "Plugins/Runtime/HoudiniEngine/HoudiniEngine.uplugin"
+$ExpectedHoudiniDescriptorSha256 = "44E6A8335FE84D80FADDC5D11D3BA3107C4DABBD044763BA42913E478AB7B1C4"
+$HoudiniDescriptorSha256Before = $null
+$RunUATCompatibilityArguments = @()
+if (Test-Path -LiteralPath $HoudiniDescriptorPath -PathType Leaf) {
+    if (-not (Test-Path -LiteralPath $EngineBuildVersionPath -PathType Leaf)) {
+        throw "The engine Build.version required by the closed Houdini compatibility profile is missing."
+    }
+    $EngineBuildVersion = Get-Content -LiteralPath $EngineBuildVersionPath -Raw | ConvertFrom-Json
+    if ([int]$EngineBuildVersion.MajorVersion -eq 5 -and [int]$EngineBuildVersion.MinorVersion -eq 4) {
+        $ExpectedUE54Identity = [ordered]@{
+            MajorVersion = 5
+            MinorVersion = 4
+            PatchVersion = 4
+            Changelist = 35576357
+            CompatibleChangelist = 33043543
+            BranchName = "++UE5+Release-5.4"
+            IsLicenseeVersion = 0
+            IsPromotedBuild = 1
+        }
+        foreach ($Field in $ExpectedUE54Identity.Keys) {
+            if ($EngineBuildVersion.$Field -cne $ExpectedUE54Identity[$Field]) {
+                throw "The installed UE 5.4 build is outside the closed Houdini compatibility profile."
+            }
+        }
+        $HoudiniDescriptorSha256Before = Get-Sha256Hex -LiteralPath $HoudiniDescriptorPath
+        if ($HoudiniDescriptorSha256Before -cne $ExpectedHoudiniDescriptorSha256) {
+            throw "The installed UE 5.4 Houdini descriptor is outside the closed compatibility profile."
+        }
+
+        # This is intentionally one fixed UAT architecture argument. Do not expose
+        # arbitrary BuildPlugin arguments or edit/disable the installed engine plugin.
+        $RunUATCompatibilityArguments += "-Architecture_Win64=x64 -DisablePlugin=HoudiniEngine"
+        Write-Output "Applying the closed read-only UE 5.4 BuildPlugin compatibility profile."
+    }
+}
 $StageScript = Join-Path $PSScriptRoot "stage-plugin-from-commit.mjs"
 $StagingDir = Join-Path $SystemTempRoot ("uews-" + [System.Guid]::NewGuid().ToString("N"))
 $PluginStage = Join-Path $StagingDir "UnrealEditorWebUI"
@@ -136,12 +174,23 @@ try {
     $BuildPackageDir = Join-Path $BuildRoot ("uewp-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $BuildPackageDir | Out-Null
 
-    & $RunUATPath BuildPlugin `
-        "-Plugin=$PluginDescriptor" `
-        "-Package=$BuildPackageDir" `
-        -Rocket
+    $RunUATArguments = @(
+        "BuildPlugin",
+        "-Plugin=$PluginDescriptor",
+        "-Package=$BuildPackageDir",
+        "-Rocket"
+    )
+    $RunUATArguments += $RunUATCompatibilityArguments
+    & $RunUATPath @RunUATArguments
 
     $RunUATExitCode = $LASTEXITCODE
+    if ($null -ne $HoudiniDescriptorSha256Before) {
+        if (-not (Test-Path -LiteralPath $HoudiniDescriptorPath -PathType Leaf) -or
+            (Get-Sha256Hex -LiteralPath $HoudiniDescriptorPath) -cne $HoudiniDescriptorSha256Before) {
+            $ExternalExitCode = 1
+            throw "RunUAT changed the protected UE 5.4 Houdini descriptor."
+        }
+    }
     if ($RunUATExitCode -ne 0) {
         $ExternalExitCode = $RunUATExitCode
         throw "RunUAT BuildPlugin failed with exit code $RunUATExitCode."

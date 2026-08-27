@@ -42,7 +42,7 @@ const EXPECTED_PACKAGE_DIRECTORIES = [
   'Web',
 ]
 const EXPECTED_TRUSTED_JOB_CONDITION =
-  "(github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)"
+  "(github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_trusted_ue_validation)"
 
 function readRepositoryFile(path) {
   return readFileSync(join(REPOSITORY_ROOT, path), 'utf8')

@@ -35,8 +35,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ue-ci-${{ github.ref }}-${{ github.event_name }}-${{ inputs.run_trusted_ue_validation || 'hosted-only' }}
-  cancel-in-progress: true
+  group: ue-ci-protected-interactive
+  cancel-in-progress: false
 
 jobs:
   fast-checks:
@@ -75,6 +75,7 @@ jobs:
           node --test tests/ue-build-environment.test.mjs
           node --test tests/ue-build-environment-variants.test.mjs
           node --test tests/ue-multi-variant-contract.test.mjs
+          node --test tests/ue-runner-contract.test.mjs
 
       - name: Test package registry guards
         run: |
@@ -173,6 +174,12 @@ jobs:
             "scripts/create-tool-pack.ps1",
             "scripts/add-tool-pack.ps1",
             "scripts/setup-ue-runner.ps1",
+            "scripts/invoke-ue-runner-setup.ps1",
+            "scripts/start-ue-runner.ps1",
+            "scripts/start-ue-runner-fleet.ps1",
+            "scripts/remove-ue-runner-wave.ps1",
+            "scripts/test-interactive-runner-session.ps1",
+            "scripts/write-ue-runner-diagnostics.ps1",
             "scripts/validate-git-cache-tools.ps1"
           )
           foreach ($Script in $Scripts) {
@@ -190,7 +197,7 @@ jobs:
     needs: [fast-checks, ue-config-validation]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_trusted_ue_validation)
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -330,15 +337,18 @@ jobs:
               throw "$env:UE_RELEASE_VARIANT cannot isolate user-global Python startup scripts. Use a clean runner profile without $UserPythonStartupScript."
             }
           }
-          $RunnerSessionId = (Get-Process -Id $PID).SessionId
-          if ($RunnerSessionId -eq 0) {
-            throw "GUI validation cannot run from Windows Session 0. Start run.cmd interactively from the logged-in desktop session."
+          $SessionResultText = @(& scripts/test-interactive-runner-session.ps1)
+          if ($SessionResultText.Count -ne 1) {
+            throw "Interactive standard-user session validation did not return one result."
           }
-          $SessionExplorer = @(Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -eq $RunnerSessionId })
-          if ($SessionExplorer.Count -eq 0) {
-            throw "No interactive Windows desktop was found in runner session $RunnerSessionId. Start the GUI runner from a logged-in desktop session."
+          $SessionResult = $SessionResultText[0] | ConvertFrom-Json
+          if ($SessionResult.schemaVersion -ne 1 -or
+              $SessionResult.standardUser -ne $true -or
+              $SessionResult.activeConsole -ne $true -or
+              $SessionResult.inputDesktop -ne $true) {
+            throw "Interactive standard-user session validation returned an invalid result."
           }
-          Write-Host "Validated interactive GUI runner session $RunnerSessionId."
+          Write-Host "Validated a dedicated standard-user interactive GUI session."
           @(
             "embedded_python_version=$DetectedPythonVersion"
             "cef_product_version=$DetectedCefProductVersion"
@@ -394,7 +404,7 @@ jobs:
             # error records. Continue lets Tee-Object retain those records without
             # obscuring the child process exit code.
             $ErrorActionPreference = "Continue"
-            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 -RunUAT $RunUAT -PackageDir $PackageDir -SourceCommit $env:GITHUB_SHA 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 -RunUAT $RunUAT -PackageDir $PackageDir -SourceCommit $env:GITHUB_SHA 2>&1 | Tee-Object -FilePath $env:UE_BUILDPLUGIN_CONSOLE_LOG | Out-Null
             $PackageExitCode = $LASTEXITCODE
           }
           finally {
@@ -572,9 +582,18 @@ jobs:
           }
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation-$RunSuffix.log"
-          & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests StartsWith:UnrealEditorWebUI.Bridge+StartsWith:UnrealEditorWebUI.Settings; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Unreal automation tests failed with exit code $LASTEXITCODE. See $LogPath"
+          $AutomationExitCode = -1
+          $PreviousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Continue"
+            & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests StartsWith:UnrealEditorWebUI.Bridge+StartsWith:UnrealEditorWebUI.Settings; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath" 2>&1 | Out-Null
+            $AutomationExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+          }
+          if ($AutomationExitCode -ne 0) {
+            throw "Unreal automation tests failed with exit code $AutomationExitCode. See $LogPath"
           }
           $LogText = Get-Content -LiteralPath $LogPath -Raw
           $RequiredTests = @(
@@ -614,11 +633,14 @@ jobs:
           }
           $SmokeExitCode = -1
           $env:UNREAL_WEBUI_PACKAGED_SMOKE_RESULT = $ResultPath
+          $PreviousErrorActionPreference = $ErrorActionPreference
           try {
-            & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
+            $ErrorActionPreference = "Continue"
+            & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-packaged-bridge-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath" 2>&1 | Out-Null
             $SmokeExitCode = $LASTEXITCODE
           }
           finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
             Remove-Item Env:\UNREAL_WEBUI_PACKAGED_SMOKE_RESULT -ErrorAction SilentlyContinue
           }
           if ($SmokeExitCode -ne 0) {
@@ -649,9 +671,18 @@ jobs:
           }
           $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke-$RunSuffix.log"
-          & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Native settings smoke failed with exit code $LASTEXITCODE. See $LogPath"
+          $SettingsExitCode = -1
+          $PreviousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Continue"
+            & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath" 2>&1 | Out-Null
+            $SettingsExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+          }
+          if ($SettingsExitCode -ne 0) {
+            throw "Native settings smoke failed with exit code $SettingsExitCode. See $LogPath"
           }
           $LogText = Get-Content -LiteralPath $LogPath -Raw
           if ($LogText -notmatch "Unreal Editor WebUI settings smoke passed\.") {
@@ -670,8 +701,16 @@ jobs:
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomation-$RunSuffix.log"
           $ReportPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomationReport-$RunSuffix"
           # Windows PowerShell does not otherwise wait reliably for a GUI-subsystem executable.
-          & $Editor $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent; Quit" -unattended -nopause -nosplash -ReportExportPath="$ReportPath" -abslog="$LogPath" | Out-Host
-          $EditorExitCode = $LASTEXITCODE
+          $EditorExitCode = -1
+          $PreviousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Continue"
+            & $Editor $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests UnrealEditorWebUI.Browser.CEFBindingAndTaskEvent; Quit" -unattended -nopause -nosplash -ReportExportPath="$ReportPath" -abslog="$LogPath" 2>&1 | Out-Null
+            $EditorExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+          }
           if ($EditorExitCode -ne 0) {
             throw "GUI CEF automation failed with exit code $EditorExitCode. See $LogPath"
           }
@@ -800,22 +839,32 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload UE logs
+      - name: Create allowlisted UE runner diagnostics
+        id: runner_diagnostics
+        if: always()
+        shell: powershell
+        run: |
+          $DiagnosticsPaths = @(
+            & scripts/write-ue-runner-diagnostics.ps1 `
+              -Variant $env:UE_VARIANT_ID `
+              -ReleaseVariant $env:UE_RELEASE_VARIANT `
+              -RunId $env:GITHUB_RUN_ID `
+              -RunAttempt $env:GITHUB_RUN_ATTEMPT `
+              -RunnerTemp $env:RUNNER_TEMP
+          )
+          if ($DiagnosticsPaths.Count -ne 1 -or
+              -not (Test-Path -LiteralPath $DiagnosticsPaths[0] -PathType Leaf)) {
+            throw "Allowlisted runner diagnostics were not created."
+          }
+          "path=$($DiagnosticsPaths[0])" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload allowlisted UE runner diagnostics
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always() && steps.automation_tool_logs.outputs.directory != '' && steps.automation_tool_logs.outputs.console_log != ''
+        if: always() && steps.runner_diagnostics.outputs.path != ''
         with:
-          name: unreal-editor-webui-ue-logs-${{ matrix.variant_id }}
-          path: |
-            ${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.json
-            ${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/**
-            ${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/Saved/Logs/**
-            ${{ steps.automation_tool_logs.outputs.console_log }}
-            ${{ steps.automation_tool_logs.outputs.directory }}/**
-          if-no-files-found: ignore
+          name: unreal-editor-webui-ue-diagnostics-${{ matrix.variant_id }}
+          path: ${{ runner.temp }}/UnrealEditorWebUI-RunnerDiagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/RunnerDiagnostics.json
+          if-no-files-found: error
           retention-days: 14
 
   rez-external-e2e:
@@ -823,7 +872,7 @@ jobs:
     needs: [ue-config-validation, buildplugin-and-automation]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_trusted_ue_validation)
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -844,6 +893,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Validate external-path runner session
+        shell: powershell
+        run: |
+          $SessionResultText = @(& scripts/test-interactive-runner-session.ps1)
+          if ($SessionResultText.Count -ne 1) {
+            throw "Interactive standard-user session validation did not return one result."
+          }
+          $SessionResult = $SessionResultText[0] | ConvertFrom-Json
+          if ($SessionResult.schemaVersion -ne 1 -or
+              $SessionResult.standardUser -ne $true -or
+              $SessionResult.activeConsole -ne $true -or
+              $SessionResult.inputDesktop -ne $true) {
+            throw "Interactive standard-user session validation returned an invalid result."
+          }
 
       - name: Prepare fresh Rez E2E scope
         shell: powershell
@@ -983,8 +1047,17 @@ jobs:
           $RoundOneLog = Join-Path $RezRoot "round-1.log"
           $RoundOneUserDir = Join-Path $RezRoot "user-round-1"
           if (Test-Path -LiteralPath $RoundOneUserDir) { throw "Round-one UserDir is not fresh." }
-          & $EmbeddedPython $Launcher launch --project $Project --engine-root $env:UE_ROOT --editor $EditorCmd -- -run=pythonscript "-script=$PWD/scripts/validate-rez-external-smoke.py" @PythonIsolationArgs -unattended -nopause -nosplash -NullRHI "-UserDir=$RoundOneUserDir" "-abslog=$RoundOneLog"
-          if ($LASTEXITCODE -ne 0) { throw "Rez external smoke round one failed." }
+          $RoundOneExitCode = -1
+          $PreviousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Continue"
+            & $EmbeddedPython $Launcher launch --project $Project --engine-root $env:UE_ROOT --editor $EditorCmd -- -run=pythonscript "-script=$PWD/scripts/validate-rez-external-smoke.py" @PythonIsolationArgs -unattended -nopause -nosplash -NullRHI "-UserDir=$RoundOneUserDir" "-abslog=$RoundOneLog" 2>&1 | Out-Null
+            $RoundOneExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+          }
+          if ($RoundOneExitCode -ne 0) { throw "Rez external smoke round one failed." }
           $RoundOne = Get-Content -LiteralPath $RoundOneResult -Raw | ConvertFrom-Json
           if ($RoundOne.ok -ne $true -or [string]$RoundOne.round -cne "two-packs") {
             throw "Rez external smoke round one result is invalid."
@@ -1027,8 +1100,17 @@ jobs:
           $RoundTwoLog = Join-Path $RezRoot "round-2.log"
           $RoundTwoUserDir = Join-Path $RezRoot "user-round-2"
           if (Test-Path -LiteralPath $RoundTwoUserDir) { throw "Round-two UserDir is not fresh." }
-          & $EmbeddedPython $Launcher launch --project $Project --engine-root $env:UE_ROOT --editor $EditorCmd -- -run=pythonscript "-script=$PWD/scripts/validate-rez-external-smoke.py" @PythonIsolationArgs -unattended -nopause -nosplash -NullRHI "-UserDir=$RoundTwoUserDir" "-abslog=$RoundTwoLog"
-          if ($LASTEXITCODE -ne 0) { throw "Rez external smoke round two failed." }
+          $RoundTwoExitCode = -1
+          $PreviousErrorActionPreference = $ErrorActionPreference
+          try {
+            $ErrorActionPreference = "Continue"
+            & $EmbeddedPython $Launcher launch --project $Project --engine-root $env:UE_ROOT --editor $EditorCmd -- -run=pythonscript "-script=$PWD/scripts/validate-rez-external-smoke.py" @PythonIsolationArgs -unattended -nopause -nosplash -NullRHI "-UserDir=$RoundTwoUserDir" "-abslog=$RoundTwoLog" 2>&1 | Out-Null
+            $RoundTwoExitCode = $LASTEXITCODE
+          }
+          finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+          }
+          if ($RoundTwoExitCode -ne 0) { throw "Rez external smoke round two failed." }
           $RoundTwo = Get-Content -LiteralPath $RoundTwoResult -Raw | ConvertFrom-Json
           if ($RoundTwo.ok -ne $true -or [string]$RoundTwo.round -cne "one-pack-after-restart") {
             throw "Rez external smoke round two result is invalid."

@@ -45,17 +45,8 @@ const EXPECTED_BUILD_ENVIRONMENT_PATH =
   '${{ runner.temp }}/UnrealEditorWebUI-BuildEnvironment-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/BuildEnvironment.json'
 const PYTHON_RESTRICTIVE_MODE_ARGUMENT =
   '-ini:Engine:[ConsoleVariables]:Engine.Python.IsPythonInRestrictiveMode=1'
-const EXPECTED_LOG_PATHS = [
-  '${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.json',
-  '${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/**',
-  '${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/Saved/Logs/**',
-  BUILDPLUGIN_CONSOLE_LOG_OUTPUT,
-  `${AUTOMATION_TOOL_DIRECTORY_OUTPUT}/**`,
-]
+const EXPECTED_DIAGNOSTICS_PATH =
+  '${{ runner.temp }}/UnrealEditorWebUI-RunnerDiagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/RunnerDiagnostics.json'
 
 function stepNamed(name) {
   const step = STEPS.find((candidate) => candidate.name === name)
@@ -507,41 +498,34 @@ test('UE 5.4 and 5.5 validation reject user-global Python startup scripts before
   assert.ok(STEPS.indexOf(prerequisiteStep) < STEPS.indexOf(stepNamed('Build packaged plugin')))
 })
 
-test('UE diagnostic uploads select only the current run and attempt', () => {
-  const upload = stepNamed('Upload UE logs')
-  const paths = upload.with.path.trim().split(/\r?\n/u)
+test('UE diagnostic uploads contain only one allowlisted current-run JSON document', () => {
+  const create = stepNamed('Create allowlisted UE runner diagnostics')
+  const upload = stepNamed('Upload allowlisted UE runner diagnostics')
 
-  assert.equal(
-    upload.if,
-    "always() && steps.automation_tool_logs.outputs.directory != '' && steps.automation_tool_logs.outputs.console_log != ''",
-  )
-  assert.equal(upload.with.name, 'unreal-editor-webui-ue-logs-${{ matrix.variant_id }}')
-  assert.deepEqual(paths, EXPECTED_LOG_PATHS)
-  assert.equal(upload.with['if-no-files-found'], 'ignore')
+  assert.equal(create.id, 'runner_diagnostics')
+  assert.equal(create.if, 'always()')
+  assert.match(create.run, /scripts\/write-ue-runner-diagnostics\.ps1/u)
+  assert.match(create.run, /-RunId \$env:GITHUB_RUN_ID/u)
+  assert.match(create.run, /-RunAttempt \$env:GITHUB_RUN_ATTEMPT/u)
+  assert.equal(upload.if, "always() && steps.runner_diagnostics.outputs.path != ''")
+  assert.equal(upload.with.name, 'unreal-editor-webui-ue-diagnostics-${{ matrix.variant_id }}')
+  assert.equal(upload.with.path, EXPECTED_DIAGNOSTICS_PATH)
+  assert.doesNotMatch(upload.with.path, /\.log|\*\*|APPDATA|AutomationTool|Saved\/Logs/iu)
+  assert.equal(upload.with['if-no-files-found'], 'error')
   assert.equal(upload.with['retention-days'], 14)
-
-  const currentRoot = 'C:/runner-temp/UnrealEditorWebUI-AutomationToolLogs-777-2-ue54'
-  const priorAttemptRoot = currentRoot.replace(/-2-ue54$/u, '-1-ue54')
-  const otherVariantRoot = currentRoot.replace(/-ue54$/u, '-ue55')
-  const automationToolUpload = paths.at(-1)
-  const renderedUpload = automationToolUpload
-    .replace(AUTOMATION_TOOL_DIRECTORY_OUTPUT, currentRoot)
-  assert.notEqual(currentRoot, priorAttemptRoot)
-  assert.equal(renderedUpload, `${currentRoot}/**`)
-  assert.equal(renderedUpload.startsWith(`${priorAttemptRoot}/`), false)
-  assert.equal(renderedUpload.startsWith(`${otherVariantRoot}/`), false)
-  assert.equal(paths.some((path) => path.includes('APPDATA')), false)
 })
 
 test('the release package identity stays unchanged and uploads before diagnostics', () => {
   const packageUpload = stepNamed('Upload packaged plugin')
   const evidenceCreate = stepNamed('Create exact UE build-environment evidence')
   const evidenceUpload = stepNamed('Upload exact UE build-environment evidence')
-  const logUpload = stepNamed('Upload UE logs')
+  const diagnosticsCreate = stepNamed('Create allowlisted UE runner diagnostics')
+  const diagnosticsUpload = stepNamed('Upload allowlisted UE runner diagnostics')
 
   assert.ok(STEPS.indexOf(packageUpload) < STEPS.indexOf(evidenceCreate))
   assert.ok(STEPS.indexOf(evidenceCreate) < STEPS.indexOf(evidenceUpload))
-  assert.ok(STEPS.indexOf(evidenceUpload) < STEPS.indexOf(logUpload))
+  assert.ok(STEPS.indexOf(evidenceUpload) < STEPS.indexOf(diagnosticsCreate))
+  assert.ok(STEPS.indexOf(diagnosticsCreate) < STEPS.indexOf(diagnosticsUpload))
   assert.equal(packageUpload.id, 'package_artifact')
   assert.equal(packageUpload.if, 'success()')
   assert.equal(packageUpload.with.name, '${{ matrix.package_artifact }}')
@@ -555,7 +539,8 @@ test('each exact UE variant evidence binds the completed package to the run-atte
   const packageUpload = stepNamed('Upload packaged plugin')
   const create = stepNamed('Create exact UE build-environment evidence')
   const upload = stepNamed('Upload exact UE build-environment evidence')
-  const diagnostics = stepNamed('Upload UE logs')
+  const diagnosticsCreate = stepNamed('Create allowlisted UE runner diagnostics')
+  const diagnostics = stepNamed('Upload allowlisted UE runner diagnostics')
 
   for (const validationStep of [
     'Build packaged plugin',
@@ -571,7 +556,8 @@ test('each exact UE variant evidence binds the completed package to the run-atte
   }
   assert.ok(STEPS.indexOf(packageUpload) < STEPS.indexOf(create))
   assert.ok(STEPS.indexOf(create) < STEPS.indexOf(upload))
-  assert.ok(STEPS.indexOf(upload) < STEPS.indexOf(diagnostics))
+  assert.ok(STEPS.indexOf(upload) < STEPS.indexOf(diagnosticsCreate))
+  assert.ok(STEPS.indexOf(diagnosticsCreate) < STEPS.indexOf(diagnostics))
   assert.equal(STEPS.at(-1), diagnostics, 'the always-run diagnostics upload must remain last')
 
   assert.equal(create.id, 'build_environment')

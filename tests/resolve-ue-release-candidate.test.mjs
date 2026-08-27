@@ -84,7 +84,7 @@ test('accepts exactly one successful UE54, UE55, and UE58 selection from one att
 
 test('ignores diagnostic artifacts outside the closed package namespaces', () => {
   const candidate = eligibleCandidate()
-  candidate.artifacts.push({ name: 'unreal-editor-webui-ue-logs-ue54' })
+  candidate.artifacts.push({ name: 'unreal-editor-webui-ue-diagnostics-ue54' })
   assert.equal(validateReleaseCandidate(candidate).variants.length, 3)
 })
 

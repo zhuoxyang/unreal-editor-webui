@@ -247,6 +247,12 @@ jobs:
             "scripts/create-tool-pack.ps1",
             "scripts/add-tool-pack.ps1",
             "scripts/setup-ue-runner.ps1",
+            "scripts/invoke-ue-runner-setup.ps1",
+            "scripts/start-ue-runner.ps1",
+            "scripts/start-ue-runner-fleet.ps1",
+            "scripts/remove-ue-runner-wave.ps1",
+            "scripts/test-interactive-runner-session.ps1",
+            "scripts/write-ue-runner-diagnostics.ps1",
             "scripts/validate-git-cache-tools.ps1"
           )
           foreach ($Script in $Scripts) {
@@ -274,6 +280,7 @@ jobs:
           node --test tests/ue-build-environment.test.mjs
           node --test tests/ue-build-environment-variants.test.mjs
           node --test tests/ue-multi-variant-contract.test.mjs
+          node --test tests/ue-runner-contract.test.mjs
           node --test tests/validate-github-action-references.test.mjs
           node --test tests/validate-node-version.test.mjs
           node --test tests/validate-npm-lock-registry.test.mjs
