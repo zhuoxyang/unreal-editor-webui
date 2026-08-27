@@ -108,10 +108,39 @@ launches use that binary-only copy. Retained logs are scanned for UnrealBuildToo
 missing-module, or incompatible-module markers.
 
 This proves that the packaged binary can load without the plugin's build inputs on that build host.
-It does not prove a clean consumer machine without Visual Studio or Node.js, because those tools
-remain installed on the same runner. Independent no-compiler/no-Node VM acceptance and real
-off-diagonal negative installs remain mandatory release evidence and must not be inferred from this
-simulation.
+It does not prove the external-consumer baseline because those build tools remain installed on the
+same runner. Independent Windows Sandbox acceptance and real off-diagonal prelaunch identity
+rejections remain mandatory release evidence and must not be inferred from this simulation. The Sandbox baseline is
+not a generic no-compiler/no-build-tool claim: the read-only UE mapping carries UBT, bundled .NET,
+and embedded Python as engine payload.
+
+## Clean-Host Release Gate
+
+[Clean-Host Windows Sandbox Acceptance](clean-host-acceptance.md) defines the reproducible
+clean-consumer gate. One candidate-mode run must use three independent, network-disabled Windows
+Sandbox guests with read-only exact-engine and prepared candidate mappings, no guest dependency
+installation, and one fresh writable evidence mapping per guest. Each guest records six closed
+external-system results: Node.js command absent from command resolution/PATH, npm command absent
+from command resolution/PATH, usable system-Python command and external runtime absent, Visual
+Studio installation absent, MSVC compiler absent, and Windows SDK development files absent.
+Matching editor logs must also show no compile/rebuild or runtime-install markers. The finalized
+closed matrix must contain exactly three matching successes and six off-diagonal prelaunch
+rejections.
+
+Preparation uses `git archive` to create a safely extracted source snapshot from the exact release
+commit. A private run manifest hashes that snapshot, the copied controller validator and variant
+module/registry, the mapped guest harness, all plans, and all `.wsb` files. Each guest writes its
+result first and then a binding sentinel that fixes the result hash, plan hash, and harness hashes;
+finalization verifies those bindings and runs the copied, manifest-bound validator. This detects
+stale or mixed run data under a trusted controller/operator model, but it cannot resist evidence
+forgery by a malicious local administrator.
+
+The checked-in harness, static validator tests, generated `.wsb` configurations, or a prepare-only
+run are implementation evidence, not a clean-host result. Publication remains blocked until the
+real three-guest run produces the complete privacy-safe JSON and checksum for the reviewed
+candidate. After publication, fresh re-downloaded assets require a separate `published` replay;
+raw UE, UAT, UBT, editor, Sandbox, and host logs remain local and are never promoted as evidence.
+This gate supplements rather than replaces the protected exact-version UE validation above.
 
 ## Evidence And Promotion
 

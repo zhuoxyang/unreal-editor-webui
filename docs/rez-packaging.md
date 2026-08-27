@@ -153,8 +153,13 @@ Deterministic no-Rez tests do not by themselves prove `rez-build`, `rez-test`, o
 behavior. The protected workflow stages payloads directly through the same lock/install/preflight
 code and is an activation smoke, not a Rez resolver test. Real Rez commands require separate audit
 evidence. Neither class of test proves the licensed UE matrix until the protected jobs run on the
-exact commit. Release acceptance additionally requires independent clean no-compiler/no-Node
-consumer VMs and the published-asset checks in the release process.
+exact commit. Release acceptance additionally requires the independent 3 x 3 Windows Sandbox gate
+and the published-asset checks in the release process. Its six-field external-consumer baseline
+checks Node.js/npm command resolution, external system Python, Visual Studio, MSVC, and Windows SDK
+development files; it deliberately excludes UBT, bundled .NET, and embedded Python contained in the
+read-only UE mapping and therefore is not a generic no-compiler/no-build-tool claim. The matching
+run must still reject compile/rebuild and runtime-install markers. See
+[Clean-Host Windows Sandbox Acceptance](clean-host-acceptance.md).
 
 The workflow intentionally has two serial three-variant waves: native BuildPlugin production, then
 external-path activation after all three artifacts exist. An ephemeral-runner rollout therefore

@@ -133,9 +133,14 @@ Each protected job copies its BuildPlugin output into a fresh temporary host, re
 binary, and rejects logs that show UnrealBuildTool or plugin recompilation. This is a useful
 binary-only simulation on the build host.
 
-It is not proof of installation on a clean machine without Visual Studio or Node.js, because the
-same host still has those tools installed. True no-compiler/no-Node consumer acceptance and real
-off-diagonal negative installs require independent clean VMs before publication.
+It is not proof of the external-consumer baseline because the same host still has its build tools.
+That baseline is intentionally narrower than a generic "no compiler" claim: the read-only mapped UE
+installation contains its own UBT, bundled .NET, and embedded Python. Three independent Windows
+Sandbox guests must instead prove the six closed external-system results (Node.js and npm command
+resolution/PATH, usable system-Python command and external runtime, Visual Studio installation,
+MSVC compiler, and Windows SDK development files all absent), plus the real off-diagonal rejections
+and no compile/rebuild or runtime-install markers in every matching launch. See
+[Clean-Host Windows Sandbox Acceptance](clean-host-acceptance.md).
 Runner provisioning and real exact-version executions are also external infrastructure work; no
 commit may be described as release-validated until all three protected GUI jobs have actually
 passed for that exact commit.
@@ -150,11 +155,16 @@ binary change advances to a new patch version. Publication then follows this clo
    trusted UE run.
 2. Download the short-lived candidate bundle and verify all three SHA-256 sidecars, project
    provenance, build environments, and signed attestations.
-3. On independent clean Windows VMs without Visual Studio, Node.js, or repository build tooling,
-   install and launch each matching UE variant without installing any compiler, Node, or runtime
-   package. In every matching VM, verify `system.ping`, confirm `system.toolPacks` reports both
-   representative packs as loaded, and execute `fixture.asset.echo` plus `fixture.level.echo`.
-   Also verify that each archive is rejected by both non-matching UE minor versions.
+3. Complete the candidate-mode
+   [clean-host Windows Sandbox gate](clean-host-acceptance.md). Its three independent guests must
+   meet the six-field external-consumer baseline above without installing any guest dependency,
+   and its finalized evidence must contain exactly three matching successes plus six off-diagonal
+   prelaunch rejections. Preparation must derive the harness and fixture-pack inputs from a safely
+   extracted `git archive` of the exact release commit. Its private manifest must bind the copied
+   validator/variant module, harness, plans, and Sandbox configurations, and each guest must finish
+   with a result hash bound by its last-written completion sentinel. Enabling Windows Sandbox and
+   restarting the host are explicit manual prerequisites, not harness actions. The checked-in
+   harness has not yet been executed in real Sandbox guests, so publication remains blocked.
 4. Publish only the three ZIPs, their three `.sha256` files, the three build-environment documents,
    the frontend npm dependency metadata, and schema 3 project provenance as the immutable GitHub
    Release assets.
@@ -162,8 +172,9 @@ binary change advances to a new patch version. Publication then follows this clo
    selection, Tool Pack trust allowlisting and restart requirement, direct project-plugin setup,
    and the optional Rez external-plugin-root workflow.
 6. Re-download every public asset, compare its byte hash with the reviewed candidate, re-run the
-   three attestation checks, and confirm the tag, descriptor `VersionName`, provenance commit, and
-   public release all agree.
+   three attestation checks, repeat the clean-host gate with `SourceKind = "published"`, and confirm
+   the tag, descriptor `VersionName`, provenance commit, public bytes, and finalized replay evidence
+   all agree. Candidate evidence must not be relabeled as the public replay.
 
 ## GUI Evidence Boundary
 
