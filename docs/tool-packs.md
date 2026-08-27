@@ -284,6 +284,49 @@ If the host business plugin contains C++ modules, build and distribute a separat
 for every supported Unreal Engine minor version; do not reuse its native binaries across UE
 versions.
 
+### Reproducible distribution bundle
+
+Run the repository packager against an already-prepared plugin directory. The output directory
+must not exist; publication is atomic and never overwrites an earlier bundle.
+
+```powershell
+python scripts/package-tool-pack.py --plugin-dir C:\Build\StudioAssetTools --output-dir C:\Artifacts\StudioAssetTools-1.2.0 --format json
+```
+
+The fresh directory contains exactly a deterministic `ZIP_STORED` archive, its canonical
+distribution manifest sidecar, and an archive `.sha256` sidecar. The same canonical manifest bytes
+also live at `Content/UnrealEditorWebUI/ToolPackDistribution.json` inside the archive. File order,
+timestamps, modes, path spelling, per-file hashes, and the tree digest are fixed and verified before
+publication. Content-only packs must explicitly set `NoCode: true` and contain no `Modules` or
+`Binaries`; their archive is independent of an Unreal minor version.
+
+The packager does not run UAT or compile native code. A plugin with C++ modules must already contain
+packaged `Binaries/Win64/UnrealEditor.modules` metadata and its mapped DLLs. Supply the exact engine
+used for that build so the packager can verify `EngineVersion` and `BuildId`:
+
+```powershell
+python scripts/package-tool-pack.py --plugin-dir C:\Build\StudioCodeTools --output-dir C:\Artifacts\StudioCodeTools-1.2.0-UE55 --engine-root "C:\Program Files\Epic Games\UE_5.5"
+```
+
+### Read-only installation doctor
+
+The doctor scans only the project, engine, and external plugin roots explicitly supplied. It does
+not import Tool Pack Python, launch Unreal/UAT/pip, or write to the inspected roots.
+
+```powershell
+python scripts/tool-pack-doctor.py --project C:\Projects\Game\Game.uproject --engine-root "C:\Program Files\Epic Games\UE_5.5" --external-root C:\Studio\UEPlugins --format human
+```
+
+Exit codes are `0` for healthy, `1` for a completed unhealthy diagnosis, `2` for invalid command
+line usage, and `3` for an unexpected internal failure. JSON output contains stable reason codes and
+sanitized identities, never absolute inspected paths. It checks missing/duplicate core copies,
+authoritative Tool Pack validation and cross-pack conflicts, canonical distribution metadata,
+payload hashes, and the installed Unreal native variant.
+
+An optional `--trust-file tool-packs.lock.json` maps each `packId` to the expected canonical
+`manifestSha256`. `verified` means only that the installed manifest matches this caller-supplied
+anchor; the lock file must itself come from a trusted release channel.
+
 ## Isolation And Conflict Rules
 
 - Packs are loaded in a stable order independent of Unreal's plugin enumeration order.

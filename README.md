@@ -325,6 +325,12 @@ namespace. See
 [`docs/tool-packs.md`](docs/tool-packs.md) for the fixed plugin layout, scaffold command,
 compatibility contract, whole-pack rollback behavior, and multi-pack installation steps.
 
+Release authors can create a fresh deterministic ZIP, canonical manifest, and SHA-256 sidecar with
+`python scripts/package-tool-pack.py`. Recipients can run the read-only
+`python scripts/tool-pack-doctor.py` against explicit project, engine, and external plugin roots;
+the doctor never imports pack code or launches Unreal. Native-code packs require an explicit
+matching engine root, while explicit `NoCode: true` content packs remain engine-variant independent.
+
 `system.commands.metadataVersion` and every command entry's `metadataVersion` are the version of both the command-catalogue shape and its schema contract. Version 1 uses a strict JSON-schema-like subset. Every property schema declares exactly one of `object`, `array`, `string`, `integer`, `number`, or `boolean`; `null` and union types are not supported. The complete v1 keyword set is:
 
 - payload root: `type: "object"`, `properties`, `required`, and boolean `additionalProperties`
