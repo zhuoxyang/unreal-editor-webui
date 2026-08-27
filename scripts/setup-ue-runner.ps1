@@ -4,42 +4,122 @@ param(
     [string]$RepoUrl,
 
     [Parameter(Mandatory = $true)]
-    [string]$Token,
-
-    [Parameter(Mandatory = $true)]
     [ValidateSet("ue54", "ue55", "ue58")]
     [string]$Variant,
 
-    [ValidatePattern("^\d+\.\d+\.\d+$")]
-    [string]$RunnerVersion = "2.336.0",
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("build", "rez")]
+    [string]$Wave,
 
-    [ValidatePattern("^[0-9a-fA-F]{64}$")]
-    [string]$RunnerSha256 = "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162",
+    [System.Security.SecureString]$RegistrationToken,
 
-    [switch]$Ephemeral
+    [Parameter(Mandatory = $true)]
+    [switch]$DedicatedRunnerAccount
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$NodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue |
-    Select-Object -First 1
-if ($null -eq $NodeCommand) {
-    throw "Node.js is required to decode the checked-in UE release variant registry."
+$RunnerVersion = "2.337.0"
+$RunnerSha256 = "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
+$NodeVersion = "24.18.1"
+$NodeSha256 = "ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765"
+
+if (-not $DedicatedRunnerAccount.IsPresent) {
+    throw "Runner setup requires an explicit dedicated-standard-account acknowledgement."
+}
+
+$SessionProbe = Join-Path $PSScriptRoot "test-interactive-runner-session.ps1"
+if (-not (Test-Path -LiteralPath $SessionProbe -PathType Leaf)) {
+    throw "Interactive runner session validator not found."
+}
+$SessionResultText = @(& $SessionProbe)
+if ($SessionResultText.Count -ne 1) {
+    throw "Interactive standard-user session validation did not return one result."
+}
+$SessionResult = $SessionResultText[0] | ConvertFrom-Json
+if ($SessionResult.schemaVersion -ne 1 -or
+    $SessionResult.standardUser -ne $true -or
+    $SessionResult.activeConsole -ne $true -or
+    $SessionResult.inputDesktop -ne $true -or
+    $SessionResult.profileLoaded -ne $true) {
+    throw "Interactive standard-user session validation returned an invalid result."
+}
+
+if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA) -or
+    -not (Test-Path -LiteralPath $env:LOCALAPPDATA -PathType Container)) {
+    throw "The dedicated runner profile has no LocalAppData directory."
+}
+$LocalAppDataPath = (Resolve-Path -LiteralPath $env:LOCALAPPDATA).Path
+$ControlledRoot = Join-Path $LocalAppDataPath "UnrealEditorWebUI"
+$RunnerBase = Join-Path $ControlledRoot "actions-runners"
+foreach ($ControlledDirectory in @($LocalAppDataPath, $ControlledRoot, $RunnerBase)) {
+    if (-not (Test-Path -LiteralPath $ControlledDirectory)) {
+        New-Item -ItemType Directory -Path $ControlledDirectory | Out-Null
+    }
+    $ControlledItem = Get-Item -LiteralPath $ControlledDirectory -Force
+    if (-not $ControlledItem.PSIsContainer -or
+        ($ControlledItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Runner profile ancestors must be real non-reparse directories."
+    }
+}
+$RunnerRoot = Join-Path $RunnerBase "$Wave-$Variant"
+$RunnerRootFullPath = [System.IO.Path]::GetFullPath($RunnerRoot)
+$ExpectedBasePath = [System.IO.Path]::GetFullPath($RunnerBase).TrimEnd('\') + '\'
+if (-not ($RunnerRootFullPath + '\').StartsWith($ExpectedBasePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "The runner root escaped the dedicated profile."
+}
+if (Test-Path -LiteralPath $RunnerRootFullPath) {
+    throw "The one-job runner root already exists. Remove the completed registration through the documented cleanup flow first."
+}
+New-Item -ItemType Directory -Path $RunnerRootFullPath | Out-Null
+$RunnerRootItem = Get-Item -LiteralPath $RunnerRootFullPath -Force
+if (-not $RunnerRootItem.PSIsContainer -or
+    ($RunnerRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw "The one-job runner root must be a real directory."
+}
+
+$NodeArchiveName = "node-v$NodeVersion-win-x64.zip"
+$NodeArchivePath = Join-Path $RunnerRootFullPath $NodeArchiveName
+$NodeDownloadUrl = "https://nodejs.org/dist/v$NodeVersion/$NodeArchiveName"
+try {
+    Invoke-WebRequest -UseBasicParsing -Uri $NodeDownloadUrl -OutFile $NodeArchivePath
+    $ActualNodeSha256 = (Get-FileHash -LiteralPath $NodeArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ActualNodeSha256 -cne $NodeSha256) {
+        throw "Node.js archive SHA-256 mismatch."
+    }
+    Expand-Archive -LiteralPath $NodeArchivePath -DestinationPath $RunnerRootFullPath
+}
+finally {
+    if (Test-Path -LiteralPath $NodeArchivePath -PathType Leaf) {
+        Remove-Item -LiteralPath $NodeArchivePath -Force
+    }
+}
+$NodeRoot = Join-Path $RunnerRootFullPath "node-v$NodeVersion-win-x64"
+$NodeExecutable = Join-Path $NodeRoot "node.exe"
+if (-not (Test-Path -LiteralPath $NodeExecutable -PathType Leaf)) {
+    throw "The verified Node.js archive did not contain node.exe."
+}
+$DetectedNodeVersion = @(& $NodeExecutable --version)
+if ($LASTEXITCODE -ne 0 -or
+    $DetectedNodeVersion.Count -ne 1 -or
+    $DetectedNodeVersion[0] -cne "v$NodeVersion") {
+    throw "The installed private Node.js runtime does not match the verified archive."
 }
 $NodeVersionValidator = Join-Path $PSScriptRoot "validate-node-version.mjs"
 if (-not (Test-Path -LiteralPath $NodeVersionValidator -PathType Leaf)) {
     throw "Node.js version validator not found."
 }
-& $NodeCommand.Source $NodeVersionValidator
+& $NodeExecutable $NodeVersionValidator
 if ($LASTEXITCODE -ne 0) {
-    throw "The runner setup requires a repository-supported Node.js version."
+    throw "The pinned private Node.js runtime is outside the repository contract."
 }
+
 $VariantRegistryScript = Join-Path $PSScriptRoot "ue-release-variants.mjs"
 if (-not (Test-Path -LiteralPath $VariantRegistryScript -PathType Leaf)) {
     throw "UE release variant registry script not found."
 }
-$MatrixText = @(& $NodeCommand.Source $VariantRegistryScript workflow-matrix)
+$MatrixText = @(& $NodeExecutable $VariantRegistryScript workflow-matrix)
 if ($LASTEXITCODE -ne 0 -or $MatrixText.Count -ne 1) {
     throw "Could not decode the checked-in UE release variant registry."
 }
@@ -50,8 +130,7 @@ if ($VariantEntries.Count -ne 1 -or @($Matrix.include).Count -ne 3) {
 }
 $VariantEntry = $VariantEntries[0]
 
-$RunnerRoot = "C:\actions-runner-unreal-editor-webui-$Variant"
-$RunnerName = "unreal-editor-webui-$Variant"
+$RunnerName = "unreal-editor-webui-$Wave-$Variant"
 $UERoot = [string]$VariantEntry.ue_root
 $Labels = "self-hosted,windows,gui,$($VariantEntry.runner_label)"
 
@@ -102,9 +181,9 @@ $ExpectedIdentity = @{
     IsLicenseeVersion = 0
     IsPromotedBuild = 1
 }
-foreach ($Identity in @($BuildVersion, $EditorVersion)) {
+foreach ($IdentityDocument in @($BuildVersion, $EditorVersion)) {
     foreach ($Field in $ExpectedIdentity.Keys) {
-        if ($Identity.$Field -cne $ExpectedIdentity[$Field]) {
+        if ($IdentityDocument.$Field -cne $ExpectedIdentity[$Field]) {
             throw "$Variant engine identity is not the checked-in exact build."
         }
     }
@@ -157,52 +236,34 @@ if ([string]$VariantEntry.ue_version -ne "5.8") {
     $DocumentsPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
     $UserPythonStartupScript = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"
     if (Test-Path -LiteralPath $UserPythonStartupScript) {
-        throw "$Variant requires a clean Windows profile without a user-global Unreal init_unreal.py."
+        throw "$Variant requires a clean dedicated profile without a user-global Unreal init script."
     }
 }
 
-$RunnerSessionId = (Get-Process -Id $PID).SessionId
-if ($RunnerSessionId -eq 0) {
-    throw "GUI runners must be configured from an interactive Windows desktop session."
-}
-$SessionExplorer = @(
-    Get-Process -Name explorer -ErrorAction SilentlyContinue |
-        Where-Object { $_.SessionId -eq $RunnerSessionId }
-)
-if ($SessionExplorer.Count -eq 0) {
-    throw "No interactive Windows desktop exists in the current session."
-}
-
-if (Test-Path -LiteralPath $RunnerRoot) {
-    throw "Runner root must not already exist: $RunnerRoot"
-}
-New-Item -ItemType Directory -Path $RunnerRoot | Out-Null
-$RunnerRootPath = (Resolve-Path -LiteralPath $RunnerRoot).Path
-$ArchiveName = "actions-runner-win-x64-$RunnerVersion.zip"
-$ArchivePath = Join-Path $RunnerRootPath $ArchiveName
-$DownloadUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$ArchiveName"
-
+$RunnerArchiveName = "actions-runner-win-x64-$RunnerVersion.zip"
+$RunnerArchivePath = Join-Path $RunnerRootFullPath $RunnerArchiveName
+$RunnerDownloadUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$RunnerArchiveName"
 try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $ArchivePath
-    $ActualSha256 = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($ActualSha256 -cne $RunnerSha256.ToLowerInvariant()) {
+    Invoke-WebRequest -UseBasicParsing -Uri $RunnerDownloadUrl -OutFile $RunnerArchivePath
+    $ActualRunnerSha256 = (Get-FileHash -LiteralPath $RunnerArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($ActualRunnerSha256 -cne $RunnerSha256) {
         throw "GitHub Actions runner SHA-256 mismatch."
     }
-    Expand-Archive -LiteralPath $ArchivePath -DestinationPath $RunnerRootPath
+    Expand-Archive -LiteralPath $RunnerArchivePath -DestinationPath $RunnerRootFullPath
 }
 finally {
-    if (Test-Path -LiteralPath $ArchivePath -PathType Leaf) {
-        Remove-Item -LiteralPath $ArchivePath -Force
+    if (Test-Path -LiteralPath $RunnerArchivePath -PathType Leaf) {
+        Remove-Item -LiteralPath $RunnerArchivePath -Force
     }
 }
 
-$ConfigPath = Join-Path $RunnerRootPath "config.cmd"
-$RunnerListener = Join-Path $RunnerRootPath "bin/Runner.Listener.exe"
+$ConfigPath = Join-Path $RunnerRootFullPath "config.cmd"
+$RunnerListener = Join-Path $RunnerRootFullPath "bin/Runner.Listener.exe"
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or
     -not (Test-Path -LiteralPath $RunnerListener -PathType Leaf)) {
     throw "The verified runner archive did not contain the expected executables."
 }
-$VersionOutput = & $RunnerListener --version
+$VersionOutput = @(& $RunnerListener --version)
 $VersionExitCode = $LASTEXITCODE
 $InstalledVersionMatch = [regex]::Match(($VersionOutput -join "`n"), "(?<!\d)\d+\.\d+\.\d+(?!\d)")
 if ($VersionExitCode -ne 0 -or
@@ -211,27 +272,65 @@ if ($VersionExitCode -ne 0 -or
     throw "The installed runner version does not match the verified archive version."
 }
 
-Push-Location $RunnerRootPath
+if ($null -eq $RegistrationToken) {
+    $RegistrationToken = Read-Host "Short-lived GitHub runner registration token" -AsSecureString
+}
+if ($null -eq $RegistrationToken -or $RegistrationToken.Length -eq 0) {
+    throw "A non-empty short-lived registration token is required."
+}
+
+$TokenPointer = [IntPtr]::Zero
+$PlainRegistrationToken = $null
 try {
-    $ConfigArguments = @(
-        "--url", $RepoUrl,
-        "--token", $Token,
-        "--name", $RunnerName,
-        "--labels", $Labels,
-        "--work", "_work",
-        "--unattended",
-        "--disableupdate"
-    )
-    if ($Ephemeral) {
-        $ConfigArguments += "--ephemeral"
+    $TokenPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($RegistrationToken)
+    $PlainRegistrationToken = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($TokenPointer)
+    if ([string]::IsNullOrWhiteSpace($PlainRegistrationToken)) {
+        throw "A non-empty short-lived registration token is required."
     }
-    & .\config.cmd @ConfigArguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "GitHub runner configuration failed with exit code $LASTEXITCODE."
+
+    Push-Location $RunnerRootFullPath
+    try {
+        $ConfigArguments = @(
+            "--url", $RepoUrl,
+            "--token", $PlainRegistrationToken,
+            "--name", $RunnerName,
+            "--no-default-labels",
+            "--labels", $Labels,
+            "--work", "_work",
+            "--unattended",
+            "--disableupdate",
+            "--ephemeral"
+        )
+        & $ConfigPath @ConfigArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "GitHub runner configuration failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        Pop-Location
     }
 }
 finally {
-    Pop-Location
+    $PlainRegistrationToken = $null
+    if ($TokenPointer -ne [IntPtr]::Zero) {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($TokenPointer)
+    }
 }
 
-Write-Output "Configured verified $Variant GUI runner v$RunnerVersion with labels: $Labels. Start run.cmd interactively from this logged-in desktop session."
+$BootstrapEvidencePath = Join-Path $RunnerRootFullPath "UEWebUIRunnerBootstrap.json"
+[ordered]@{
+    schemaVersion = 1
+    variant = $Variant
+    wave = $Wave
+    ephemeral = $true
+    noDefaultLabels = $true
+    runnerVersion = $RunnerVersion
+    runnerArchiveSha256 = "sha256:$RunnerSha256"
+    nodeVersion = $NodeVersion
+    nodeArchiveSha256 = "sha256:$NodeSha256"
+    dedicatedStandardUser = $true
+    interactiveDesktopValidated = $true
+} | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $BootstrapEvidencePath -Encoding UTF8
+
+Write-Output "Configured one verified ephemeral GUI listener for $Wave/$Variant."
+Write-Output "Use scripts/start-ue-runner.ps1 from this same interactive dedicated account when the protected environment is ready."

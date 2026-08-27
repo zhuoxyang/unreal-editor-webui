@@ -499,7 +499,8 @@ test('exact-commit staging guards the consumed lock before install, build, and R
     ['PowerShell exact-commit stage helper', '& node $StageScript $SourceCommit $PluginStage $SourceManifest'],
     ['PowerShell stage exit-code capture', '$StageExitCode = $LASTEXITCODE'],
     ['PowerShell stage failure check', 'if ($StageExitCode -ne 0)'],
-    ['PowerShell RunUAT', '& $RunUATPath BuildPlugin'],
+    ['PowerShell closed compatibility arguments', '$RunUATArguments += $RunUATCompatibilityArguments'],
+    ['PowerShell RunUAT', '& $RunUATPath @RunUATArguments'],
   ])
   assert.doesNotMatch(powershell, /\$FrontendDir|robocopy|Copy-Item -LiteralPath \$LicenseFile/u)
 

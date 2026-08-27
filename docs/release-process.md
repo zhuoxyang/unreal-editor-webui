@@ -90,11 +90,12 @@ For the unchanged tagged commit:
 2. Wait for all three serialized native jobs to pass. Each exact variant performs BuildPlugin,
    native Bridge/Settings automation, packaged Python smokes, three representative Tool Packs
    (two v1 fixtures and one v2 example), and the real GUI CEF task/event/DOM test.
-3. Review the three variant-specific diagnostic artifacts. Diagnostic artifacts are never release
-   inputs.
-4. Dispatch the candidate workflow with the existing tag and exact trusted UE run id, or let the
+3. Wait for the second three-runner wave to pass the three exact Rez external-path activation jobs.
+4. Review the three bounded allowlisted runner diagnostic artifacts. Raw UE/UAT logs stay local;
+   diagnostic artifacts are never release inputs.
+5. Dispatch the candidate workflow with the existing tag and exact trusted UE run id, or let the
    tag push resolve an eligible run automatically.
-5. Verify the candidate ZIP hashes and review `provenance.json` before any separate publication.
+6. Verify the candidate ZIP hashes and review `provenance.json` before any separate publication.
 
 The frontend is compiled for the oldest maintained embedded Chromium runtime (`chrome90`) so the
 same source bundle can load in UE 5.4/5.5 CEF 90 and UE 5.8 CEF 128. Runtime evidence records and

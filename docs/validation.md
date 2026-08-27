@@ -47,9 +47,9 @@ Ordinary GitHub-hosted CI validates the parts that do not require a licensed eng
   malformed ids/types/digests/expiry/workflow metadata, cross-labelled jobs, duplicate subjects,
   all-environment-before-package ordering, final archive hashes, and provenance contracts;
 - packaging and log contracts retain the exact-commit source manifest/license boundary, scoped
-  current-invocation logs, original process exit code, CEF product-DOM/report/privacy canaries,
-  bounded dynamic Tool Pack count, Python startup isolation, artifact ordering, and diagnostics-last
-  behavior;
+  runner-local current-invocation logs, original process exit code, CEF product-DOM/report/privacy
+  canaries, bounded dynamic Tool Pack count, Python startup isolation, artifact ordering, and the
+  allowlisted diagnostics-last behavior;
 - PowerShell/Bash syntax, immutable GitHub Action references, official npm registry guards, and safe
   ZIP extraction profiles are tested.
 
@@ -72,7 +72,8 @@ Every variant job validates before packaging:
 - `UnrealEditor.modules` BuildId;
 - the actual embedded Python ProductVersion;
 - exactly one recursive CEF `libcef.dll` and its actual ProductVersion/Chromium version;
-- a non-Session-0 interactive Explorer desktop;
+- a dedicated standard-user identity on the active nonzero console and input desktop, with an
+  interactive Explorer shell;
 - for UE 5.4/5.5, absence of user-global
   `Documents\UnrealEngine\Python\init_unreal.py` before BuildPlugin.
 
@@ -122,8 +123,9 @@ The three package artifacts and three BuildEnvironment artifacts are required to
 assembly digest-verifies all six, validates all three environments before extracting any package,
 checks package descriptor/module/DLL/source identity, creates three native ZIPs and SHA-256
 sidecars, and writes schema 3 provenance binding the final archive hashes. A missing, duplicate,
-expired, malformed, cross-version, or mismatched subject fails closed. Diagnostics are uploaded
-last and never consumed by release assembly.
+expired, malformed, cross-version, or mismatched subject fails closed. One bounded allowlisted
+diagnostics JSON is uploaded last for each variant and never consumed by release assembly. Raw UE,
+UAT, UBT, host, and browser logs remain on the runner.
 
 Runtime identity is version-level. The workflow records actual reported Python and CEF versions but
 does not serialize machine paths or claim byte-for-byte Python/CEF DLL hashes.
