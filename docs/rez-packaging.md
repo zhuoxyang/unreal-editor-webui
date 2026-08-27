@@ -98,6 +98,10 @@ Pop-Location
 rez-test unreal_editor_webui_project==1.0.0 core-payload asset-tools-payload level-tools-payload --extra-packages unreal_engine==5.4.4 --stop-on-fail
 rez-test unreal_editor_webui_project==1.0.0 core-payload asset-tools-payload level-tools-payload --extra-packages unreal_engine==5.5.4 --stop-on-fail
 rez-test unreal_editor_webui_project==1.0.0 core-payload asset-tools-payload level-tools-payload --extra-packages unreal_engine==5.8.0 --stop-on-fail
+
+rez-test unreal_editor_webui==0.2.0 payload --extra-packages unreal_engine==5.4.4 --stop-on-fail
+rez-test unreal_editor_webui==0.2.0 payload --extra-packages unreal_engine==5.5.4 --stop-on-fail
+rez-test unreal_editor_webui==0.2.0 payload --extra-packages unreal_engine==5.8.0 --stop-on-fail
 ```
 
 The recipe build commands use `rez-python`; they do not depend on a separately configured system
