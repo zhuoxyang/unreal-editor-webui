@@ -106,12 +106,16 @@ jobs:
         run: >-
           python -m compileall -q
           Python
+          rez
           tests
+          scripts/create-rez-host-project.py
           scripts/package-tool-pack.py
+          scripts/rez-package.py
           scripts/tool-pack-doctor.py
           scripts/tool_pack_distribution.py
           scripts/validate-tool-pack.py
           scripts/validate-packaged-bridge-smoke.py
+          scripts/validate-rez-external-smoke.py
           scripts/validate-settings-smoke.py
 
       - name: Run Python registry tests

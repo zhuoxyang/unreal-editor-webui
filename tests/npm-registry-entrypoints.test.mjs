@@ -87,6 +87,14 @@ const EXPECTED_WORKFLOW_CONSUMERS = new Map([
     },
   ],
   [
+    '.github/workflows/ue-ci.yml#fast-checks#Install repository tooling dependencies#npm-install#1',
+    {
+      command: 'npm ci --ignore-scripts --include=dev --no-audit --no-fund',
+      lockfile: 'package-lock.json',
+      workingDirectory: '.',
+    },
+  ],
+  [
     '.github/workflows/ue-ci.yml#fast-checks#Install frontend dependencies#npm-install#1',
     {
       command: 'npm ci',

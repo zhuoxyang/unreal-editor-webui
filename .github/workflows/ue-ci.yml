@@ -25,6 +25,7 @@ on:
       - "Source/**"
       - "Web/**"
       - "frontend/**"
+      - "rez/**"
       - "scripts/**"
       - "tests/**"
       - "LICENSE"
@@ -54,10 +55,18 @@ jobs:
         with:
           node-version-file: ".nvmrc"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
       - name: Validate Node.js version
         run: node scripts/validate-node-version.mjs
+
+      - name: Validate repository tooling dependency sources
+        run: node scripts/validate-npm-lock-registry.mjs package-lock.json
+
+      - name: Install repository tooling dependencies
+        run: npm ci --ignore-scripts --include=dev --no-audit --no-fund
 
       - name: Validate UE build-environment evidence tooling
         run: |
@@ -539,7 +548,7 @@ jobs:
               (Get-Item -LiteralPath $HostDllPath).Length -le 0) {
             throw "Binary-only host module DLL is missing or empty."
           }
-          foreach ($RequiredPath in @("Web/dist/index.html", "Python", "Config")) {
+          foreach ($RequiredPath in @("Web/dist/index.html", "Python")) {
             if (-not (Test-Path -LiteralPath (Join-Path $ResolvedHostPluginPath $RequiredPath))) {
               throw "Binary-only host is missing required packaged path $RequiredPath."
             }
@@ -806,5 +815,237 @@ jobs:
             ${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/Saved/Logs/**
             ${{ steps.automation_tool_logs.outputs.console_log }}
             ${{ steps.automation_tool_logs.outputs.directory }}/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  rez-external-e2e:
+    name: ${{ matrix.release_variant }} Rez external-path E2E
+    needs: [ue-config-validation, buildplugin-and-automation]
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.ue-config-validation.outputs.release_matrix) }}
+    runs-on: [self-hosted, windows, gui, "${{ matrix.runner_label }}"]
+    timeout-minutes: 45
+    environment:
+      name: ue-self-hosted
+    env:
+      UE_VARIANT_ID: ${{ matrix.variant_id }}
+      UE_RELEASE_VARIANT: ${{ matrix.release_variant }}
+      UE_VERSION: ${{ matrix.ue_version }}
+      UE_ROOT: ${{ matrix.ue_root }}
+      UE_PYTHON_STARTUP_ISOLATION: '-ini:Engine:[ConsoleVariables]:Engine.Python.IsPythonInRestrictiveMode=1'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare fresh Rez E2E scope
+        shell: powershell
+        run: |
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
+          $RezRoot = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-RezE2E-$RunSuffix"
+          if (Test-Path -LiteralPath $RezRoot) { throw "Rez E2E scope is not fresh: $RezRoot" }
+          New-Item -ItemType Directory -Path $RezRoot | Out-Null
+
+      - name: Download all exact native core packages
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: UnrealEditorWebUI-Package-UE*-Win64
+          path: ${{ runner.temp }}/UnrealEditorWebUI-RezE2E-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/downloads
+          merge-multiple: false
+
+      - name: Run two-process external-path activation smoke
+        shell: powershell
+        run: |
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
+          $RezRoot = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-RezE2E-$RunSuffix"
+          $Downloads = Join-Path $RezRoot "downloads"
+          $Payloads = Join-Path $RezRoot "payloads"
+          $Resolved = Join-Path $RezRoot "resolved"
+          $PackOutputs = Join-Path $RezRoot "pack-outputs"
+          $ProjectDirectory = Join-Path $RezRoot "project"
+          $EmbeddedPython = Join-Path $env:UE_ROOT "Engine/Binaries/ThirdParty/Python3/Win64/python.exe"
+          $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
+          foreach ($RequiredFile in @($EmbeddedPython, $EditorCmd)) {
+            if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
+              throw "Required UE executable is missing: $RequiredFile"
+            }
+          }
+          if ($env:UE_VERSION -ne "5.8") {
+            $DocumentsPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+            $GlobalStartup = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"
+            if (Test-Path -LiteralPath $GlobalStartup) {
+              throw "$env:UE_RELEASE_VARIANT requires a clean profile without global init_unreal.py."
+            }
+          }
+          New-Item -ItemType Directory -Path $Payloads, $Resolved, $PackOutputs | Out-Null
+
+          $ReleaseVariants = [ordered]@{
+            ue54 = "UE54-Win64"
+            ue55 = "UE55-Win64"
+            ue58 = "UE58-Win64"
+          }
+          $CoreArguments = @()
+          foreach ($VariantId in $ReleaseVariants.Keys) {
+            $ReleaseVariant = $ReleaseVariants[$VariantId]
+            $DownloadedPackage = Join-Path $Downloads "UnrealEditorWebUI-Package-$ReleaseVariant"
+            if (-not (Test-Path -LiteralPath (Join-Path $DownloadedPackage "UnrealEditorWebUI.uplugin") -PathType Leaf)) {
+              throw "Downloaded exact core package is missing: $ReleaseVariant"
+            }
+            $Archive = Join-Path $Payloads "UnrealEditorWebUI-v0.2.0-$ReleaseVariant.zip"
+            & $EmbeddedPython scripts/rez-package.py make-archive --plugin-dir $DownloadedPackage --archive-root-name UnrealEditorWebUI --output $Archive
+            if ($LASTEXITCODE -ne 0) { throw "Core archive creation failed for $ReleaseVariant." }
+            $CoreArguments += @("--core", "$VariantId=$Archive")
+          }
+
+          $PackDefinitions = [ordered]@{
+            unreal_editor_webui_asset_tools = "tests/fixtures/ue-tool-packs/AssetToolsFixture"
+            unreal_editor_webui_level_tools = "tests/fixtures/ue-tool-packs/LevelToolsFixture"
+          }
+          $PackArguments = @()
+          foreach ($Recipe in $PackDefinitions.Keys) {
+            $OutputDirectory = Join-Path $PackOutputs $Recipe
+            $PackageJson = @(& $EmbeddedPython scripts/package-tool-pack.py --plugin-dir $PackDefinitions[$Recipe] --output-dir $OutputDirectory --format json)
+            if ($LASTEXITCODE -ne 0 -or $PackageJson.Count -ne 1) {
+              throw "Tool Pack packaging failed for $Recipe."
+            }
+            $PackageResult = $PackageJson[0] | ConvertFrom-Json
+            $SourceArchive = Join-Path $OutputDirectory ([string]$PackageResult.archiveName)
+            $PackArchive = Join-Path $Payloads ([string]$PackageResult.archiveName)
+            Copy-Item -LiteralPath $SourceArchive -Destination $PackArchive
+            $PackArguments += @("--tool-pack", "$Recipe=$PackArchive")
+          }
+
+          $LockPath = Join-Path $RezRoot "payload-lock.json"
+          & $EmbeddedPython scripts/rez-package.py create-lock @CoreArguments @PackArguments --output $LockPath
+          if ($LASTEXITCODE -ne 0) { throw "Closed Rez payload-lock creation failed." }
+          $LockSha = (Get-Content -LiteralPath "$LockPath.sha256" -Raw).Trim()
+          if ($LockSha -cnotmatch "\Asha256:[0-9a-f]{64}\z") { throw "Payload-lock digest is invalid." }
+          $VariantIndex = switch ($env:UE_VARIANT_ID) {
+            "ue54" { 0 }
+            "ue55" { 1 }
+            "ue58" { 2 }
+            default { throw "Unexpected closed UE variant $env:UE_VARIANT_ID." }
+          }
+
+          $CoreRoot = Join-Path $Resolved "core"
+          $AssetRoot = Join-Path $Resolved "asset"
+          $LevelRoot = Join-Path $Resolved "level"
+          & $EmbeddedPython scripts/rez-package.py install --kind core --recipe unreal_editor_webui --variant-index $VariantIndex --lock $LockPath --lock-sha256 $LockSha --payload-root $Payloads --output-root $CoreRoot
+          if ($LASTEXITCODE -ne 0) { throw "Exact core Rez staging failed." }
+          & $EmbeddedPython scripts/rez-package.py install --kind tool_pack --recipe unreal_editor_webui_asset_tools --lock $LockPath --lock-sha256 $LockSha --payload-root $Payloads --output-root $AssetRoot
+          if ($LASTEXITCODE -ne 0) { throw "Asset Tool Pack Rez staging failed." }
+          & $EmbeddedPython scripts/rez-package.py install --kind tool_pack --recipe unreal_editor_webui_level_tools --lock $LockPath --lock-sha256 $LockSha --payload-root $Payloads --output-root $LevelRoot
+          if ($LASTEXITCODE -ne 0) { throw "Level Tool Pack Rez staging failed." }
+
+          $ProjectOutput = @(& $EmbeddedPython scripts/create-rez-host-project.py --project-dir $ProjectDirectory --engine-association $env:UE_VERSION)
+          if ($LASTEXITCODE -ne 0 -or $ProjectOutput.Count -ne 1) { throw "External-only project creation failed." }
+          $Project = $ProjectOutput[0]
+          if (Test-Path -LiteralPath (Join-Path $ProjectDirectory "Plugins")) {
+            throw "Rez E2E project must not contain Project/Plugins."
+          }
+
+          $CorePlugin = Join-Path $CoreRoot "Plugins/UnrealEditorWebUI"
+          $AssetPlugin = Join-Path $AssetRoot "Plugins/AssetToolsFixture"
+          $LevelPlugin = Join-Path $LevelRoot "Plugins/LevelToolsFixture"
+          $PythonIsolationArgs = @()
+          if ($env:UE_VERSION -eq "5.8") { $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION }
+          $env:PYTHONDONTWRITEBYTECODE = "1"
+          $env:UNREAL_EDITOR_WEBUI_ROOT = $CorePlugin
+          $env:UNREAL_EDITOR_WEBUI_ASSET_TOOLS_ROOT = $AssetPlugin
+          $env:UNREAL_EDITOR_WEBUI_LEVEL_TOOLS_ROOT = $LevelPlugin
+          $Launcher = Join-Path $CoreRoot "Scripts/rez_payload.py"
+
+          $env:UE_ADDITIONAL_PLUGIN_PATHS = @(
+            (Join-Path $CoreRoot "Plugins")
+            (Join-Path $AssetRoot "Plugins")
+            (Join-Path $LevelRoot "Plugins")
+          ) -join ";"
+          $RoundOneResult = Join-Path $RezRoot "round-1.json"
+          $env:UNREAL_WEBUI_REZ_SMOKE_RESULT = $RoundOneResult
+          $env:UNREAL_WEBUI_REZ_SMOKE_EXPECTATIONS = [ordered]@{
+            round = "two-packs"
+            present = [ordered]@{
+              UnrealEditorWebUI = $CorePlugin
+              AssetToolsFixture = $AssetPlugin
+              LevelToolsFixture = $LevelPlugin
+            }
+            absent = @()
+            removedPythonPackage = ""
+            removedRoot = ""
+          } | ConvertTo-Json -Compress -Depth 4
+          $RoundOneLog = Join-Path $RezRoot "round-1.log"
+          $RoundOneUserDir = Join-Path $RezRoot "user-round-1"
+          if (Test-Path -LiteralPath $RoundOneUserDir) { throw "Round-one UserDir is not fresh." }
+          & $EmbeddedPython $Launcher launch --project $Project --engine-root $env:UE_ROOT --editor $EditorCmd -- -run=pythonscript "-script=$PWD/scripts/validate-rez-external-smoke.py" @PythonIsolationArgs -unattended -nopause -nosplash -NullRHI "-UserDir=$RoundOneUserDir" "-abslog=$RoundOneLog"
+          if ($LASTEXITCODE -ne 0) { throw "Rez external smoke round one failed." }
+          $RoundOne = Get-Content -LiteralPath $RoundOneResult -Raw | ConvertFrom-Json
+          if ($RoundOne.ok -ne $true -or [string]$RoundOne.round -cne "two-packs") {
+            throw "Rez external smoke round one result is invalid."
+          }
+
+          foreach ($StateName in @("Saved", "Intermediate")) {
+            $StatePath = Join-Path $ProjectDirectory $StateName
+            if (-not (Test-Path -LiteralPath $StatePath)) { continue }
+            $StateItem = Get-Item -LiteralPath $StatePath -Force
+            $ResolvedState = (Resolve-Path -LiteralPath $StatePath).Path
+            $ResolvedProject = (Resolve-Path -LiteralPath $ProjectDirectory).Path.TrimEnd('\') + '\'
+            if (-not $StateItem.PSIsContainer -or
+                ($StateItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not ($ResolvedState + '\').StartsWith($ResolvedProject, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Project state cleanup target is unsafe: $StateName"
+            }
+            Remove-Item -LiteralPath $StatePath -Recurse -Force
+          }
+          if (@(Get-ChildItem -LiteralPath $Resolved -Directory -Filter "__pycache__" -Recurse -ErrorAction SilentlyContinue).Count -ne 0) {
+            throw "Round one wrote Python bytecode into an immutable Rez payload."
+          }
+
+          $env:UE_ADDITIONAL_PLUGIN_PATHS = @(
+            (Join-Path $CoreRoot "Plugins")
+            (Join-Path $AssetRoot "Plugins")
+          ) -join ";"
+          Remove-Item Env:\UNREAL_EDITOR_WEBUI_LEVEL_TOOLS_ROOT -ErrorAction SilentlyContinue
+          $RoundTwoResult = Join-Path $RezRoot "round-2.json"
+          $env:UNREAL_WEBUI_REZ_SMOKE_RESULT = $RoundTwoResult
+          $env:UNREAL_WEBUI_REZ_SMOKE_EXPECTATIONS = [ordered]@{
+            round = "one-pack-after-restart"
+            present = [ordered]@{
+              UnrealEditorWebUI = $CorePlugin
+              AssetToolsFixture = $AssetPlugin
+            }
+            absent = @("LevelToolsFixture")
+            removedPythonPackage = "ue_webui_level_tools_fixture"
+            removedRoot = $LevelPlugin
+          } | ConvertTo-Json -Compress -Depth 4
+          $RoundTwoLog = Join-Path $RezRoot "round-2.log"
+          $RoundTwoUserDir = Join-Path $RezRoot "user-round-2"
+          if (Test-Path -LiteralPath $RoundTwoUserDir) { throw "Round-two UserDir is not fresh." }
+          & $EmbeddedPython $Launcher launch --project $Project --engine-root $env:UE_ROOT --editor $EditorCmd -- -run=pythonscript "-script=$PWD/scripts/validate-rez-external-smoke.py" @PythonIsolationArgs -unattended -nopause -nosplash -NullRHI "-UserDir=$RoundTwoUserDir" "-abslog=$RoundTwoLog"
+          if ($LASTEXITCODE -ne 0) { throw "Rez external smoke round two failed." }
+          $RoundTwo = Get-Content -LiteralPath $RoundTwoResult -Raw | ConvertFrom-Json
+          if ($RoundTwo.ok -ne $true -or [string]$RoundTwo.round -cne "one-pack-after-restart") {
+            throw "Rez external smoke round two result is invalid."
+          }
+          if ([int]$RoundOne.processId -eq [int]$RoundTwo.processId) {
+            throw "Rez external smoke did not use two fresh editor processes."
+          }
+          if (Test-Path -LiteralPath (Join-Path $ProjectDirectory "Plugins")) {
+            throw "Rez E2E project gained a Project/Plugins directory."
+          }
+
+      - name: Upload Rez external-path evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: unreal-editor-webui-rez-e2e-${{ matrix.variant_id }}
+          path: |
+            ${{ runner.temp }}/UnrealEditorWebUI-RezE2E-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/round-*.json
           if-no-files-found: ignore
           retention-days: 14

@@ -25,6 +25,7 @@ const EXPECTED_PUSH_PATHS = [
   'Source/**',
   'Web/**',
   'frontend/**',
+  'rez/**',
   'scripts/**',
   'tests/**',
   'LICENSE',
@@ -88,24 +89,26 @@ test('documentation-only changes stay outside the licensed UE trigger', () => {
 
 test('the protected self-hosted trust boundary stays unchanged', () => {
   const workflow = parse(readRepositoryFile('.github/workflows/ue-ci.yml'))
-  const job = workflow.jobs['buildplugin-and-automation']
   const trustedDispatch = workflow.on.workflow_dispatch.inputs.run_trusted_ue_validation
 
   assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch'])
   assert.equal(trustedDispatch.required, true)
   assert.equal(trustedDispatch.default, false)
   assert.equal(trustedDispatch.type, 'boolean')
-  assert.deepEqual(job.environment, { name: 'ue-self-hosted' })
-  assert.deepEqual(job['runs-on'], [
-    'self-hosted',
-    'windows',
-    'gui',
-    '${{ matrix.runner_label }}',
-  ])
-  assert.equal(job.strategy['max-parallel'], 1)
-  assert.equal(
-    job.strategy.matrix,
-    '${{ fromJSON(needs.ue-config-validation.outputs.release_matrix) }}',
-  )
-  assert.equal(job.if, EXPECTED_TRUSTED_JOB_CONDITION)
+  for (const jobName of ['buildplugin-and-automation', 'rez-external-e2e']) {
+    const job = workflow.jobs[jobName]
+    assert.deepEqual(job.environment, { name: 'ue-self-hosted' })
+    assert.deepEqual(job['runs-on'], [
+      'self-hosted',
+      'windows',
+      'gui',
+      '${{ matrix.runner_label }}',
+    ])
+    assert.equal(job.strategy['max-parallel'], 1)
+    assert.equal(
+      job.strategy.matrix,
+      '${{ fromJSON(needs.ue-config-validation.outputs.release_matrix) }}',
+    )
+    assert.equal(job.if, EXPECTED_TRUSTED_JOB_CONDITION)
+  }
 })
