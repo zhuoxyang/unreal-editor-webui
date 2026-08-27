@@ -7,11 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Candidate version tag (must match UnrealEditorWebUI.uplugin VersionName)
+        description: Existing version tag pointing at this exact commit
         required: true
         type: string
       ue_workflow_run_id:
-        description: Successful trusted UE CI run id for the selected commit
+        description: Successful trusted three-variant UE CI run id for this exact commit
         required: true
         type: string
 
@@ -25,9 +25,9 @@ concurrency:
 
 jobs:
   assemble:
-    name: Assemble verified UE 5.8 release candidate
+    name: Assemble verified UE 5.4, 5.5, and 5.8 release candidates
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Check out exact release commit
@@ -54,42 +54,40 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-
           release_commit="$(git rev-parse HEAD)"
           if [[ "$EVENT_NAME" == "push" ]]; then
             release_tag="$REF_NAME"
             requested_run_id=""
-            tag_commit="$(git rev-list -n 1 "refs/tags/$release_tag")"
-            if [[ "$tag_commit" != "$release_commit" ]]; then
-              echo "Tag $release_tag resolves to $tag_commit, not checked-out commit $release_commit." >&2
-              exit 1
-            fi
           else
             release_tag="$MANUAL_RELEASE_TAG"
             requested_run_id="$MANUAL_UE_RUN_ID"
           fi
-
           if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
             echo "Release tag '$release_tag' is not a supported semantic version tag." >&2
+            exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/$release_tag"; then
+            echo "Release tag '$release_tag' does not exist in the checked-out repository." >&2
+            exit 1
+          fi
+          tag_commit="$(git rev-parse "refs/tags/$release_tag^{commit}")"
+          if [[ "$tag_commit" != "$release_commit" ]]; then
+            echo "Tag $release_tag resolves to $tag_commit, not checked-out commit $release_commit." >&2
             exit 1
           fi
           if [[ "$EVENT_NAME" == "workflow_dispatch" && ! "$requested_run_id" =~ ^[1-9][0-9]*$ ]]; then
             echo "Manual release candidates require a numeric trusted UE workflow run id." >&2
             exit 1
           fi
-
           node scripts/validate-plugin-version.mjs --tag "$release_tag"
-
           echo "release_commit=$release_commit" >> "$GITHUB_OUTPUT"
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           echo "requested_run_id=$requested_run_id" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve, download, and verify exact trusted UE artifacts
+      - name: Resolve, download, and digest-verify the closed six-artifact set
         id: ue
         shell: bash
         env:
-          ARTIFACT_ARCHIVE: trusted-package.zip
-          BUILD_ENVIRONMENT_ARCHIVE: trusted-build-environment.zip
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           REQUESTED_RUN_ID: ${{ steps.release.outputs.requested_run_id }}
@@ -98,83 +96,119 @@ jobs:
           arguments=(
             --repository "$GITHUB_REPOSITORY"
             --commit "$RELEASE_COMMIT"
-            --download-to "$ARTIFACT_ARCHIVE"
-            --build-environment-download-to "$BUILD_ENVIRONMENT_ARCHIVE"
+            --download-directory trusted-artifacts
           )
           if [[ -n "$REQUESTED_RUN_ID" ]]; then
             arguments+=(--run-id "$REQUESTED_RUN_ID")
           fi
           node scripts/resolve-ue-release-artifact.mjs "${arguments[@]}"
 
-      - name: Extract and verify trusted UE build environment
+      - name: Extract and verify all build environments before any package
         shell: bash
         env:
-          BUILD_ENVIRONMENT_ARCHIVE: trusted-build-environment.zip
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
-          UE_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_artifact_digest }}
-          UE_ARTIFACT_ID: ${{ steps.ue.outputs.ue_artifact_id }}
-          UE_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_artifact_name }}
           UE_RUN_ATTEMPT: ${{ steps.ue.outputs.ue_run_attempt }}
           UE_RUN_ID: ${{ steps.ue.outputs.ue_run_id }}
+          UE54_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue54_artifact_digest }}
+          UE54_ARTIFACT_ID: ${{ steps.ue.outputs.ue54_artifact_id }}
+          UE54_ARTIFACT_NAME: ${{ steps.ue.outputs.ue54_artifact_name }}
+          UE55_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue55_artifact_digest }}
+          UE55_ARTIFACT_ID: ${{ steps.ue.outputs.ue55_artifact_id }}
+          UE55_ARTIFACT_NAME: ${{ steps.ue.outputs.ue55_artifact_name }}
+          UE58_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue58_artifact_digest }}
+          UE58_ARTIFACT_ID: ${{ steps.ue.outputs.ue58_artifact_id }}
+          UE58_ARTIFACT_NAME: ${{ steps.ue.outputs.ue58_artifact_name }}
         run: |
           set -euo pipefail
-          python scripts/extract-verified-artifact.py \
-            --archive "$BUILD_ENVIRONMENT_ARCHIVE" \
-            --destination trusted-build-environment \
-            --profile build-environment
-          mkdir -p release/metadata
+          mkdir -p release/metadata trusted-build-environments
+          verify_environment() {
+            local variant_id="$1"
+            local release_variant="$2"
+            local artifact_id="$3"
+            local artifact_name="$4"
+            local artifact_digest="$5"
+            local extracted="trusted-build-environments/$variant_id"
+            local canonical="release/metadata/build-environment-$release_variant.json"
+            python scripts/extract-verified-artifact.py \
+              --archive "trusted-artifacts/trusted-build-environment-$variant_id.zip" \
+              --destination "$extracted" \
+              --profile build-environment
+            node scripts/ue-build-environment.mjs verify \
+              --input "$extracted/BuildEnvironment.json" \
+              --variant "$variant_id" \
+              --repository "$GITHUB_REPOSITORY" \
+              --commit "$RELEASE_COMMIT" \
+              --run-id "$UE_RUN_ID" \
+              --run-attempt "$UE_RUN_ATTEMPT" \
+              --job-key buildplugin-and-automation \
+              --package-artifact-id "$artifact_id" \
+              --package-artifact-name "$artifact_name" \
+              --package-artifact-digest "$artifact_digest" \
+              --canonical-output "$canonical"
+            test -s "$canonical"
+          }
+          verify_environment ue54 UE54-Win64 "$UE54_ARTIFACT_ID" "$UE54_ARTIFACT_NAME" "$UE54_ARTIFACT_DIGEST"
+          verify_environment ue55 UE55-Win64 "$UE55_ARTIFACT_ID" "$UE55_ARTIFACT_NAME" "$UE55_ARTIFACT_DIGEST"
+          verify_environment ue58 UE58-Win64 "$UE58_ARTIFACT_ID" "$UE58_ARTIFACT_NAME" "$UE58_ARTIFACT_DIGEST"
 
-          node scripts/ue-build-environment.mjs verify \
-            --input trusted-build-environment/BuildEnvironment.json \
-            --repository "$GITHUB_REPOSITORY" \
-            --commit "$RELEASE_COMMIT" \
-            --run-id "$UE_RUN_ID" \
-            --run-attempt "$UE_RUN_ATTEMPT" \
-            --job-key buildplugin-and-automation \
-            --package-artifact-id "$UE_ARTIFACT_ID" \
-            --package-artifact-name "$UE_ARTIFACT_NAME" \
-            --package-artifact-digest "$UE_ARTIFACT_DIGEST" \
-            --canonical-output release/metadata/build-environment.json
-          test -s release/metadata/build-environment.json
-
-      - name: Extract verified trusted UE package
+      - name: Extract verified packages only after all environments pass
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/extract-verified-artifact.py \
-            --archive trusted-package.zip \
-            --destination trusted-package \
-            --profile package
+          mkdir trusted-packages
+          for variant_id in ue54 ue55 ue58; do
+            python scripts/extract-verified-artifact.py \
+              --archive "trusted-artifacts/trusted-package-$variant_id.zip" \
+              --destination "trusted-packages/$variant_id" \
+              --profile package
+          done
 
-      - name: Validate packaged plugin structure
+      - name: Validate every packaged plugin identity
         shell: bash
         env:
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
         run: |
           set -euo pipefail
-
-          if find trusted-package -type l -print -quit | grep -q .; then
-            echo "The trusted package contains a symbolic link; refusing to assemble a release candidate." >&2
-            exit 1
-          fi
-          test -f trusted-package/UnrealEditorWebUI.uplugin
-          test -f trusted-package/Web/dist/index.html
-          test -f trusted-package/LICENSE
-          test -f trusted-package/SourceManifest.json
-          manifest_commit="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync('trusted-package/SourceManifest.json','utf8')); if (value.schemaVersion !== 1 || !Array.isArray(value.files) || !value.files.some((file) => file.path === 'Web/dist/index.html' && file.source === 'generated')) process.exit(1); process.stdout.write(value.sourceCommit ?? '')")"
-          if [[ "$manifest_commit" != "$RELEASE_COMMIT" ]]; then
-            echo "The package source manifest is not bound to exact release commit '$RELEASE_COMMIT'." >&2
-            exit 1
-          fi
-          if ! cmp -s LICENSE trusted-package/LICENSE; then
-            echo "The packaged license does not match the exact release commit." >&2
-            exit 1
-          fi
-
-          node scripts/validate-plugin-version.mjs \
-            --tag "$RELEASE_TAG" \
-            --compare-descriptor trusted-package/UnrealEditorWebUI.uplugin
+          for variant_id in ue54 ue55 ue58; do
+            package="trusted-packages/$variant_id"
+            if find "$package" -type l -print -quit | grep -q .; then
+              echo "$variant_id package contains a symbolic link." >&2
+              exit 1
+            fi
+            test -f "$package/UnrealEditorWebUI.uplugin"
+            test -f "$package/Web/dist/index.html"
+            test -f "$package/LICENSE"
+            test -f "$package/SourceManifest.json"
+            manifest_commit="$(node -e "const fs=require('node:fs'); const value=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); if (value.schemaVersion !== 1 || !Array.isArray(value.files) || !value.files.some((file) => file.path === 'Web/dist/index.html' && file.source === 'generated')) process.exit(1); process.stdout.write(value.sourceCommit ?? '')" "$package/SourceManifest.json")"
+            if [[ "$manifest_commit" != "$RELEASE_COMMIT" ]]; then
+              echo "$variant_id package source manifest is not bound to $RELEASE_COMMIT." >&2
+              exit 1
+            fi
+            cmp -s LICENSE "$package/LICENSE"
+            node scripts/validate-plugin-version.mjs --tag "$RELEASE_TAG" --compare-descriptor "$package/UnrealEditorWebUI.uplugin"
+            node --input-type=module - "$variant_id" "$package" <<'NODE'
+          import { readdirSync, readFileSync, statSync } from 'node:fs'
+          import { join } from 'node:path'
+          import { requireReleaseVariant } from './scripts/ue-release-variants.mjs'
+          const variant = requireReleaseVariant(process.argv[2])
+          const descriptor = JSON.parse(readFileSync(join(process.argv[3], 'UnrealEditorWebUI.uplugin'), 'utf8'))
+          if (descriptor.Installed !== true || descriptor.EngineVersion !== `${variant.engineAssociation}.0`) {
+            throw new Error('Packaged plugin descriptor engine identity mismatch.')
+          }
+          const binaries = join(process.argv[3], 'Binaries', 'Win64')
+          const files = readdirSync(binaries).filter((name) => name.endsWith('.modules'))
+          if (files.length !== 1) throw new Error('Expected exactly one packaged module manifest.')
+          const modules = JSON.parse(readFileSync(join(binaries, files[0]), 'utf8'))
+          if (modules.BuildId !== variant.engine.buildId) throw new Error('Packaged BuildId mismatch.')
+          const names = Object.keys(modules.Modules ?? {})
+          if (names.length !== 1 || names[0] !== 'UnrealEditorWebUI') throw new Error('Packaged module mapping mismatch.')
+          const dll = modules.Modules.UnrealEditorWebUI
+          if (dll !== 'UnrealEditor-UnrealEditorWebUI.dll') throw new Error('Packaged module DLL name mismatch.')
+          const dllStat = statSync(join(binaries, dll))
+          if (!dllStat.isFile() || dllStat.size <= 0) throw new Error('Packaged module DLL is missing or empty.')
+          NODE
+          done
 
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
@@ -184,31 +218,54 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release/metadata
-          npm sbom \
-            --prefix frontend \
-            --package-lock-only \
-            --sbom-format cyclonedx \
-            --sbom-type application \
-            > release/metadata/npm-cyclonedx.json
-          node scripts/export-npm-dependencies.mjs \
-            frontend/package-lock.json \
-            release/metadata/npm-dependencies.json
+          npm sbom --prefix frontend --package-lock-only --sbom-format cyclonedx --sbom-type application > release/metadata/npm-cyclonedx.json
+          node scripts/export-npm-dependencies.mjs frontend/package-lock.json release/metadata/npm-dependencies.json
 
-      - name: Write fail-closed provenance
+      - name: Create three candidate archives and SHA-256 files
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          for spec in "ue54 UE54-Win64" "ue55 UE55-Win64" "ue58 UE58-Win64"; do
+            read -r variant_id release_variant <<< "$spec"
+            archive_name="UnrealEditorWebUI-${RELEASE_TAG}-${release_variant}.zip"
+            staging="release/staging/$variant_id/UnrealEditorWebUI"
+            mkdir -p "$staging"
+            cp -a "trusted-packages/$variant_id/." "$staging/"
+            (cd "release/staging/$variant_id" && zip -q -r -X "../../$archive_name" UnrealEditorWebUI)
+            (cd release && sha256sum "$archive_name" > "$archive_name.sha256")
+          done
+
+      - name: Write fail-closed three-variant provenance
         shell: python
         env:
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
-          UE_BUILD_ENVIRONMENT_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_build_environment_artifact_digest }}
-          UE_BUILD_ENVIRONMENT_ARTIFACT_ID: ${{ steps.ue.outputs.ue_build_environment_artifact_id }}
-          UE_BUILD_ENVIRONMENT_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_build_environment_artifact_name }}
-          UE_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue_artifact_digest }}
-          UE_ARTIFACT_ID: ${{ steps.ue.outputs.ue_artifact_id }}
-          UE_ARTIFACT_NAME: ${{ steps.ue.outputs.ue_artifact_name }}
-          UE_JOB_ID: ${{ steps.ue.outputs.ue_job_id }}
           UE_RUN_ATTEMPT: ${{ steps.ue.outputs.ue_run_attempt }}
           UE_RUN_ID: ${{ steps.ue.outputs.ue_run_id }}
           UE_RUN_URL: ${{ steps.ue.outputs.ue_run_url }}
+          UE54_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue54_artifact_digest }}
+          UE54_ARTIFACT_ID: ${{ steps.ue.outputs.ue54_artifact_id }}
+          UE54_ARTIFACT_NAME: ${{ steps.ue.outputs.ue54_artifact_name }}
+          UE54_BUILD_ENVIRONMENT_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue54_build_environment_artifact_digest }}
+          UE54_BUILD_ENVIRONMENT_ARTIFACT_ID: ${{ steps.ue.outputs.ue54_build_environment_artifact_id }}
+          UE54_BUILD_ENVIRONMENT_ARTIFACT_NAME: ${{ steps.ue.outputs.ue54_build_environment_artifact_name }}
+          UE54_JOB_ID: ${{ steps.ue.outputs.ue54_job_id }}
+          UE55_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue55_artifact_digest }}
+          UE55_ARTIFACT_ID: ${{ steps.ue.outputs.ue55_artifact_id }}
+          UE55_ARTIFACT_NAME: ${{ steps.ue.outputs.ue55_artifact_name }}
+          UE55_BUILD_ENVIRONMENT_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue55_build_environment_artifact_digest }}
+          UE55_BUILD_ENVIRONMENT_ARTIFACT_ID: ${{ steps.ue.outputs.ue55_build_environment_artifact_id }}
+          UE55_BUILD_ENVIRONMENT_ARTIFACT_NAME: ${{ steps.ue.outputs.ue55_build_environment_artifact_name }}
+          UE55_JOB_ID: ${{ steps.ue.outputs.ue55_job_id }}
+          UE58_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue58_artifact_digest }}
+          UE58_ARTIFACT_ID: ${{ steps.ue.outputs.ue58_artifact_id }}
+          UE58_ARTIFACT_NAME: ${{ steps.ue.outputs.ue58_artifact_name }}
+          UE58_BUILD_ENVIRONMENT_ARTIFACT_DIGEST: ${{ steps.ue.outputs.ue58_build_environment_artifact_digest }}
+          UE58_BUILD_ENVIRONMENT_ARTIFACT_ID: ${{ steps.ue.outputs.ue58_build_environment_artifact_id }}
+          UE58_BUILD_ENVIRONMENT_ARTIFACT_NAME: ${{ steps.ue.outputs.ue58_build_environment_artifact_name }}
+          UE58_JOB_ID: ${{ steps.ue.outputs.ue58_job_id }}
         run: |
           import datetime
           import hashlib
@@ -216,12 +273,52 @@ jobs:
           import os
           import pathlib
 
-          build_environment_path = pathlib.Path("release/metadata/build-environment.json")
-          build_environment_bytes = build_environment_path.read_bytes()
-          build_environment = json.loads(build_environment_bytes)
-
+          variants = [
+              ("ue54", "UE54-Win64", "5.4", "33043543", "ue-5.4"),
+              ("ue55", "UE55-Win64", "5.5", "37670630", "ue-5.5"),
+              ("ue58", "UE58-Win64", "5.8", "55116800", "ue-5.8"),
+          ]
+          validations = []
+          for variant_id, release_variant, engine_version, build_id, runner_label in variants:
+              prefix = variant_id.upper()
+              environment_path = pathlib.Path(f"release/metadata/build-environment-{release_variant}.json")
+              environment_bytes = environment_path.read_bytes()
+              environment = json.loads(environment_bytes)
+              if environment["releaseVariant"] != release_variant:
+                  raise RuntimeError("Canonical build environment has the wrong variant.")
+              archive_name = f"UnrealEditorWebUI-{os.environ['RELEASE_TAG']}-{release_variant}.zip"
+              archive_path = pathlib.Path("release") / archive_name
+              archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+              sidecar_path = pathlib.Path(f"{archive_path}.sha256")
+              expected_sidecar = f"{archive_digest}  {archive_name}\n"
+              if sidecar_path.read_text(encoding="utf-8") != expected_sidecar:
+                  raise RuntimeError("Release archive SHA-256 sidecar is not canonical.")
+              validations.append({
+                  "releaseVariant": release_variant,
+                  "engineVersion": engine_version,
+                  "buildId": build_id,
+                  "requiredJob": f"UE {engine_version} BuildPlugin and automation",
+                  "requiredRunnerLabels": ["self-hosted", "windows", "gui", runner_label],
+                  "jobId": int(os.environ[f"{prefix}_JOB_ID"]),
+                  "packageArtifact": {
+                      "artifactId": int(os.environ[f"{prefix}_ARTIFACT_ID"]),
+                      "artifactName": os.environ[f"{prefix}_ARTIFACT_NAME"],
+                      "artifactDigest": os.environ[f"{prefix}_ARTIFACT_DIGEST"],
+                  },
+                  "buildEnvironmentArtifact": {
+                      "artifactId": int(os.environ[f"{prefix}_BUILD_ENVIRONMENT_ARTIFACT_ID"]),
+                      "artifactName": os.environ[f"{prefix}_BUILD_ENVIRONMENT_ARTIFACT_NAME"],
+                      "artifactDigest": os.environ[f"{prefix}_BUILD_ENVIRONMENT_ARTIFACT_DIGEST"],
+                  },
+                  "buildEnvironment": environment,
+                  "buildEnvironmentSha256": "sha256:" + hashlib.sha256(environment_bytes).hexdigest(),
+                  "releaseArchive": {
+                      "fileName": archive_name,
+                      "sha256": "sha256:" + archive_digest,
+                  },
+              })
           metadata = {
-              "schemaVersion": 2,
+              "schemaVersion": 3,
               "releaseKind": "candidate",
               "publishedAsGitHubRelease": False,
               "repository": os.environ["GITHUB_REPOSITORY"],
@@ -229,74 +326,100 @@ jobs:
               "releaseCommit": os.environ["RELEASE_COMMIT"],
               "generatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "sourceArchiveCreated": False,
-              "license": {
-                  "spdxId": "MIT",
-                  "path": "LICENSE",
-                  "verifiedAgainstSource": True,
-              },
+              "license": {"spdxId": "MIT", "path": "LICENSE", "verifiedAgainstSource": True},
               "ueValidation": {
                   "workflowPath": ".github/workflows/ue-ci.yml",
-                  "requiredJob": "UE 5.8 BuildPlugin and automation",
-                  "requiredRunnerLabels": ["self-hosted", "windows", "gui", "ue-5.8"],
                   "runId": int(os.environ["UE_RUN_ID"]),
                   "runAttempt": int(os.environ["UE_RUN_ATTEMPT"]),
                   "runUrl": os.environ["UE_RUN_URL"],
-                  "jobId": int(os.environ["UE_JOB_ID"]),
-                  "artifactId": int(os.environ["UE_ARTIFACT_ID"]),
-                  "artifactDigest": os.environ["UE_ARTIFACT_DIGEST"],
-                  "artifactName": os.environ["UE_ARTIFACT_NAME"],
-                  "artifactCommitMatched": True,
-                  "buildEnvironmentArtifact": {
-                      "artifactId": int(os.environ["UE_BUILD_ENVIRONMENT_ARTIFACT_ID"]),
-                      "artifactName": os.environ["UE_BUILD_ENVIRONMENT_ARTIFACT_NAME"],
-                      "artifactDigest": os.environ["UE_BUILD_ENVIRONMENT_ARTIFACT_DIGEST"],
-                  },
-                  "buildEnvironment": build_environment,
-                  "buildEnvironmentSha256": (
-                      "sha256:" + hashlib.sha256(build_environment_bytes).hexdigest()
-                  ),
+                  "variants": validations,
               },
               "validationClaim": (
-                  "Trusted UE 5.8 BuildPlugin, repository automation, and GUI CEF browser binding/task DOM-event coverage."
+                  "Exact UE 5.4.4, 5.5.4, and 5.8.0 BuildPlugin, three-Tool-Pack automation, "
+                  "packaged smoke, settings automation, and GUI CEF coverage from one trusted run attempt."
               ),
           }
-
           output = pathlib.Path("release/metadata/provenance.json")
           output.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
           persisted = json.loads(output.read_text(encoding="utf-8"))
-          if persisted["ueValidation"]["buildEnvironment"] != build_environment:
-              raise RuntimeError(
-                  "Embedded build environment does not equal canonical build-environment.json."
-              )
+          def require_keys(value, expected, label):
+              if not isinstance(value, dict) or set(value) != set(expected):
+                  raise RuntimeError(f"{label} does not use the closed schema.")
 
-      - name: Create candidate archive and SHA-256
-        id: archive
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          archive_name="UnrealEditorWebUI-${RELEASE_TAG}-UE58.zip"
-          mkdir -p release/staging/UnrealEditorWebUI
-          cp -a trusted-package/. release/staging/UnrealEditorWebUI/
-          (
-            cd release/staging
-            zip -q -r -X "../$archive_name" UnrealEditorWebUI
-          )
-          (
-            cd release
-            sha256sum "$archive_name" > "$archive_name.sha256"
-          )
-          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+          require_keys(persisted, [
+              "schemaVersion", "releaseKind", "publishedAsGitHubRelease", "repository",
+              "releaseTag", "releaseCommit", "generatedAt", "sourceArchiveCreated",
+              "license", "ueValidation", "validationClaim",
+          ], "provenance")
+          require_keys(persisted["ueValidation"], [
+              "workflowPath", "runId", "runAttempt", "runUrl", "variants",
+          ], "ueValidation")
+          require_keys(persisted["license"], [
+              "spdxId", "path", "verifiedAgainstSource",
+          ], "license")
+          expected_release_variants = ["UE54-Win64", "UE55-Win64", "UE58-Win64"]
+          if [item["releaseVariant"] for item in persisted["ueValidation"]["variants"]] != expected_release_variants:
+              raise RuntimeError("Persisted provenance lost the closed variant order.")
+          for item in persisted["ueValidation"]["variants"]:
+              require_keys(item, [
+                  "releaseVariant", "engineVersion", "buildId", "requiredJob", "requiredRunnerLabels",
+                  "jobId", "packageArtifact", "buildEnvironmentArtifact", "buildEnvironment",
+                  "buildEnvironmentSha256", "releaseArchive",
+              ], "variant provenance")
+              require_keys(item["packageArtifact"], ["artifactId", "artifactName", "artifactDigest"], "package artifact")
+              require_keys(item["buildEnvironmentArtifact"], ["artifactId", "artifactName", "artifactDigest"], "environment artifact")
+              require_keys(item["releaseArchive"], ["fileName", "sha256"], "release archive")
+              environment = item["buildEnvironment"]
+              require_keys(environment, [
+                  "schemaVersion", "releaseVariant", "buildId", "repository", "sourceCommit",
+                  "workflow", "unrealEngine", "compiler", "windowsSdk", "frontend", "runtime",
+                  "packageArtifact",
+              ], "build environment")
+              require_keys(environment["workflow"], [
+                  "path", "name", "runId", "runAttempt", "jobKey", "jobName",
+              ], "build environment workflow")
+              require_keys(environment["unrealEngine"], [
+                  "majorVersion", "minorVersion", "patchVersion", "changelist",
+                  "compatibleChangelist", "branchName", "isLicenseeVersion", "isPromotedBuild",
+              ], "build environment engine")
+              require_keys(environment["compiler"], [
+                  "kind", "visualStudioVersion", "toolchainFamilyVersion",
+                  "compilerProductVersion", "hostArchitecture", "targetArchitecture",
+              ], "build environment compiler")
+              require_keys(environment["windowsSdk"], ["version", "architecture"], "build environment SDK")
+              require_keys(environment["frontend"], [
+                  "nodeVersion", "nodeArchitecture", "npmVersion",
+              ], "build environment frontend")
+              require_keys(environment["runtime"], [
+                  "embeddedPythonVersion", "cefProductVersion", "cefChromiumVersion",
+              ], "build environment runtime")
+              require_keys(environment["packageArtifact"], [
+                  "artifactId", "artifactName", "artifactDigest",
+              ], "build environment package artifact")
+              if (
+                  environment["schemaVersion"] != 2
+                  or environment["releaseVariant"] != item["releaseVariant"]
+                  or environment["buildId"] != item["buildId"]
+                  or environment["repository"] != persisted["repository"]
+                  or environment["sourceCommit"] != persisted["releaseCommit"]
+                  or environment["workflow"]["runId"] != persisted["ueValidation"]["runId"]
+                  or environment["workflow"]["runAttempt"] != persisted["ueValidation"]["runAttempt"]
+                  or environment["workflow"]["jobName"] != item["requiredJob"]
+                  or environment["packageArtifact"] != item["packageArtifact"]
+              ):
+                  raise RuntimeError("Variant provenance is not bound to its canonical build environment.")
 
       - name: Upload release candidate bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-candidate-${{ steps.release.outputs.release_tag }}
           path: |
-            release/${{ steps.archive.outputs.archive_name }}
-            release/${{ steps.archive.outputs.archive_name }}.sha256
+            release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE54-Win64.zip
+            release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE54-Win64.zip.sha256
+            release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE55-Win64.zip
+            release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE55-Win64.zip.sha256
+            release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE58-Win64.zip
+            release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE58-Win64.zip.sha256
             release/metadata/*.json
           if-no-files-found: error
           retention-days: 14
@@ -305,18 +428,17 @@ jobs:
       - name: Summarize candidate status
         shell: bash
         env:
-          ARCHIVE_NAME: ${{ steps.archive.outputs.archive_name }}
           RELEASE_COMMIT: ${{ steps.release.outputs.release_commit }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           UE_RUN_URL: ${{ steps.ue.outputs.ue_run_url }}
         run: |
           {
-            echo "## Release candidate assembled"
+            echo "## Three-variant release candidate assembled"
             echo
             echo "- Tag: \`$RELEASE_TAG\`"
             echo "- Commit: \`$RELEASE_COMMIT\`"
-            echo "- Archive: \`$ARCHIVE_NAME\`"
+            echo "- Archives: \`UE54-Win64\`, \`UE55-Win64\`, \`UE58-Win64\`"
             echo "- Trusted UE validation: $UE_RUN_URL"
             echo
-            echo "This workflow created a short-lived candidate artifact only. It did not create a source archive or publish a GitHub Release. The selected UE validation includes the GUI CEF browser-to-UObject and task DOM-event round trip plus verified UBT build-environment evidence."
+            echo "This workflow creates short-lived candidate artifacts only; it does not publish a GitHub Release. Each archive is native-version-specific and must not be used with another UE minor."
           } >> "$GITHUB_STEP_SUMMARY"

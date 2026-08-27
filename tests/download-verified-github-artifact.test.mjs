@@ -181,7 +181,7 @@ test('preflights both pair destinations without changing an existing archive', a
   }
 })
 
-test('CLI requires package and build-environment download destinations as a pair', () => {
+test('CLI requires one fresh directory for the closed six-artifact set', () => {
   const baseArguments = [
     RESOLVER_PATH,
     '--repository',
@@ -189,26 +189,15 @@ test('CLI requires package and build-environment download destinations as a pair
     '--commit',
     commit,
   ]
-  const cases = [
-    [],
-    ['--download-to', 'trusted-package.zip'],
-    ['--build-environment-download-to', 'trusted-build-environment.zip'],
-  ]
-
-  for (const extraArguments of cases) {
-    const result = spawnSync(process.execPath, [...baseArguments, ...extraArguments], {
-      encoding: 'utf8',
-      env: { ...process.env, GITHUB_TOKEN: '' },
-    })
-    assert.equal(result.status, 1, result.stdout)
-    assert.match(
-      result.stderr,
-      /Both --download-to and --build-environment-download-to are required/u,
-    )
-  }
+  const result = spawnSync(process.execPath, baseArguments, {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_TOKEN: '' },
+  })
+  assert.equal(result.status, 1, result.stdout)
+  assert.match(result.stderr, /--download-directory is required/u)
 })
 
-test('CLI rejects one path for both verified artifact archives', () => {
+test('CLI rejects duplicate download-directory arguments', () => {
   const result = spawnSync(
     process.execPath,
     [
@@ -217,10 +206,10 @@ test('CLI rejects one path for both verified artifact archives', () => {
       'owner/repository',
       '--commit',
       commit,
-      '--download-to',
-      'artifact.zip',
-      '--build-environment-download-to',
-      'artifact.zip',
+      '--download-directory',
+      'first',
+      '--download-directory',
+      'second',
     ],
     {
       encoding: 'utf8',
@@ -229,5 +218,5 @@ test('CLI rejects one path for both verified artifact archives', () => {
   )
 
   assert.equal(result.status, 1, result.stdout)
-  assert.match(result.stderr, /require distinct output paths/u)
+  assert.match(result.stderr, /Expected --name value arguments/u)
 })

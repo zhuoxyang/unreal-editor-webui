@@ -113,14 +113,21 @@ requires a Windows self-hosted runner with labels:
 - `self-hosted`
 - `windows`
 - `gui`
-- `ue-5.8` for automatic `main` and release validation, or `ue-5.3` for an explicitly selected manual compatibility run.
+- exactly one of `ue-5.4`, `ue-5.5`, or `ue-5.8`; the checked-in registry always runs the three
+  exact jobs serially for protected `main` validation.
 
 Runner prerequisites:
 
-- The selected Unreal Engine version at its standard `C:\Program Files\Epic Games\UE_...` path.
-- Visual Studio 2022 C++ toolchain and Windows SDK.
+- UE 5.4.4, 5.5.4, or 5.8.0 at the registry's exact standard path and BuildId.
+- The variant-specific Visual Studio 2022 C++ toolchain and Windows SDK tuple.
 - Network access so the pinned `actions/setup-node` step can provision Node.js/npm for frontend packaging.
-- UE 5.8 CI launches the editor with restrictive Python mode enabled before plugin initialization, excluding user-global startup scripts from the validation process. UE 5.3 does not expose the same isolation control, so its preflight rejects a user-global `init_unreal.py` and requires a clean dedicated runner profile.
+- UE 5.8 launches the editor with restrictive Python mode enabled before plugin initialization.
+  UE 5.4/5.5 preflight rejects a user-global `init_unreal.py` and requires a clean dedicated
+  runner profile because those versions cannot provide the same isolation guarantee.
+
+Each job tests a package in a source-stripped temporary host and rejects plugin rebuild markers.
+That same-machine binary-only simulation is not a clean no-compiler/no-Node consumer result;
+independent VM acceptance remains issue #117.
 
 Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions each registration from a clean root and uses an ephemeral one-job runner.
 

@@ -1,9 +1,14 @@
 param(
     [Parameter(Mandatory = $true)]
+    [ValidatePattern("^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")]
     [string]$RepoUrl,
 
     [Parameter(Mandatory = $true)]
     [string]$Token,
+
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("ue54", "ue55", "ue58")]
+    [string]$Variant,
 
     [ValidatePattern("^\d+\.\d+\.\d+$")]
     [string]$RunnerVersion = "2.336.0",
@@ -11,141 +16,178 @@ param(
     [ValidatePattern("^[0-9a-fA-F]{64}$")]
     [string]$RunnerSha256 = "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162",
 
-    [string]$RunnerRoot = "C:\actions-runner-unreal-editor-webui-ue58",
-
-    [string]$RunnerName = "$env:COMPUTERNAME-ue-5.8",
-
-    [string]$UERoot = "C:\Program Files\Epic Games\UE_5.8",
-
-    [string]$Labels = "self-hosted,windows,gui,ue-5.8",
-
-    [switch]$Ephemeral,
-
-    [switch]$InstallService
+    [switch]$Ephemeral
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-if ($Ephemeral -and $InstallService) {
-    throw "Ephemeral runners must be started interactively; do not combine -Ephemeral with -InstallService."
+$NodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($null -eq $NodeCommand) {
+    throw "Node.js is required to decode the checked-in UE release variant registry."
 }
+$NodeVersionValidator = Join-Path $PSScriptRoot "validate-node-version.mjs"
+if (-not (Test-Path -LiteralPath $NodeVersionValidator -PathType Leaf)) {
+    throw "Node.js version validator not found."
+}
+& $NodeCommand.Source $NodeVersionValidator
+if ($LASTEXITCODE -ne 0) {
+    throw "The runner setup requires a repository-supported Node.js version."
+}
+$VariantRegistryScript = Join-Path $PSScriptRoot "ue-release-variants.mjs"
+if (-not (Test-Path -LiteralPath $VariantRegistryScript -PathType Leaf)) {
+    throw "UE release variant registry script not found."
+}
+$MatrixText = @(& $NodeCommand.Source $VariantRegistryScript workflow-matrix)
+if ($LASTEXITCODE -ne 0 -or $MatrixText.Count -ne 1) {
+    throw "Could not decode the checked-in UE release variant registry."
+}
+$Matrix = $MatrixText[0] | ConvertFrom-Json
+$VariantEntries = @($Matrix.include | Where-Object { $_.variant_id -ceq $Variant })
+if ($VariantEntries.Count -ne 1 -or @($Matrix.include).Count -ne 3) {
+    throw "The checked-in registry does not contain the closed three-variant set."
+}
+$VariantEntry = $VariantEntries[0]
 
-$NormalizedLabels = @($Labels.Split(",") | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
-if ($InstallService -and $NormalizedLabels -contains "gui") {
-    throw "GUI-labelled runners must run interactively in a logged-in desktop session; do not install them as a Windows service."
-}
+$RunnerRoot = "C:\actions-runner-unreal-editor-webui-$Variant"
+$RunnerName = "unreal-editor-webui-$Variant"
+$UERoot = [string]$VariantEntry.ue_root
+$Labels = "self-hosted,windows,gui,$($VariantEntry.runner_label)"
 
 $GitCacheToolsValidator = Join-Path $PSScriptRoot "validate-git-cache-tools.ps1"
 if (-not (Test-Path -LiteralPath $GitCacheToolsValidator -PathType Leaf)) {
-    throw "Git cache tool validator not found: $GitCacheToolsValidator"
+    throw "Git cache tool validator not found."
 }
 $GitUsrBinOutput = @(& $GitCacheToolsValidator)
 if ($GitUsrBinOutput.Count -ne 1) {
-    throw "Git cache tool validation returned $($GitUsrBinOutput.Count) output lines; expected exactly one tools directory."
+    throw "Git cache tool validation did not return exactly one tools directory."
 }
-$GitUsrBin = $GitUsrBinOutput[0]
 
 $RunUAT = Join-Path $UERoot "Engine/Build/BatchFiles/RunUAT.bat"
 $EditorCmd = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
 $Editor = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor.exe"
 $BuildVersionPath = Join-Path $UERoot "Engine/Build/Build.version"
-if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) {
-    throw "RunUAT not found: $RunUAT"
-}
-if (-not (Test-Path -LiteralPath $EditorCmd -PathType Leaf)) {
-    throw "UnrealEditor-Cmd not found: $EditorCmd"
-}
-if (-not (Test-Path -LiteralPath $Editor -PathType Leaf)) {
-    throw "UnrealEditor not found: $Editor"
-}
-if (-not (Test-Path -LiteralPath $BuildVersionPath -PathType Leaf)) {
-    throw "Unreal Engine Build.version not found: $BuildVersionPath"
+$EditorVersionPath = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor.version"
+$EditorModulesPath = Join-Path $UERoot "Engine/Binaries/Win64/UnrealEditor.modules"
+$EmbeddedPythonPath = Join-Path $UERoot "Engine/Binaries/ThirdParty/Python3/Win64/python.exe"
+$CefRoot = Join-Path $UERoot "Engine/Binaries/ThirdParty/CEF3/Win64"
+foreach ($RequiredFile in @(
+    $RunUAT,
+    $EditorCmd,
+    $Editor,
+    $BuildVersionPath,
+    $EditorVersionPath,
+    $EditorModulesPath,
+    $EmbeddedPythonPath
+)) {
+    if (-not (Test-Path -LiteralPath $RequiredFile -PathType Leaf)) {
+        throw "A required UE runner file is missing."
+    }
 }
 
-$EngineLabel = @($NormalizedLabels | Where-Object { $_ -match '^ue-\d+\.\d+$' })
-if ($EngineLabel.Count -ne 1) {
-    throw "Runner labels must contain exactly one engine label such as ue-5.8."
-}
-$ExpectedEngineVersion = $EngineLabel[0].Substring(3)
 $BuildVersion = Get-Content -LiteralPath $BuildVersionPath -Raw | ConvertFrom-Json
-$DetectedEngineVersion = "$($BuildVersion.MajorVersion).$($BuildVersion.MinorVersion)"
-if ($DetectedEngineVersion -ne $ExpectedEngineVersion) {
-    throw "Runner label $($EngineLabel[0]) does not match the installed engine version $DetectedEngineVersion at $UERoot."
+$EditorVersion = Get-Content -LiteralPath $EditorVersionPath -Raw | ConvertFrom-Json
+$EditorModules = Get-Content -LiteralPath $EditorModulesPath -Raw | ConvertFrom-Json
+$ExpectedMajor, $ExpectedMinor = @(
+    ([string]$VariantEntry.ue_version).Split('.') | ForEach-Object { [int]$_ }
+)
+$ExpectedIdentity = @{
+    MajorVersion = $ExpectedMajor
+    MinorVersion = $ExpectedMinor
+    PatchVersion = [int]$VariantEntry.patch_version
+    Changelist = [int]$VariantEntry.changelist
+    CompatibleChangelist = [int]$VariantEntry.compatible_changelist
+    BranchName = [string]$VariantEntry.branch_name
+    IsLicenseeVersion = 0
+    IsPromotedBuild = 1
 }
-
-if ($ExpectedEngineVersion -eq "5.8") {
-    $VSWhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
-    if (-not (Test-Path -LiteralPath $VSWhere -PathType Leaf)) {
-        throw "vswhere.exe is required to validate the UE 5.8 compiler toolchain."
-    }
-
-    $VSInstallPath = @(& $VSWhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)[0]
-    $VSVersionText = @(& $VSWhere -latest -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion)[0]
-    if ([string]::IsNullOrWhiteSpace($VSInstallPath) -or [string]::IsNullOrWhiteSpace($VSVersionText)) {
-        throw "Visual Studio with the Desktop C++ toolchain was not found."
-    }
-
-    $VSVersion = [version]$VSVersionText
-    if ($VSVersion -lt [version]"17.14") {
-        throw "This repository's UE 5.8 runner baseline requires Visual Studio 2022 17.14 or Visual Studio 2026 18.x; detected $VSVersionText."
-    }
-
-    $MSVCRoot = Join-Path $VSInstallPath "VC/Tools/MSVC"
-    $DetectedToolsets = @(
-        Get-ChildItem -LiteralPath $MSVCRoot -Directory -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                $CompilerPath = Join-Path $_.FullName "bin/Hostx64/x64/cl.exe"
-                if (Test-Path -LiteralPath $CompilerPath -PathType Leaf) {
-                    $VersionInfo = (Get-Item -LiteralPath $CompilerPath).VersionInfo
-                    $CompilerVersion = [version]"$($VersionInfo.ProductMajorPart).$($VersionInfo.ProductMinorPart).$($VersionInfo.ProductBuildPart)"
-                    [pscustomobject]@{
-                        CompilerVersion = $CompilerVersion
-                        FamilyDirectory = $_.Name
-                    }
-                }
-            }
-    )
-    $CompatibleToolsets = @(
-        $DetectedToolsets | Where-Object {
-            ($_.CompilerVersion -ge [version]"14.44.35211" -and $_.CompilerVersion -lt [version]"14.45") -or
-                ($_.CompilerVersion -ge [version]"14.50.35723" -and $_.CompilerVersion -lt [version]"14.51")
+foreach ($Identity in @($BuildVersion, $EditorVersion)) {
+    foreach ($Field in $ExpectedIdentity.Keys) {
+        if ($Identity.$Field -cne $ExpectedIdentity[$Field]) {
+            throw "$Variant engine identity is not the checked-in exact build."
         }
-    )
-    if ($CompatibleToolsets.Count -eq 0) {
-        $DetectedVersions = @($DetectedToolsets | ForEach-Object { "$($_.CompilerVersion) (family $($_.FamilyDirectory))" }) -join ", "
-        throw "This repository's UE 5.8 runner baseline requires a non-banned MSVC compiler product version (14.44.35211+ within 14.44, or 14.50.35723+ within 14.50); detected $($DetectedVersions.Trim() -replace '^$', 'none') under $MSVCRoot."
+    }
+}
+if ([string]$EditorVersion.BuildId -cne [string]$VariantEntry.build_id -or
+    [string]$EditorModules.BuildId -cne [string]$VariantEntry.build_id) {
+    throw "$Variant Unreal Editor BuildId does not match the checked-in exact build."
+}
+
+$DetectedPythonVersion = (Get-Item -LiteralPath $EmbeddedPythonPath).VersionInfo.ProductVersion
+if ($DetectedPythonVersion -cne [string]$VariantEntry.python_version) {
+    throw "$Variant embedded Python version does not match the checked-in runtime."
+}
+$CefDlls = @(Get-ChildItem -LiteralPath $CefRoot -Filter libcef.dll -File -Recurse)
+if ($CefDlls.Count -ne 1 -or
+    $CefDlls[0].VersionInfo.ProductVersion -cne [string]$VariantEntry.cef_product_version) {
+    throw "$Variant CEF runtime does not match the checked-in runtime."
+}
+
+$VSWhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+if (-not (Test-Path -LiteralPath $VSWhere -PathType Leaf)) {
+    throw "vswhere.exe is required to validate the exact compiler toolchain."
+}
+$VSInstallPaths = @(
+    & $VSWhere -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+)
+$ExpectedToolchainFamily = [string]$VariantEntry.toolchain_family_version
+$ExpectedCompilerProduct = [string]$VariantEntry.compiler_product_version
+$MatchingCompilers = @()
+foreach ($VSInstallPath in $VSInstallPaths) {
+    $CompilerPath = Join-Path $VSInstallPath "VC/Tools/MSVC/$ExpectedToolchainFamily/bin/Hostx64/x64/cl.exe"
+    if (Test-Path -LiteralPath $CompilerPath -PathType Leaf) {
+        $VersionInfo = (Get-Item -LiteralPath $CompilerPath).VersionInfo
+        $NormalizedProductVersion = "$($VersionInfo.ProductMajorPart).$($VersionInfo.ProductMinorPart).$($VersionInfo.ProductBuildPart)"
+        if ($NormalizedProductVersion -ceq $ExpectedCompilerProduct) {
+            $MatchingCompilers += $CompilerPath
+        }
+    }
+}
+if ($MatchingCompilers.Count -ne 1) {
+    throw "$Variant requires exactly one installed MSVC $ExpectedToolchainFamily / $ExpectedCompilerProduct compiler."
+}
+$ExpectedSdkVersion = [string]$VariantEntry.windows_sdk_version
+$ResourceCompiler = "C:\Program Files (x86)\Windows Kits\10\bin\$ExpectedSdkVersion\x64\rc.exe"
+if (-not (Test-Path -LiteralPath $ResourceCompiler -PathType Leaf)) {
+    throw "$Variant requires Windows SDK $ExpectedSdkVersion x64 tools."
+}
+
+if ([string]$VariantEntry.ue_version -ne "5.8") {
+    $DocumentsPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
+    $UserPythonStartupScript = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"
+    if (Test-Path -LiteralPath $UserPythonStartupScript) {
+        throw "$Variant requires a clean Windows profile without a user-global Unreal init_unreal.py."
     }
 }
 
-$ExpectedUERoot = [System.IO.Path]::GetFullPath("C:\Program Files\Epic Games\UE_$ExpectedEngineVersion").TrimEnd('\')
-$ResolvedUERoot = [System.IO.Path]::GetFullPath($UERoot).TrimEnd('\')
-if (-not $ResolvedUERoot.Equals($ExpectedUERoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "The checked-in UE workflow uses the standard path $ExpectedUERoot. Refusing to register a runner against $ResolvedUERoot because it would accept jobs it cannot execute."
+$RunnerSessionId = (Get-Process -Id $PID).SessionId
+if ($RunnerSessionId -eq 0) {
+    throw "GUI runners must be configured from an interactive Windows desktop session."
+}
+$SessionExplorer = @(
+    Get-Process -Name explorer -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $RunnerSessionId }
+)
+if ($SessionExplorer.Count -eq 0) {
+    throw "No interactive Windows desktop exists in the current session."
 }
 
-New-Item -ItemType Directory -Path $RunnerRoot -Force | Out-Null
+if (Test-Path -LiteralPath $RunnerRoot) {
+    throw "Runner root must not already exist: $RunnerRoot"
+}
+New-Item -ItemType Directory -Path $RunnerRoot | Out-Null
 $RunnerRootPath = (Resolve-Path -LiteralPath $RunnerRoot).Path
-
 $ArchiveName = "actions-runner-win-x64-$RunnerVersion.zip"
 $ArchivePath = Join-Path $RunnerRootPath $ArchiveName
 $DownloadUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$ArchiveName"
-$ConfigPath = Join-Path $RunnerRootPath "config.cmd"
-
-$ExistingEntries = @(Get-ChildItem -LiteralPath $RunnerRootPath -Force)
-if ($ExistingEntries.Count -gt 0) {
-    throw "Runner root must be empty so every executable comes from the archive verified during this setup run: $RunnerRootPath"
-}
 
 try {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $ArchivePath
-
     $ActualSha256 = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $ExpectedSha256 = $RunnerSha256.ToLowerInvariant()
-    if ($ActualSha256 -ne $ExpectedSha256) {
-        throw "GitHub Actions runner SHA-256 mismatch. Expected $ExpectedSha256, received $ActualSha256."
+    if ($ActualSha256 -cne $RunnerSha256.ToLowerInvariant()) {
+        throw "GitHub Actions runner SHA-256 mismatch."
     }
-
     Expand-Archive -LiteralPath $ArchivePath -DestinationPath $RunnerRootPath
 }
 finally {
@@ -154,22 +196,19 @@ finally {
     }
 }
 
+$ConfigPath = Join-Path $RunnerRootPath "config.cmd"
 $RunnerListener = Join-Path $RunnerRootPath "bin/Runner.Listener.exe"
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf) -or
     -not (Test-Path -LiteralPath $RunnerListener -PathType Leaf)) {
-    throw "The verified GitHub Actions runner archive did not contain the expected executables."
+    throw "The verified runner archive did not contain the expected executables."
 }
-
 $VersionOutput = & $RunnerListener --version
 $VersionExitCode = $LASTEXITCODE
-if ($VersionExitCode -ne 0) {
-    throw "Could not read the installed GitHub Actions runner version (exit code $VersionExitCode)."
-}
-
-$InstalledVersionMatch = [regex]::Match(($VersionOutput -join "`n"), "\d+\.\d+\.\d+")
-if (-not $InstalledVersionMatch.Success -or $InstalledVersionMatch.Value -ne $RunnerVersion) {
-    $DetectedVersion = if ($InstalledVersionMatch.Success) { $InstalledVersionMatch.Value } else { "unknown" }
-    throw "Runner root contains version $DetectedVersion, but this setup requires $RunnerVersion. Use a clean runner root or perform a reviewed upgrade."
+$InstalledVersionMatch = [regex]::Match(($VersionOutput -join "`n"), "(?<!\d)\d+\.\d+\.\d+(?!\d)")
+if ($VersionExitCode -ne 0 -or
+    -not $InstalledVersionMatch.Success -or
+    $InstalledVersionMatch.Value -cne $RunnerVersion) {
+    throw "The installed runner version does not match the verified archive version."
 }
 
 Push-Location $RunnerRootPath
@@ -181,32 +220,18 @@ try {
         "--labels", $Labels,
         "--work", "_work",
         "--unattended",
-        "--replace"
+        "--disableupdate"
     )
     if ($Ephemeral) {
         $ConfigArguments += "--ephemeral"
     }
-
     & .\config.cmd @ConfigArguments
-
     if ($LASTEXITCODE -ne 0) {
-        throw "GitHub runner config failed with exit code $LASTEXITCODE"
-    }
-
-    if ($InstallService) {
-        & .\svc.cmd install
-        if ($LASTEXITCODE -ne 0) {
-            throw "Runner service install failed with exit code $LASTEXITCODE"
-        }
-
-        & .\svc.cmd start
-        if ($LASTEXITCODE -ne 0) {
-            throw "Runner service start failed with exit code $LASTEXITCODE"
-        }
+        throw "GitHub runner configuration failed with exit code $LASTEXITCODE."
     }
 }
 finally {
     Pop-Location
 }
 
-Write-Output "Configured verified GitHub Actions runner v$RunnerVersion '$RunnerName' at $RunnerRootPath with labels: $Labels; Git cache tools: $GitUsrBin"
+Write-Output "Configured verified $Variant GUI runner v$RunnerVersion with labels: $Labels. Start run.cmd interactively from this logged-in desktop session."

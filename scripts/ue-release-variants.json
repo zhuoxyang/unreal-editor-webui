@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "variants": [
+    {
+      "id": "ue54",
+      "releaseVariant": "UE54-Win64",
+      "engineAssociation": "5.4",
+      "engineRoot": "C:\\Program Files\\Epic Games\\UE_5.4",
+      "runnerLabel": "ue-5.4",
+      "jobName": "UE 5.4 BuildPlugin and automation",
+      "packageArtifactName": "UnrealEditorWebUI-Package-UE54-Win64",
+      "buildEnvironmentArtifactName": "UnrealEditorWebUI-BuildEnvironment-UE54-Win64",
+      "engine": {
+        "majorVersion": 5,
+        "minorVersion": 4,
+        "patchVersion": 4,
+        "changelist": 35576357,
+        "compatibleChangelist": 33043543,
+        "branchName": "++UE5+Release-5.4",
+        "buildId": "33043543"
+      },
+      "toolchain": {
+        "visualStudioVersion": "2022",
+        "familyVersion": "14.38.33130",
+        "productVersion": "14.38.33145",
+        "windowsSdkVersion": "10.0.19041.0"
+      },
+      "embeddedPythonVersion": "3.11.8",
+      "cefProductVersion": "90.6.7+g19ba721+chromium-90.0.4430.212",
+      "cefChromiumVersion": "90.0.4430.212"
+    },
+    {
+      "id": "ue55",
+      "releaseVariant": "UE55-Win64",
+      "engineAssociation": "5.5",
+      "engineRoot": "C:\\Program Files\\Epic Games\\UE_5.5",
+      "runnerLabel": "ue-5.5",
+      "jobName": "UE 5.5 BuildPlugin and automation",
+      "packageArtifactName": "UnrealEditorWebUI-Package-UE55-Win64",
+      "buildEnvironmentArtifactName": "UnrealEditorWebUI-BuildEnvironment-UE55-Win64",
+      "engine": {
+        "majorVersion": 5,
+        "minorVersion": 5,
+        "patchVersion": 4,
+        "changelist": 40574608,
+        "compatibleChangelist": 37670630,
+        "branchName": "++UE5+Release-5.5",
+        "buildId": "37670630"
+      },
+      "toolchain": {
+        "visualStudioVersion": "2022",
+        "familyVersion": "14.38.33130",
+        "productVersion": "14.38.33145",
+        "windowsSdkVersion": "10.0.22621.0"
+      },
+      "embeddedPythonVersion": "3.11.8",
+      "cefProductVersion": "90.6.7+g19ba721+chromium-90.0.4430.212",
+      "cefChromiumVersion": "90.0.4430.212"
+    },
+    {
+      "id": "ue58",
+      "releaseVariant": "UE58-Win64",
+      "engineAssociation": "5.8",
+      "engineRoot": "C:\\Program Files\\Epic Games\\UE_5.8",
+      "runnerLabel": "ue-5.8",
+      "jobName": "UE 5.8 BuildPlugin and automation",
+      "packageArtifactName": "UnrealEditorWebUI-Package-UE58-Win64",
+      "buildEnvironmentArtifactName": "UnrealEditorWebUI-BuildEnvironment-UE58-Win64",
+      "engine": {
+        "majorVersion": 5,
+        "minorVersion": 8,
+        "patchVersion": 0,
+        "changelist": 55116800,
+        "compatibleChangelist": 0,
+        "branchName": "++UE5+Release-5.8",
+        "buildId": "55116800"
+      },
+      "toolchain": {
+        "visualStudioVersion": "2022",
+        "familyVersion": "14.44.35207",
+        "productVersion": "14.44.35219",
+        "windowsSdkVersion": "10.0.22621.0"
+      },
+      "embeddedPythonVersion": "3.11.8",
+      "cefProductVersion": "128.4.13+ge76af7e+chromium-128.0.6613.138",
+      "cefChromiumVersion": "128.0.6613.138"
+    }
+  ]
+}

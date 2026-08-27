@@ -1,5 +1,7 @@
 import {
+  readdirSync,
   readFileSync,
+  lstatSync,
   realpathSync,
   statSync,
   writeFileSync,
@@ -16,15 +18,18 @@ import {
 import { pathToFileURL } from 'node:url'
 
 import { isSupportedNodeVersion } from './validate-node-version.mjs'
+import {
+  RELEASE_VARIANTS,
+  requireReleaseVariant,
+} from './ue-release-variants.mjs'
 
-export const BUILD_ENVIRONMENT_SCHEMA_VERSION = 1
+export const BUILD_ENVIRONMENT_SCHEMA_VERSION = 2
 export const EXPECTED_WORKFLOW_PATH = '.github/workflows/ue-ci.yml'
 export const EXPECTED_WORKFLOW_NAME = 'UE CI'
 export const EXPECTED_JOB_KEY = 'buildplugin-and-automation'
-export const EXPECTED_JOB_NAME = 'UE 5.8 BuildPlugin and automation'
-export const EXPECTED_PACKAGE_ARTIFACT_NAME = 'UnrealEditorWebUI-Package-UE58'
-
-const EXPECTED_ENGINE_BRANCH = '++UE5+Release-5.8'
+export const EXPECTED_JOB_NAME = requireReleaseVariant('ue58').jobName
+export const EXPECTED_PACKAGE_ARTIFACT_NAME =
+  requireReleaseVariant('ue58').packageArtifactName
 const SHA_PATTERN = /^[0-9a-f]{40}$/u
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u
 const STABLE_VERSION_PATTERN =
@@ -36,6 +41,8 @@ const UBA_LOG_NAME_PATTERN = /^UBA-.+\.txt$/iu
 
 const TOP_LEVEL_KEYS = Object.freeze([
   'schemaVersion',
+  'releaseVariant',
+  'buildId',
   'repository',
   'sourceCommit',
   'workflow',
@@ -43,6 +50,7 @@ const TOP_LEVEL_KEYS = Object.freeze([
   'compiler',
   'windowsSdk',
   'frontend',
+  'runtime',
   'packageArtifact',
 ])
 const WORKFLOW_KEYS = Object.freeze([
@@ -73,26 +81,16 @@ const COMPILER_KEYS = Object.freeze([
 ])
 const WINDOWS_SDK_KEYS = Object.freeze(['version', 'architecture'])
 const FRONTEND_KEYS = Object.freeze(['nodeVersion', 'nodeArchitecture', 'npmVersion'])
+const RUNTIME_KEYS = Object.freeze([
+  'embeddedPythonVersion',
+  'cefProductVersion',
+  'cefChromiumVersion',
+])
 const PACKAGE_ARTIFACT_KEYS = Object.freeze([
   'artifactId',
   'artifactName',
   'artifactDigest',
 ])
-
-const VISUAL_STUDIO_POLICIES = Object.freeze({
-  '2022': Object.freeze({
-    familyMajor: 14,
-    familyMinor: 44,
-    minimumProductVersion: Object.freeze([14, 44, 35211]),
-    exclusiveMaximumProductVersion: Object.freeze([14, 45, 0]),
-  }),
-  '2026': Object.freeze({
-    familyMajor: 14,
-    familyMinor: 50,
-    minimumProductVersion: Object.freeze([14, 50, 35723]),
-    exclusiveMaximumProductVersion: Object.freeze([14, 51, 0]),
-  }),
-})
 
 function fail(message) {
   throw new Error(message)
@@ -181,30 +179,29 @@ function compareVersionParts(left, right) {
 }
 
 function inferVisualStudioVersion(productParts) {
-  if (productParts[0] === 14 && productParts[1] === 44) return '2022'
+  if (
+    productParts[0] === 14 &&
+    [38, 44].includes(productParts[1])
+  ) return '2022'
   if (productParts[0] === 14 && productParts[1] === 50) return '2026'
-  fail('The selected compiler family is not approved for UE 5.8 release evidence.')
+  fail('The selected compiler family is not recognized for release evidence.')
 }
 
-function validateCompilerPolicy(visualStudioVersion, familyVersion, productVersion) {
+function validateCompilerPolicy(visualStudioVersion, familyVersion, productVersion, variant) {
   const family = requireStableVersion(familyVersion, 'Toolchain family version')
   const product = requireStableVersion(productVersion, 'Compiler product version')
   const inferredVersion = inferVisualStudioVersion(product.parts)
   if (visualStudioVersion !== inferredVersion) {
     fail('The Visual Studio release does not match the selected compiler family.')
   }
-
-  const policy = VISUAL_STUDIO_POLICIES[visualStudioVersion]
   if (
-    !policy ||
-    family.parts[0] !== policy.familyMajor ||
-    family.parts[1] !== policy.familyMinor ||
+    visualStudioVersion !== variant.toolchain.visualStudioVersion ||
+    family.value !== variant.toolchain.familyVersion ||
+    product.value !== variant.toolchain.productVersion ||
     product.parts[0] !== family.parts[0] ||
-    product.parts[1] !== family.parts[1] ||
-    compareVersionParts(product.parts, policy.minimumProductVersion) < 0 ||
-    compareVersionParts(product.parts, policy.exclusiveMaximumProductVersion) >= 0
+    product.parts[1] !== family.parts[1]
   ) {
-    fail('The selected compiler does not satisfy the approved UE 5.8 version policy.')
+    fail(`The selected compiler does not satisfy the exact ${variant.releaseVariant} policy.`)
   }
   return { family: family.value, product: product.value }
 }
@@ -353,16 +350,15 @@ function parseUsingSelection(match) {
     fail('The explicit Visual Studio release does not match the compiler family.')
   }
   const visualStudioVersion = explicitVisualStudioVersion ?? inferredVisualStudioVersion
-  const validatedVersions = validateCompilerPolicy(
-    visualStudioVersion,
-    toolchainMatch[2],
-    compilerProductVersion,
-  )
+  const family = requireStableVersion(toolchainMatch[2], 'Toolchain family version')
+  if (family.parts[0] !== product.parts[0] || family.parts[1] !== product.parts[1]) {
+    fail('The compiler product and toolchain family versions do not match.')
+  }
 
   return {
     visualStudioVersion,
-    toolchainFamilyVersion: validatedVersions.family,
-    compilerProductVersion: validatedVersions.product,
+    toolchainFamilyVersion: family.value,
+    compilerProductVersion: product.value,
     toolchainRoot: comparableWindowsPath(toolchainMatch[1]),
     windowsSdkVersion,
     windowsSdkRoot: comparableWindowsPath(sdkMatch[1]),
@@ -441,7 +437,7 @@ function parseUbaLog(path) {
     compiler.targetArchitecture !== 'x64' ||
     resourceCompiler.architecture !== 'x64'
   ) {
-    fail('UE 5.8 release evidence requires x64 host, target, and SDK tools.')
+    fail('UE release evidence requires x64 host, target, and SDK tools.')
   }
 
   return {
@@ -478,7 +474,7 @@ export function collectUbtBuildEnvironment(consoleLogPath, logDirectoryPath) {
   }
 }
 
-function parseBuildVersion(path) {
+function parseBuildVersion(path, variant) {
   const value = readJson(path, 'UE Build.version')
   if (!isRecord(value)) fail('UE Build.version must contain an object.')
   const majorVersion = requireSafeNonNegativeInteger(value.MajorVersion, 'UE major version')
@@ -492,13 +488,16 @@ function parseBuildVersion(path) {
   )
   const branchName = requireString(value.BranchName, 'UE branch name')
   if (
-    majorVersion !== 5 ||
-    minorVersion !== 8 ||
-    branchName !== EXPECTED_ENGINE_BRANCH ||
+    majorVersion !== variant.engine.majorVersion ||
+    minorVersion !== variant.engine.minorVersion ||
+    patchVersion !== variant.engine.patchVersion ||
+    changelist !== variant.engine.changelist ||
+    compatibleChangelist !== variant.engine.compatibleChangelist ||
+    branchName !== variant.engine.branchName ||
     value.IsLicenseeVersion !== 0 ||
     value.IsPromotedBuild !== 1
   ) {
-    fail('UE Build.version does not identify the approved promoted UE 5.8 build.')
+    fail(`UE Build.version does not identify the exact ${variant.releaseVariant} build.`)
   }
   return {
     majorVersion,
@@ -510,6 +509,111 @@ function parseBuildVersion(path) {
     isLicenseeVersion: false,
     isPromotedBuild: true,
   }
+}
+
+function parseEditorVersion(path, variant) {
+  const value = readJson(path, 'UE UnrealEditor.version')
+  if (!isRecord(value)) fail('UE UnrealEditor.version must contain an object.')
+  const expected = variant.engine
+  if (
+    value.MajorVersion !== expected.majorVersion ||
+    value.MinorVersion !== expected.minorVersion ||
+    value.PatchVersion !== expected.patchVersion ||
+    value.Changelist !== expected.changelist ||
+    value.CompatibleChangelist !== expected.compatibleChangelist ||
+    value.BranchName !== expected.branchName ||
+    value.BuildId !== expected.buildId ||
+    value.IsLicenseeVersion !== 0 ||
+    value.IsPromotedBuild !== 1
+  ) {
+    fail(`UE UnrealEditor.version does not identify the exact ${variant.releaseVariant} build.`)
+  }
+  return value.BuildId
+}
+
+function parsePackageBuildId(packageDirectoryPath, variant) {
+  const binariesDirectory = resolve(packageDirectoryPath, 'Binaries', 'Win64')
+  let canonicalPackageDirectory
+  let canonicalBinariesDirectory
+  try {
+    canonicalPackageDirectory = realpathSync.native(resolve(packageDirectoryPath))
+    canonicalBinariesDirectory = realpathSync.native(binariesDirectory)
+  } catch {
+    fail('Packaged plugin Win64 binaries directory is missing or unreadable.')
+  }
+  if (!isSameOrDescendant(canonicalPackageDirectory, canonicalBinariesDirectory)) {
+    fail('Packaged plugin binaries resolve outside the package directory.')
+  }
+  const descriptorPath = resolve(canonicalPackageDirectory, 'UnrealEditorWebUI.uplugin')
+  let descriptorStat
+  try {
+    descriptorStat = lstatSync(descriptorPath)
+  } catch {
+    fail('Packaged plugin descriptor is missing or unreadable.')
+  }
+  if (!descriptorStat.isFile() || descriptorStat.isSymbolicLink()) {
+    fail('Packaged plugin descriptor must be a regular non-symbolic file.')
+  }
+  const descriptor = readJson(descriptorPath, 'Packaged plugin descriptor')
+  if (
+    !isRecord(descriptor) ||
+    descriptor.Installed !== true ||
+    descriptor.EngineVersion !== `${variant.engineAssociation}.0`
+  ) {
+    fail(`Packaged plugin descriptor does not identify ${variant.releaseVariant}.`)
+  }
+  const moduleFiles = readdirSync(canonicalBinariesDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.modules'))
+    .map((entry) => resolve(canonicalBinariesDirectory, entry.name))
+  if (moduleFiles.length !== 1) {
+    fail('The package must contain exactly one Win64 module manifest.')
+  }
+  const matching = []
+  for (const modulePath of moduleFiles) {
+    const document = readJson(modulePath, 'Packaged plugin module manifest')
+    if (
+      isRecord(document) &&
+      isRecord(document.Modules) &&
+      Object.hasOwn(document.Modules, 'UnrealEditorWebUI')
+    ) {
+      matching.push(document)
+    }
+  }
+  if (matching.length !== 1) {
+    fail('The package must contain exactly one module manifest for UnrealEditorWebUI.')
+  }
+  const moduleNames = Object.keys(matching[0].Modules)
+  if (
+    moduleNames.length !== 1 ||
+    moduleNames[0] !== 'UnrealEditorWebUI' ||
+    matching[0].Modules.UnrealEditorWebUI !== 'UnrealEditor-UnrealEditorWebUI.dll'
+  ) {
+    fail('The packaged module manifest contains an unexpected module mapping.')
+  }
+  const moduleBinaryPath = resolve(
+    canonicalBinariesDirectory,
+    matching[0].Modules.UnrealEditorWebUI,
+  )
+  let moduleBinaryStat
+  let canonicalModuleBinaryPath
+  try {
+    moduleBinaryStat = lstatSync(moduleBinaryPath)
+    canonicalModuleBinaryPath = realpathSync.native(moduleBinaryPath)
+  } catch {
+    fail('The packaged UnrealEditorWebUI module binary is missing or unreadable.')
+  }
+  if (
+    !isSameOrDescendant(canonicalBinariesDirectory, canonicalModuleBinaryPath) ||
+    !moduleBinaryStat.isFile() ||
+    moduleBinaryStat.isSymbolicLink() ||
+    moduleBinaryStat.size <= 0
+  ) {
+    fail('The packaged UnrealEditorWebUI module binary is invalid.')
+  }
+  if (matching[0].BuildId !== variant.engine.buildId) {
+    fail(`Packaged plugin BuildId does not match ${variant.releaseVariant}.`)
+  }
+  return matching[0].BuildId
 }
 
 function parseSourceManifest(path, expectedCommit, expectedNodeArchitecture) {
@@ -566,13 +670,13 @@ function validateCommit(value) {
   return value
 }
 
-function validateWorkflow(value) {
+function validateWorkflow(value, variant) {
   assertExactKeys(value, WORKFLOW_KEYS, 'Build-environment workflow')
   if (
     value.path !== EXPECTED_WORKFLOW_PATH ||
     value.name !== EXPECTED_WORKFLOW_NAME ||
     value.jobKey !== EXPECTED_JOB_KEY ||
-    value.jobName !== EXPECTED_JOB_NAME
+    value.jobName !== variant.jobName
   ) {
     fail('Build-environment workflow identity is invalid.')
   }
@@ -586,23 +690,26 @@ function validateWorkflow(value) {
   }
 }
 
-function validateEngine(value) {
+function validateEngine(value, variant) {
   assertExactKeys(value, ENGINE_KEYS, 'Build-environment Unreal Engine')
-  if (
-    value.majorVersion !== 5 ||
-    value.minorVersion !== 8 ||
-    value.branchName !== EXPECTED_ENGINE_BRANCH ||
-    value.isLicenseeVersion !== false ||
-    value.isPromotedBuild !== true
-  ) {
-    fail('Build-environment Unreal Engine identity is invalid.')
-  }
   const changelist = requireSafePositiveInteger(value.changelist, 'UE changelist')
   const compatibleChangelist = requireCompatibleChangelist(
     value.compatibleChangelist,
     changelist,
     'UE compatible changelist',
   )
+  if (
+    value.majorVersion !== variant.engine.majorVersion ||
+    value.minorVersion !== variant.engine.minorVersion ||
+    value.patchVersion !== variant.engine.patchVersion ||
+    value.changelist !== variant.engine.changelist ||
+    value.compatibleChangelist !== variant.engine.compatibleChangelist ||
+    value.branchName !== variant.engine.branchName ||
+    value.isLicenseeVersion !== false ||
+    value.isPromotedBuild !== true
+  ) {
+    fail('Build-environment Unreal Engine identity is invalid.')
+  }
   return {
     majorVersion: value.majorVersion,
     minorVersion: value.minorVersion,
@@ -615,11 +722,10 @@ function validateEngine(value) {
   }
 }
 
-function validateCompiler(value) {
+function validateCompiler(value, variant) {
   assertExactKeys(value, COMPILER_KEYS, 'Build-environment compiler')
   if (
     value.kind !== 'msvc' ||
-    !Object.hasOwn(VISUAL_STUDIO_POLICIES, value.visualStudioVersion) ||
     value.hostArchitecture !== 'x64' ||
     value.targetArchitecture !== 'x64'
   ) {
@@ -629,6 +735,7 @@ function validateCompiler(value) {
     value.visualStudioVersion,
     value.toolchainFamilyVersion,
     value.compilerProductVersion,
+    variant,
   )
   return {
     kind: value.kind,
@@ -640,10 +747,13 @@ function validateCompiler(value) {
   }
 }
 
-function validateWindowsSdk(value) {
+function validateWindowsSdk(value, variant) {
   assertExactKeys(value, WINDOWS_SDK_KEYS, 'Build-environment Windows SDK')
   const version = requireSdkVersion(value.version, 'Build-environment Windows SDK version').value
-  if (value.architecture !== 'x64') fail('Build-environment Windows SDK architecture is invalid.')
+  if (
+    value.architecture !== 'x64' ||
+    version !== variant.toolchain.windowsSdkVersion
+  ) fail(`Build-environment Windows SDK does not match ${variant.releaseVariant}.`)
   return { version, architecture: value.architecture }
 }
 
@@ -658,10 +768,26 @@ function validateFrontend(value) {
   return { nodeVersion, nodeArchitecture: value.nodeArchitecture, npmVersion }
 }
 
-function validatePackageArtifact(value) {
+function validateRuntime(value, variant) {
+  assertExactKeys(value, RUNTIME_KEYS, 'Build-environment embedded runtime')
+  if (
+    value.embeddedPythonVersion !== variant.embeddedPythonVersion ||
+    value.cefProductVersion !== variant.cefProductVersion ||
+    value.cefChromiumVersion !== variant.cefChromiumVersion
+  ) {
+    fail(`Build-environment embedded runtime does not match ${variant.releaseVariant}.`)
+  }
+  return {
+    embeddedPythonVersion: value.embeddedPythonVersion,
+    cefProductVersion: value.cefProductVersion,
+    cefChromiumVersion: value.cefChromiumVersion,
+  }
+}
+
+function validatePackageArtifact(value, variant) {
   assertExactKeys(value, PACKAGE_ARTIFACT_KEYS, 'Build-environment package artifact')
   if (
-    value.artifactName !== EXPECTED_PACKAGE_ARTIFACT_NAME ||
+    value.artifactName !== variant.packageArtifactName ||
     typeof value.artifactDigest !== 'string' ||
     !SHA256_PATTERN.test(value.artifactDigest)
   ) {
@@ -676,6 +802,9 @@ function validatePackageArtifact(value) {
 
 function expectedBindingMismatch(document, expected) {
   return (
+    (expected.releaseVariant !== undefined &&
+      document.releaseVariant !== expected.releaseVariant) ||
+    (expected.buildId !== undefined && document.buildId !== expected.buildId) ||
     (expected.repository !== undefined && document.repository !== expected.repository) ||
     (expected.sourceCommit !== undefined && document.sourceCommit !== expected.sourceCommit) ||
     (expected.runId !== undefined && document.workflow.runId !== expected.runId) ||
@@ -696,16 +825,25 @@ export function validateBuildEnvironment(value, expectedBindings = {}) {
   if (value.schemaVersion !== BUILD_ENVIRONMENT_SCHEMA_VERSION) {
     fail('Build environment schema version is unsupported.')
   }
+  const variant = RELEASE_VARIANTS.find(
+    (candidate) => candidate.releaseVariant === value.releaseVariant,
+  )
+  if (!variant || value.buildId !== variant.engine.buildId) {
+    fail('Build environment release variant or BuildId is invalid.')
+  }
   const rebuilt = {
     schemaVersion: BUILD_ENVIRONMENT_SCHEMA_VERSION,
+    releaseVariant: variant.releaseVariant,
+    buildId: variant.engine.buildId,
     repository: validateRepository(value.repository),
     sourceCommit: validateCommit(value.sourceCommit),
-    workflow: validateWorkflow(value.workflow),
-    unrealEngine: validateEngine(value.unrealEngine),
-    compiler: validateCompiler(value.compiler),
-    windowsSdk: validateWindowsSdk(value.windowsSdk),
+    workflow: validateWorkflow(value.workflow, variant),
+    unrealEngine: validateEngine(value.unrealEngine, variant),
+    compiler: validateCompiler(value.compiler, variant),
+    windowsSdk: validateWindowsSdk(value.windowsSdk, variant),
     frontend: validateFrontend(value.frontend),
-    packageArtifact: validatePackageArtifact(value.packageArtifact),
+    runtime: validateRuntime(value.runtime, variant),
+    packageArtifact: validatePackageArtifact(value.packageArtifact, variant),
   }
   if (expectedBindingMismatch(rebuilt, expectedBindings)) {
     fail('Build-environment subject does not match the expected release bindings.')
@@ -717,6 +855,7 @@ export function createBuildEnvironment({
   consoleLogPath,
   logDirectoryPath,
   buildVersionPath,
+  editorVersionPath,
   sourceManifestPath,
   repository,
   sourceCommit,
@@ -730,7 +869,18 @@ export function createBuildEnvironment({
   packageArtifactId,
   packageArtifactName,
   packageArtifactDigest,
+  packageDirectoryPath,
+  variantId,
+  embeddedPythonVersion,
+  cefProductVersion,
+  cefChromiumVersion,
 }) {
+  const variant = requireReleaseVariant(variantId)
+  const editorBuildId = parseEditorVersion(editorVersionPath, variant)
+  const packageBuildId = parsePackageBuildId(packageDirectoryPath, variant)
+  if (editorBuildId !== packageBuildId) {
+    fail('Packaged plugin BuildId does not match the selected Unreal Editor BuildId.')
+  }
   const canonicalRepository = validateRepository(repository)
   const canonicalCommit = validateCommit(sourceCommit)
   const workflow = validateWorkflow({
@@ -740,7 +890,7 @@ export function createBuildEnvironment({
     runAttempt,
     jobKey,
     jobName,
-  })
+  }, variant)
   const frontend = parseSourceManifest(
     sourceManifestPath,
     canonicalCommit,
@@ -749,13 +899,20 @@ export function createBuildEnvironment({
   const selected = collectUbtBuildEnvironment(consoleLogPath, logDirectoryPath)
   return validateBuildEnvironment({
     schemaVersion: BUILD_ENVIRONMENT_SCHEMA_VERSION,
+    releaseVariant: variant.releaseVariant,
+    buildId: editorBuildId,
     repository: canonicalRepository,
     sourceCommit: canonicalCommit,
     workflow,
-    unrealEngine: parseBuildVersion(buildVersionPath),
+    unrealEngine: parseBuildVersion(buildVersionPath, variant),
     compiler: selected.compiler,
     windowsSdk: selected.windowsSdk,
     frontend,
+    runtime: {
+      embeddedPythonVersion,
+      cefProductVersion,
+      cefChromiumVersion,
+    },
     packageArtifact: {
       artifactId: packageArtifactId,
       artifactName: packageArtifactName,
@@ -827,7 +984,13 @@ function runCreate(argv) {
     'console-log',
     'log-directory',
     'build-version',
+    'editor-version',
     'source-manifest',
+    'package-directory',
+    'variant',
+    'embedded-python-version',
+    'cef-product-version',
+    'cef-chromium-version',
     'package-artifact-id',
     'package-artifact-name',
     'package-artifact-digest',
@@ -850,6 +1013,7 @@ function runCreate(argv) {
     consoleLogPath: argumentsMap.get('console-log'),
     logDirectoryPath: argumentsMap.get('log-directory'),
     buildVersionPath: argumentsMap.get('build-version'),
+    editorVersionPath: argumentsMap.get('editor-version'),
     sourceManifestPath: argumentsMap.get('source-manifest'),
     repository: bindingValue(argumentsMap, 'repository', 'GITHUB_REPOSITORY'),
     sourceCommit: bindingValue(argumentsMap, 'commit', 'GITHUB_SHA').toLowerCase(),
@@ -879,6 +1043,11 @@ function runCreate(argv) {
     ),
     packageArtifactName: argumentsMap.get('package-artifact-name'),
     packageArtifactDigest: argumentsMap.get('package-artifact-digest'),
+    packageDirectoryPath: argumentsMap.get('package-directory'),
+    variantId: argumentsMap.get('variant'),
+    embeddedPythonVersion: argumentsMap.get('embedded-python-version'),
+    cefProductVersion: argumentsMap.get('cef-product-version'),
+    cefChromiumVersion: argumentsMap.get('cef-chromium-version'),
   })
   writeFreshJson(argumentsMap.get('output'), document, 'Build-environment output')
 }
@@ -894,10 +1063,14 @@ function runVerify(argv) {
     'package-artifact-id',
     'package-artifact-name',
     'package-artifact-digest',
+    'variant',
     'canonical-output',
   ]
   const argumentsMap = parseArguments(argv, new Set(required), required)
+  const variant = requireReleaseVariant(argumentsMap.get('variant'))
   const expected = {
+    releaseVariant: variant.releaseVariant,
+    buildId: variant.engine.buildId,
     repository: validateRepository(argumentsMap.get('repository')),
     sourceCommit: validateCommit(argumentsMap.get('commit').toLowerCase()),
     runId: parseSafePositiveInteger(argumentsMap.get('run-id'), 'Workflow run id'),
@@ -915,7 +1088,7 @@ function runVerify(argv) {
   }
   if (
     expected.jobKey !== EXPECTED_JOB_KEY ||
-    expected.artifactName !== EXPECTED_PACKAGE_ARTIFACT_NAME ||
+    expected.artifactName !== variant.packageArtifactName ||
     !SHA256_PATTERN.test(expected.artifactDigest)
   ) {
     fail('Expected release subject bindings are invalid.')

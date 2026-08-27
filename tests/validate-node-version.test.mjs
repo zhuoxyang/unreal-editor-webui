@@ -152,9 +152,10 @@ test('uses the pinned release runtime for UE and release validation', () => {
 
   assert.match(releaseWorkflow, /node-version-file: "\.nvmrc"/u)
   assert.match(releaseWorkflow, /node scripts\/validate-node-version\.mjs/u)
-  assert.equal((ueWorkflow.match(/node-version-file: "\.nvmrc"/gu) || []).length, 2)
-  assert.ok(
-    (ueWorkflow.match(/node scripts\/validate-node-version\.mjs/gu) || []).length >= 2,
+  assert.equal((ueWorkflow.match(/node-version-file: "\.nvmrc"/gu) || []).length, 3)
+  assert.equal(
+    (ueWorkflow.match(/node scripts\/validate-node-version\.mjs/gu) || []).length,
+    3,
     'Every UE Node.js setup must run the repository version validator',
   )
 })

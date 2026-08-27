@@ -13,7 +13,20 @@ Build Unreal Engine editor Web UI tools with WebBrowser/SWebBrowser, Python auto
 
 This project targets editor tooling, not packaged runtime/game UI.
 
-The current automated build and release target is Unreal Engine 5.8 on Windows. Release eligibility requires successful exact-commit UE 5.8 validation. Results from UE 5.3, UE 5.5, or other platforms are point-in-time evidence only unless they are revalidated for the current commit.
+The maintained native release matrix is Windows UE 5.4.4, UE 5.5.4, and UE 5.8.0. Each minor
+version has its own compiled archive and exact engine BuildId; the archives are not
+cross-compatible or universal:
+
+| Project engine | Native variant | Exact BuildId | Distribution filename suffix |
+| --- | --- | --- | --- |
+| UE 5.4 | `UE54-Win64` | `33043543` | `-UE54-Win64.zip` |
+| UE 5.5 | `UE55-Win64` | `37670630` | `-UE55-Win64.zip` |
+| UE 5.8 | `UE58-Win64` | `55116800` | `-UE58-Win64.zip` |
+
+This is the checked-in compatibility and CI contract, not a claim that the current commit has
+already passed licensed-engine validation. Release eligibility requires all three protected,
+exact-commit GUI jobs from one trusted run attempt. Static tests or a previous local UE run do not
+replace those results.
 
 ## Current Features
 
@@ -57,15 +70,22 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 
 ### Prebuilt Plugin (Recommended)
 
-1. Download the UE 5.8 plugin zip and matching `.sha256` file from the
-   [latest release](https://github.com/zhuoxyang/unreal-editor-webui/releases/latest).
+1. Download the native plugin ZIP matching the project's UE minor version and its `.sha256`
+   sidecar from your reviewed distribution channel:
+   - `UnrealEditorWebUI-v...-UE54-Win64.zip` for UE 5.4.
+   - `UnrealEditorWebUI-v...-UE55-Win64.zip` for UE 5.5.
+   - `UnrealEditorWebUI-v...-UE58-Win64.zip` for UE 5.8.
+
+   The repository's release-candidate workflow produces review artifacts only; it does not publish
+   a GitHub Release automatically.
 2. Verify the archive before extracting it. On Windows:
 
    ```powershell
-   Get-FileHash .\UnrealEditorWebUI-*-UE58.zip -Algorithm SHA256
+   Get-FileHash .\UnrealEditorWebUI-*-UE55-Win64.zip -Algorithm SHA256
    ```
 
-   Compare the printed hash with the downloaded checksum file.
+   Replace `UE55` with the selected variant and compare the printed hash with the matching checksum
+   file. Do not install a ZIP produced for another UE minor version.
 3. Extract the archive's `UnrealEditorWebUI` directory to
    `<Project>/Plugins/UnrealEditorWebUI`.
 4. Open the project, enable `UnrealEditorWebUI` if prompted, and restart the editor. Its plugin
@@ -79,7 +99,8 @@ release expected to include them is v0.3.0. Until then, use the source installat
 ### Build From Source
 
 Source development additionally requires a supported Node.js version, Visual Studio 2022 with
-the C++ toolchain and Windows SDK, and an Unreal Engine 5.8 source-capable project.
+the C++ toolchain and Windows SDK, and a source-capable project for the selected UE 5.4, 5.5, or
+5.8 version.
 
 1. Copy or clone this repository into your project's `Plugins/UnrealEditorWebUI` directory.
 2. Build the complete React UI before opening the plugin:
@@ -96,7 +117,7 @@ the C++ toolchain and Windows SDK, and an Unreal Engine 5.8 source-capable proje
    - `WebBrowserWidget`
    - `PythonScriptPlugin`
 4. Regenerate project files.
-5. Build the Unreal Engine 5.8 editor target.
+5. Build the editor target with the same UE minor version that will load the plugin.
 6. Open Unreal Editor and choose `Window > Unreal Editor WebUI`.
 
 Optional: copy [`docs/examples/tool-catalog.v1.json`](docs/examples/tool-catalog.v1.json) to
@@ -140,6 +161,10 @@ npm run build
 
 The build output is written to `Web/dist`. If that folder is missing, the plugin falls back to the minimal diagnostic page at `Web/index.html`; this fallback does not provide the complete React tool UI.
 
+Production frontend output is pinned to `chrome90`/ES2020 because UE 5.4 and UE 5.5 embed
+Chromium 90, while UE 5.8 embeds Chromium 128. Raising the Vite target requires intentionally
+changing the maintained engine floor and its contract tests.
+
 Repository governance tools use the small root lockfile separately from the frontend. To run the immutable GitHub Actions reference check locally:
 
 ```sh
@@ -173,6 +198,10 @@ powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1 `
   -SourceCommit $SourceCommit
 ```
 
+The commands above use UE 5.8 as an example. Use the matching `UE_5.4` or `UE_5.5` RunUAT path to
+produce those native variants; one BuildPlugin output must never be renamed and reused as another
+variant.
+
 The output directory must not already exist. On Windows, `BuildPlugin` writes to a short random directory under the system temp root when that root is on the output volume, avoiding UnrealBuildTool's 260-character action-path limit; the helper then publishes it with a same-volume, no-overwrite directory move. On Unix, `BuildPlugin` writes to a private sibling, the helper atomically reserves the final name before populating it, and `SourceManifest.json` moves last as the completion marker. A concurrently created or stale final path is never overwritten. A successful package includes `SourceManifest.json`, which binds every pre-UBT staged file to either its Git blob in the selected commit or the isolated frontend build. Use the helper scripts for release packages; calling `RunUAT BuildPlugin` directly neither builds `Web/dist` nor establishes this source boundary.
 
 See `docs/validation.md` for the latest local validation status.
@@ -181,6 +210,10 @@ See `docs/tool-packs.md` for the stable third-party Python SDK, manifest, offlin
 scaffolder, and multi-pack installation model.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
 See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums, SBOMs, and release boundaries.
+
+The protected workflow's temporary host removes packaged plugin `Source` and `Intermediate` before
+tests and rejects recompilation markers. This is a binary-only simulation on a build machine, not
+a clean no-compiler/no-Node consumer result. Independent clean-VM acceptance remains issue #117.
 
 ## Architecture And Integration Docs
 

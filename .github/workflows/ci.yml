@@ -160,7 +160,9 @@ jobs:
 
       - name: Test Windows UE build-environment contracts
         shell: powershell
-        run: node --test tests/ue-build-environment.test.mjs
+        run: |
+          node --test tests/ue-build-environment.test.mjs
+          node --test tests/ue-build-environment-variants.test.mjs
 
   repository:
     name: Repository checks
@@ -257,6 +259,7 @@ jobs:
         run: |
           node --check scripts/resolve-ue-release-artifact.mjs
           node --check scripts/stage-plugin-from-commit.mjs
+          node --check scripts/ue-release-variants.mjs
           node --check scripts/ue-build-environment.mjs
           node --check scripts/export-npm-dependencies.mjs
           node --check scripts/validate-github-action-references.mjs
@@ -265,6 +268,8 @@ jobs:
           node --test tests/download-verified-github-artifact.test.mjs
           node --test tests/resolve-ue-release-candidate.test.mjs
           node --test tests/ue-build-environment.test.mjs
+          node --test tests/ue-build-environment-variants.test.mjs
+          node --test tests/ue-multi-variant-contract.test.mjs
           node --test tests/validate-github-action-references.test.mjs
           node --test tests/validate-node-version.test.mjs
           node --test tests/validate-npm-lock-registry.test.mjs

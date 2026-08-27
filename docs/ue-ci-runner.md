@@ -1,136 +1,143 @@
-# UE CI Runner Setup
+# Trusted Unreal CI Runners
 
-CI has two trust layers:
+The licensed Unreal jobs run only on protected, interactive Windows self-hosted runners. Public
+pull requests run hosted checks and never execute contributed code on these machines.
 
-- `.github/workflows/ci.yml` runs frontend, Python, descriptor/module-wiring, and script-syntax checks on GitHub-hosted infrastructure for every pull request, including public fork pull requests.
-- `.github/workflows/ue-ci.yml` has no `pull_request` trigger. Its hosted prerequisite jobs and trusted BuildPlugin job run only for a matching push to `main`, or for a manually dispatched workflow. The self-hosted job additionally requires the `Run UE validation on the protected self-hosted runner` input for a manual run. Manual runs can select UE 5.3 for compatibility evidence or UE 5.8 for release evidence; pushes to `main` always select UE 5.8. The job packages the plugin, creates a version-matched temporary host project, runs native/headless checks, runs the real GUI CEF round trip, and uploads logs/artifacts. Before that protected job can be scheduled, the hosted prerequisite validates the build-environment parser and its fail-closed fixtures.
+## Closed Runner Set
 
-Public `pull_request` events cannot trigger the UE workflow or schedule its self-hosted job. Both workflows have read-only `contents` permission and every checkout disables persisted GitHub credentials.
+The workflow always expands the checked-in `scripts/ue-release-variants.json` registry into these
+three release jobs. `max-parallel: 1` serializes them so only one GUI editor job consumes the
+machine at a time.
 
-## Push Trigger Contract
+| Variant | Required label | Standard engine root | Exact engine | MSVC | Windows SDK |
+| --- | --- | --- | --- | --- | --- |
+| `ue54` | `ue-5.4` | `C:\Program Files\Epic Games\UE_5.4` | 5.4.4, CL 35576357, BuildId 33043543 | family 14.38.33130, product 14.38.33145 | 10.0.19041.0 |
+| `ue55` | `ue-5.5` | `C:\Program Files\Epic Games\UE_5.5` | 5.5.4, CL 40574608, BuildId 37670630 | family 14.38.33130, product 14.38.33145 | 10.0.22621.0 |
+| `ue58` | `ue-5.8` | `C:\Program Files\Epic Games\UE_5.8` | 5.8.0, CL 55116800, BuildId 55116800 | family 14.44.35207, product 14.44.35219 | 10.0.22621.0 |
 
-Pushes to `main` start UE CI when a direct workflow input changes. The checked-in contract covers the workflow itself, `.gitattributes`, `.npmrc`, `.nvmrc`, tests and scripts, the descriptor and license, frontend sources, and every supported package directory: `Config`, `Content`, `Platforms`, `Python`, `Resources`, `Shaders`, `Source`, and `Web`. Hosted CI parses the workflow, both platform wrappers, and their shared exact-commit staging helper to keep these inventories aligned.
+Every registration gets only `self-hosted,windows,gui,<exact-engine-label>`. Do not put multiple
+closed engine labels on one runner registration. The release resolver rejects cross-labelled jobs.
 
-Documentation-only changes under `docs/` or to `README.md` deliberately remain outside this path filter so they do not consume the licensed runner. This optimization does not add a `pull_request` trigger or weaken the `ue-self-hosted` environment boundary.
+The repository setup script derives roots, runner names, labels, identities, and artifact policy
+from the closed registry. It does not accept free-form label or UE-root overrides.
 
-## Protect The Self-Hosted Environment
+## Trust Boundary
 
-Create a GitHub Actions environment named `ue-self-hosted` before enabling the UE job:
+`.github/workflows/ue-ci.yml` has no `pull_request` trigger. A protected native job runs only when:
 
-1. Open `Settings > Environments > New environment` and use the exact name `ue-self-hosted`.
-2. Add required reviewers and, where the plan supports it, prevent self-review.
-3. Restrict deployment branches to `main` initially. Add another protected branch only when maintainers intentionally need pre-merge UE validation for that reviewed ref.
-4. Do not add repository write tokens or unrelated production secrets to this environment.
+- a matching path changes on a push to `main`; or
+- a reviewed `main` ref is manually dispatched with `Run UE validation on the protected
+  self-hosted runner` enabled; and
+- the `ue-self-hosted` environment is approved.
 
-For a trusted manual run, choose a reviewed repository ref in `Actions > UE CI > Run workflow`, enable the self-hosted validation input, and select the installed engine version. Environment approval is still required. Never approve a manual self-hosted run for unreviewed code from a public contribution. A UE 5.3 run is compatibility evidence only: its job and artifact names deliberately do not satisfy the UE 5.8 release-candidate verifier.
+The hosted prerequisites run first and validate the release-variant registry, build-environment
+parser, resolver contracts, frontend, Python registry, PowerShell syntax, and packaging contracts.
+Environment approval does not make an arbitrary branch trusted: the release resolver also requires
+the eligible workflow run's `head_branch` to be `main`.
 
-## Required Runner Labels
+## Machine Prerequisites
 
-Every self-hosted Windows runner must have these labels:
+Each runner needs:
 
-- `self-hosted`
-- `windows`
-- `gui`
-- Exactly one installed-engine label such as `ue-5.3` or `ue-5.8`.
+- One exact Unreal installation from the table, including `RunUAT.bat`, `UnrealEditor.exe`,
+  `UnrealEditor-Cmd.exe`, `Build.version`, `UnrealEditor.version`, `UnrealEditor.modules`, embedded
+  Python, and CEF.
+- Visual Studio 2022 C++ tools and the exact MSVC family/product tuple for that variant.
+- The exact x64 Windows SDK tools from the table.
+- Git for Windows with the standard `tar.exe` and `gzip.exe` paths; setup validates a gzip archive
+  round trip before registration.
+- A supported Node.js executable on `PATH`, used to decode the checked-in registry. The workflow's
+  pinned `actions/setup-node` then provisions the repository Node/npm version with
+  `package-manager-cache: false` for exact-commit packaging.
+- Network access to GitHub Actions and the official npm registry.
+- A logged-in interactive desktop session with `explorer.exe` in the same nonzero session.
 
-## Prerequisites
+UE 5.8 editor launches receive the early restrictive-Python ini override. UE 5.4 and UE 5.5 do
+not provide the same reliable control, so their dedicated Windows user profiles must not contain
+`Documents\UnrealEngine\Python\init_unreal.py`. Setup and job preflight fail before BuildPlugin if
+that path exists. The current developer account's global startup link must not be reused for a
+trusted UE 5.4/5.5 runner.
 
-Install these before registering the runner:
+## Register A Runner
 
-- Unreal Engine at the matching standard path, for example UE 5.3 at `C:\Program Files\Epic Games\UE_5.3` or UE 5.8 at `C:\Program Files\Epic Games\UE_5.8`.
-- Visual Studio C++ toolchain and Windows SDK. This repository's maintained UE 5.8 runner baseline accepts Visual Studio 2022 17.14 with an MSVC compiler product version of 14.44.35211 or later within the 14.44 family, or Visual Studio 2026 18.x with 14.50.35723 or later within the 14.50 family. Like UnrealBuildTool, setup reads the `cl.exe` product version instead of treating the servicing toolset's family directory name as the compiler version. UE 5.8 rejects MSVC 14.39 and the early portions of those newer families according to the engine's own Windows SDK configuration.
-- 64-bit Git for Windows installed under the system's standard 64-bit Program Files directory (normally `C:\Program Files\Git`), including `usr\bin\tar.exe` and `usr\bin\gzip.exe`. The setup script requires both tools and proves that `tar` can create and read a gzip-compressed archive before it downloads or registers a runner.
-- PowerShell 7 or Windows PowerShell 5.1.
-- Network access for the pinned `actions/setup-node` step; the UE job installs the repository's required Node.js/npm version before validation.
-- UE 5.8 validation enables the engine's restrictive Python mode before plugin initialization. This keeps user-global `Documents/UnrealEngine/Python/init_unreal.py` files out of CI while preserving allowed engine/project startup scripts and explicitly requested smoke scripts. UE 5.3 does not expose this control, so its runner preflight fails before packaging when that user-global file exists; use a clean dedicated profile for compatibility validation.
-
-## Register The Runner
-
-Create a short-lived registration token in GitHub:
-
-`Settings > Actions > Runners > New self-hosted runner`
-
-Then run PowerShell from the logged-in desktop account that should execute CI:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup-ue-runner.ps1 `
-  -RepoUrl "https://github.com/zhuoxyang/unreal-editor-webui" `
-  -Token "<registration-token>" `
-  -RunnerVersion "2.336.0" `
-  -RunnerSha256 "d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162" `
-  -Ephemeral
-```
-
-The script requires a new or empty runner root, downloads an explicitly pinned Windows x64 runner, verifies its SHA-256 before extraction, validates the standard-path UE installation and Git cache compression tools, and configures labels `self-hosted,windows,gui,ue-5.8`. Reusing a previously populated root is intentionally rejected because a version string cannot establish the integrity of all runner files. Start this GUI runner interactively from the logged-in console session; a Windows service runs in Session 0 and cannot provide valid CEF coverage. The workflow also verifies that its process and an Explorer desktop share a nonzero Windows session before claiming GUI coverage. The checked-in defaults are:
-
-- Runner version: `2.336.0`.
-- Official Windows x64 SHA-256: `d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162`.
-
-These values come from the [official `actions/runner` `v2.336.0` release notes](https://github.com/actions/runner/releases/tag/v2.336.0). The script constructs the exact versioned GitHub release URL; it never downloads the mutable `latest` asset and never extracts an archive whose digest does not match.
-
-For a reviewed runner upgrade, update `RunnerVersion` and `RunnerSha256` together from the official release notes, inspect the upstream changes, and provision a clean runner root. The parameters can be overridden for a staged upgrade, but both an explicit version and a 64-character SHA-256 remain mandatory. Setup fails closed for every populated runner root instead of trusting files merely because `Runner.Listener` reports the requested version.
-
-For a short-lived UE 5.3 compatibility runner, override the version-specific settings, enable one-job ephemeral registration, and omit `-InstallService`:
+Obtain a short-lived repository registration token from the repository's Actions settings. Do not
+save it in a script, shell profile, log, or document. From the checked-out repository, register one
+variant at a time:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/setup-ue-runner.ps1 `
-  -RepoUrl "https://github.com/zhuoxyang/unreal-editor-webui" `
-  -Token "<registration-token>" `
-  -RunnerRoot "C:\actions-runner-unreal-editor-webui-ue53" `
-  -RunnerName "$env:COMPUTERNAME-ue-5.3" `
-  -UERoot "C:\Program Files\Epic Games\UE_5.3" `
-  -Labels "self-hosted,windows,gui,ue-5.3" `
-  -Ephemeral
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-ue-runner.ps1 -RepoUrl "https://github.com/OWNER/REPOSITORY" -Token $env:GITHUB_RUNNER_TOKEN -Variant ue54 -Ephemeral
 ```
 
-The `gui` runner must run interactively. Omit `-InstallService` and start:
+Use `-Variant ue55` and `-Variant ue58` for the other registrations. The script:
 
-```powershell
-C:\actions-runner-unreal-editor-webui-ue58\run.cmd
-```
+1. Decodes and validates the exact three-variant registry.
+2. Validates full `Build.version` and `UnrealEditor.version` identities plus editor/module BuildId.
+3. Validates the embedded Python ProductVersion and the single CEF `libcef.dll` ProductVersion.
+4. Validates the exact MSVC directory and `cl.exe` product version plus Windows SDK `rc.exe`.
+5. Enforces the clean-profile rule for UE 5.4/5.5 and an interactive GUI session.
+6. Creates a fresh variant-specific root such as `C:\actions-runner-unreal-editor-webui-ue54`.
+7. Downloads the pinned GitHub runner, verifies its SHA-256, checks its reported version, and
+   configures it with `--disableupdate` and no service mode.
 
-Do not prepend Git paths manually in the shell that starts `run.cmd`, and do not add Git's Unix tools to the machine-wide PATH. Runner setup validates the standard-path `tar.exe` and `gzip.exe` with a gzip archive round trip before registration. The trusted UE workflow deliberately sets `package-manager-cache: false` for `actions/setup-node`: Node setup and exact-commit validation must not depend on the optional Actions cache service, especially for one-job ephemeral runners. Exact-commit staging still validates the selected lockfile and runs `npm ci`, so disabling the remote cache changes performance only, not dependency integrity.
+The runner root must not already exist. That fail-closed rule avoids treating a version string as
+integrity evidence for an old or partially overwritten installation. Remove an obsolete
+registration through GitHub and the runner's supported removal flow before provisioning a new
+root; do not edit runner internals in place.
 
-To diagnose a runner-setup Git compression-tool failure, run the same validator from a repository checkout:
+Start `run.cmd` interactively from the logged-in desktop. A Windows service executes in Session 0
+and cannot provide valid CEF coverage. An ephemeral registration accepts one job, then unregisters;
+create a fresh registration for the next exact variant when using a single physical machine.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/validate-git-cache-tools.ps1
-```
+## What Each Variant Job Proves
 
-It must print the standard 64-bit Git tools path, normally `C:\Program Files\Git\usr\bin`. If either executable is absent or the round trip fails, repair or reinstall 64-bit Git for Windows at the standard path before registering or restarting the runner. The `setup-node` post action has no npm cache state and makes no restore/save request; a cache-service outage therefore cannot block package validation.
+For its exact engine, every job:
 
-## Branch Protection
+- materializes and packages the exact commit, retaining scoped current-invocation BuildPlugin and
+  UBT logs;
+- validates `SourceManifest.json`, the generated frontend, exact committed license, descriptor
+  `Installed`/`EngineVersion`, module mapping, DLL, and BuildId;
+- creates a fresh temporary host with AssetToolsFixture v1, LevelToolsFixture v1, and
+  ExampleAssetTools v2;
+- removes the host plugin's `Source` and `Intermediate` directories before launching any test;
+- runs native Bridge/Settings automation, packaged bridge and settings smokes, and the real GUI CEF
+  binding/task/event/DOM test;
+- scans retained logs for plugin recompilation, UBT invocation, missing module, or incompatible
+  module evidence;
+- uploads one variant-specific package, one canonical BuildEnvironment artifact, and one diagnostic
+  log artifact.
 
-Mark the hosted jobs from `.github/workflows/ci.yml` as required pull-request checks:
+The binary-only host is a same-machine simulation. Because the machine still has Visual Studio and
+Node.js, it is not a clean no-compiler/no-Node consumer acceptance result. That independent VM
+coverage and real cross-variant negative installation remain issue #117 work.
 
-- `Frontend (Node 22.22.2)`
-- `Frontend (Node 24.18.1)`
-- `Python registry (Python 3.9)`
-- `Python registry (Python 3.11)`
-- `Packaging contracts (Windows)`
-- `Repository checks`
+## Artifact Policy
 
-Do not make any `.github/workflows/ue-ci.yml` job a pull-request required check: that workflow deliberately has no `pull_request` trigger.
+Successful jobs publish these immutable subjects:
 
-## External Runner Availability
+- `UnrealEditorWebUI-Package-UE54-Win64`
+- `UnrealEditorWebUI-Package-UE55-Win64`
+- `UnrealEditorWebUI-Package-UE58-Win64`
+- `UnrealEditorWebUI-BuildEnvironment-UE54-Win64`
+- `UnrealEditorWebUI-BuildEnvironment-UE55-Win64`
+- `UnrealEditorWebUI-BuildEnvironment-UE58-Win64`
+- `unreal-editor-webui-ue-logs-ue54`, `...-ue55`, and `...-ue58` diagnostics
 
-Unreal Engine is not installed on the GitHub-hosted runners used by this repository. A trusted UE run therefore remains queued until an online interactive runner with the `self-hosted`, `windows`, `gui`, and selected `ue-5.3` or `ue-5.8` label is available and the `ue-self-hosted` environment is approved. This is an external infrastructure blocker, not a reason to route public pull-request code to a persistent machine.
+Every temporary package, host, log, report, and evidence path contains run id, run attempt, and
+variant id. The package uploads only after all native and GUI validation succeeds. BuildEnvironment
+schema 2 then binds the exact package artifact id/name/digest and actual retained build selection.
+The always-run diagnostic upload remains last and is never a release input.
 
-Hosted checks can validate source-level configuration but do not compile the C++ module or execute Unreal automation. Do not treat a commit as UE-validated, package it for release, or promote it solely because the hosted checks passed; record a successful trusted UE run for that exact commit.
+Runtime identity is version-level: preflight reads the actual embedded Python and CEF file version
+metadata and compares it with the registry, and evidence records those detected strings. It does
+not claim byte-level hashes for the Python or CEF binaries.
 
-## Artifacts
+## Required Checks And Current Status
 
-The UE workflow uploads:
+Keep the ordinary hosted `CI` checks required for pull requests. The licensed UE workflow is an
+additional protected release gate, not a replacement for hosted CI.
 
-- `unreal-editor-webui-ue-logs`: editor, AutomationTool, and smoke-test logs from the current workflow run and attempt only.
-- `UnrealEditorWebUI-Package-UE53`: compatibility-only packaged plugin output after a successful manual UE 5.3 run.
-- `UnrealEditorWebUI-Package-UE58`: release-eligible packaged plugin output only after a successful UE 5.8 GUI run.
-- `UnrealEditorWebUI-BuildEnvironment-UE58`: one canonical `BuildEnvironment.json` for the exact successful UE 5.8 package artifact and workflow attempt.
-
-Before `RunUAT BuildPlugin`, the workflow creates `%RUNNER_TEMP%\UnrealEditorWebUI-AutomationToolLogs-<run-id>-<run-attempt>` and sets both `uebp_LogFolder` and `uebp_FinalLogFolder` to it. AutomationTool writes directly into that directory, while a sibling `UnrealEditorWebUI-BuildPlugin-<run-id>-<run-attempt>.log` captures the nested PowerShell process's stdout and stderr even if RunUAT fails before its own logger starts. The fresh paths are exported only after both pre-existence checks pass, and the always-run upload is gated on those outputs, so a pre-existing same-attempt path is rejected without being uploaded. The workflow never reads or recursively copies the persistent `%APPDATA%\Unreal Engine\AutomationTool\Logs` history, and every other uploaded diagnostic path is likewise bound to the current run id and attempt.
-
-Log artifacts use `if: always()` so failed UE runs preserve current-run diagnostics. The package directory is fresh and scoped to the current run id and attempt. Its artifact uploads first, uses `if: success()`, and treats missing output as an error instead of publishing a partial build. The package includes a checked `SourceManifest.json` bound to `GITHUB_SHA`.
-
-Only after BuildPlugin, native Automation, both smoke checks, and the GUI CEF round trip succeed does the UE 5.8 job upload the package and obtain that immutable artifact's id and SHA-256 digest. It then creates a fresh run-attempt-scoped `BuildEnvironment.json`. The collector follows the UBT log paths named by the retained BuildPlugin console log, requires consistent compiler/toolchain and Windows SDK selections from those current-invocation logs, reads the full engine identity from the selected installation's `Build.version`, and takes Node/npm identity only from `SourceManifest.buildToolchain`, which was recorded by the process that actually built the exact-commit frontend. The environment document binds the repository, commit, run id, run attempt, job identity, and package artifact id/name/digest.
-
-The canonical evidence contains normalized engine, compiler, SDK, architecture, Node, and npm versions. Absolute machine paths are used only while cross-checking UBT selections and are never serialized; runner names, usernames, environment dumps, and secrets are also excluded. The workflow uploads exactly that single JSON file as `UnrealEditorWebUI-BuildEnvironment-UE58`, then performs the always-run diagnostic upload last. A generation or upload failure makes the workflow unsuccessful, so its package cannot be selected for release. Release verification requires both the unique UE 5.8 package and environment artifacts, verifies both immutable digests, and checks that the environment subject identifies that exact package and run attempt. The diagnostic artifact is never a release input.
+Unreal Engine is not installed on GitHub-hosted runners. If an exact labelled interactive runner is
+offline or the environment is not approved, the native job remains queued. Static workflow tests,
+runner setup preflight, or a prior local run do not establish current release compatibility. A
+commit is exact-version validated only after all three protected GUI jobs pass for that same
+commit and run attempt.

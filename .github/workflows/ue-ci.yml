@@ -8,14 +8,6 @@ on:
         required: true
         default: false
         type: boolean
-      ue_version:
-        description: Engine version for this trusted run (UE 5.3 is compatibility-only; releases require UE 5.8)
-        required: true
-        default: "5.8"
-        type: choice
-        options:
-          - "5.8"
-          - "5.3"
   push:
     branches:
       - main
@@ -42,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ue-ci-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.ue_version || '5.8' }}-${{ github.event_name }}-${{ inputs.run_trusted_ue_validation || 'hosted-only' }}
+  group: ue-ci-${{ github.ref }}-${{ github.event_name }}-${{ inputs.run_trusted_ue_validation || 'hosted-only' }}
   cancel-in-progress: true
 
 jobs:
@@ -69,8 +61,11 @@ jobs:
 
       - name: Validate UE build-environment evidence tooling
         run: |
+          node --check scripts/ue-release-variants.mjs
           node --check scripts/ue-build-environment.mjs
           node --test tests/ue-build-environment.test.mjs
+          node --test tests/ue-build-environment-variants.test.mjs
+          node --test tests/ue-multi-variant-contract.test.mjs
 
       - name: Test package registry guards
         run: |
@@ -110,12 +105,29 @@ jobs:
     name: UE config validation (hosted)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      release_matrix: ${{ steps.release_variants.outputs.matrix }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Emit closed UE release matrix
+        id: release_variants
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/validate-node-version.mjs
+          matrix="$(node scripts/ue-release-variants.mjs workflow-matrix)"
+          test -n "$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       - name: Validate plugin descriptor and module wiring
         shell: python
@@ -165,18 +177,39 @@ jobs:
           }
 
   buildplugin-and-automation:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UE 5.3 BuildPlugin and automation (compatibility only)' || 'UE 5.8 BuildPlugin and automation' }}
+    name: ${{ matrix.job_name }}
     needs: [fast-checks, ue-config-validation]
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && inputs.run_trusted_ue_validation)
-    runs-on: [self-hosted, windows, gui, "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'ue-5.3' || 'ue-5.8' }}"]
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.ue-config-validation.outputs.release_matrix) }}
+    runs-on: [self-hosted, windows, gui, "${{ matrix.runner_label }}"]
     timeout-minutes: 90
     environment:
       name: ue-self-hosted
     env:
-      UE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && '5.3' || '5.8' }}
-      UE_ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'C:\Program Files\Epic Games\UE_5.3' || 'C:\Program Files\Epic Games\UE_5.8' }}
+      UE_VARIANT_ID: ${{ matrix.variant_id }}
+      UE_RELEASE_VARIANT: ${{ matrix.release_variant }}
+      UE_VERSION: ${{ matrix.ue_version }}
+      UE_ROOT: ${{ matrix.ue_root }}
+      UE_EXPECTED_PATCH_VERSION: ${{ matrix.patch_version }}
+      UE_EXPECTED_CHANGELIST: ${{ matrix.changelist }}
+      UE_EXPECTED_COMPATIBLE_CHANGELIST: ${{ matrix.compatible_changelist }}
+      UE_EXPECTED_BRANCH_NAME: ${{ matrix.branch_name }}
+      UE_EXPECTED_BUILD_ID: ${{ matrix.build_id }}
+      UE_EXPECTED_PYTHON_VERSION: ${{ matrix.python_version }}
+      UE_EXPECTED_CEF_PRODUCT_VERSION: ${{ matrix.cef_product_version }}
+      UE_EXPECTED_CEF_CHROMIUM_VERSION: ${{ matrix.cef_chromium_version }}
+      UE_EXPECTED_VISUAL_STUDIO_VERSION: ${{ matrix.visual_studio_version }}
+      UE_EXPECTED_TOOLCHAIN_FAMILY_VERSION: ${{ matrix.toolchain_family_version }}
+      UE_EXPECTED_COMPILER_PRODUCT_VERSION: ${{ matrix.compiler_product_version }}
+      UE_EXPECTED_WINDOWS_SDK_VERSION: ${{ matrix.windows_sdk_version }}
+      UE_PACKAGE_ARTIFACT_NAME: ${{ matrix.package_artifact }}
+      UE_BUILD_ENVIRONMENT_ARTIFACT_NAME: ${{ matrix.build_environment_artifact }}
+      UE_JOB_NAME: ${{ matrix.job_name }}
       UE_PYTHON_STARTUP_ISOLATION: '-ini:Engine:[ConsoleVariables]:Engine.Python.IsPythonInRestrictiveMode=1'
 
     steps:
@@ -192,25 +225,100 @@ jobs:
           package-manager-cache: false
 
       - name: Validate runner prerequisites
+        id: runner_identity
         shell: powershell
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
           $EditorCmd = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor-Cmd.exe"
           $Editor = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.exe"
           $BuildVersionPath = Join-Path $env:UE_ROOT "Engine/Build/Build.version"
+          $EditorVersionPath = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.version"
+          $EditorModulesPath = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.modules"
+          $EmbeddedPythonPath = Join-Path $env:UE_ROOT "Engine/Binaries/ThirdParty/Python3/Win64/python.exe"
+          $CefRoot = Join-Path $env:UE_ROOT "Engine/Binaries/ThirdParty/CEF3/Win64"
           if (-not (Test-Path -LiteralPath $RunUAT -PathType Leaf)) { throw "RunUAT not found: $RunUAT" }
           if (-not (Test-Path -LiteralPath $EditorCmd -PathType Leaf)) { throw "UnrealEditor-Cmd not found: $EditorCmd" }
           if (-not (Test-Path -LiteralPath $Editor -PathType Leaf)) { throw "UnrealEditor not found: $Editor" }
           if (-not (Test-Path -LiteralPath $BuildVersionPath -PathType Leaf)) { throw "Build.version not found: $BuildVersionPath" }
+          if (-not (Test-Path -LiteralPath $EditorVersionPath -PathType Leaf)) { throw "UnrealEditor.version not found: $EditorVersionPath" }
+          if (-not (Test-Path -LiteralPath $EditorModulesPath -PathType Leaf)) { throw "UnrealEditor.modules not found: $EditorModulesPath" }
+          if (-not (Test-Path -LiteralPath $EmbeddedPythonPath -PathType Leaf)) { throw "Embedded Python not found: $EmbeddedPythonPath" }
           $BuildVersion = Get-Content -LiteralPath $BuildVersionPath -Raw | ConvertFrom-Json
-          $DetectedVersion = "$($BuildVersion.MajorVersion).$($BuildVersion.MinorVersion)"
-          if ($DetectedVersion -ne $env:UE_VERSION) { throw "Runner engine is UE $DetectedVersion, expected UE $env:UE_VERSION." }
-          if ($env:UE_VERSION -eq "5.3") {
+          $EditorVersion = Get-Content -LiteralPath $EditorVersionPath -Raw | ConvertFrom-Json
+          $EditorModules = Get-Content -LiteralPath $EditorModulesPath -Raw | ConvertFrom-Json
+          $ExpectedMajor, $ExpectedMinor = @($env:UE_VERSION.Split('.') | ForEach-Object { [int]$_ })
+          $ExpectedIdentity = @{
+            MajorVersion = $ExpectedMajor
+            MinorVersion = $ExpectedMinor
+            PatchVersion = [int]$env:UE_EXPECTED_PATCH_VERSION
+            Changelist = [int]$env:UE_EXPECTED_CHANGELIST
+            CompatibleChangelist = [int]$env:UE_EXPECTED_COMPATIBLE_CHANGELIST
+            BranchName = $env:UE_EXPECTED_BRANCH_NAME
+            IsLicenseeVersion = 0
+            IsPromotedBuild = 1
+          }
+          foreach ($Identity in @($BuildVersion, $EditorVersion)) {
+            foreach ($Field in $ExpectedIdentity.Keys) {
+              if ($Identity.$Field -cne $ExpectedIdentity[$Field]) {
+                throw "$env:UE_RELEASE_VARIANT $Field '$($Identity.$Field)' does not match '$($ExpectedIdentity[$Field])'."
+              }
+            }
+          }
+          if ([string]$EditorVersion.BuildId -cne $env:UE_EXPECTED_BUILD_ID -or
+              [string]$EditorModules.BuildId -cne $env:UE_EXPECTED_BUILD_ID) {
+            throw "$env:UE_RELEASE_VARIANT editor BuildId does not match $env:UE_EXPECTED_BUILD_ID."
+          }
+          $DetectedPythonVersion = (Get-Item -LiteralPath $EmbeddedPythonPath).VersionInfo.ProductVersion
+          if ($DetectedPythonVersion -cne $env:UE_EXPECTED_PYTHON_VERSION) {
+            throw "$env:UE_RELEASE_VARIANT embedded Python '$DetectedPythonVersion' does not match '$env:UE_EXPECTED_PYTHON_VERSION'."
+          }
+          $CefDlls = @(Get-ChildItem -LiteralPath $CefRoot -Filter libcef.dll -File -Recurse)
+          if ($CefDlls.Count -ne 1) { throw "$env:UE_RELEASE_VARIANT must contain exactly one libcef.dll." }
+          $DetectedCefProductVersion = $CefDlls[0].VersionInfo.ProductVersion
+          if ($DetectedCefProductVersion -cne $env:UE_EXPECTED_CEF_PRODUCT_VERSION -or
+              $DetectedCefProductVersion -notmatch [regex]::Escape("chromium-$env:UE_EXPECTED_CEF_CHROMIUM_VERSION")) {
+            throw "$env:UE_RELEASE_VARIANT CEF '$DetectedCefProductVersion' does not match the closed runtime identity."
+          }
+          $DetectedCefChromiumVersion = [regex]::Match(
+            $DetectedCefProductVersion,
+            "chromium-([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)").Groups[1].Value
+          if ($DetectedCefChromiumVersion -cne $env:UE_EXPECTED_CEF_CHROMIUM_VERSION) {
+            throw "$env:UE_RELEASE_VARIANT Chromium version extraction failed."
+          }
+          if ($env:UE_EXPECTED_VISUAL_STUDIO_VERSION -cne "2022") {
+            throw "$env:UE_RELEASE_VARIANT requires an unsupported Visual Studio release."
+          }
+          $VSWhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path -LiteralPath $VSWhere -PathType Leaf)) {
+            throw "vswhere.exe is required to validate the exact compiler toolchain."
+          }
+          $VSInstallPaths = @(
+            & $VSWhere -products "*" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          )
+          $MatchingCompilers = @()
+          foreach ($VSInstallPath in $VSInstallPaths) {
+            $CompilerPath = Join-Path $VSInstallPath "VC/Tools/MSVC/$env:UE_EXPECTED_TOOLCHAIN_FAMILY_VERSION/bin/Hostx64/x64/cl.exe"
+            if (Test-Path -LiteralPath $CompilerPath -PathType Leaf) {
+              $CompilerVersion = (Get-Item -LiteralPath $CompilerPath).VersionInfo
+              $CompilerProductVersion = "$($CompilerVersion.ProductMajorPart).$($CompilerVersion.ProductMinorPart).$($CompilerVersion.ProductBuildPart)"
+              if ($CompilerProductVersion -ceq $env:UE_EXPECTED_COMPILER_PRODUCT_VERSION) {
+                $MatchingCompilers += $CompilerPath
+              }
+            }
+          }
+          if ($MatchingCompilers.Count -ne 1) {
+            throw "$env:UE_RELEASE_VARIANT requires exact MSVC $env:UE_EXPECTED_TOOLCHAIN_FAMILY_VERSION / $env:UE_EXPECTED_COMPILER_PRODUCT_VERSION."
+          }
+          $ResourceCompiler = "C:\Program Files (x86)\Windows Kits\10\bin\$env:UE_EXPECTED_WINDOWS_SDK_VERSION\x64\rc.exe"
+          if (-not (Test-Path -LiteralPath $ResourceCompiler -PathType Leaf)) {
+            throw "$env:UE_RELEASE_VARIANT requires Windows SDK $env:UE_EXPECTED_WINDOWS_SDK_VERSION x64 tools."
+          }
+          if ($env:UE_VERSION -ne "5.8") {
             $DocumentsPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)
             if ([string]::IsNullOrWhiteSpace($DocumentsPath)) { throw "Unable to resolve the runner Documents directory." }
             $UserPythonStartupScript = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"
-            if (Test-Path -LiteralPath $UserPythonStartupScript -PathType Leaf) {
-              throw "UE 5.3 cannot isolate user-global Python startup scripts. Use a clean runner profile without $UserPythonStartupScript."
+            if (Test-Path -LiteralPath $UserPythonStartupScript) {
+              throw "$env:UE_RELEASE_VARIANT cannot isolate user-global Python startup scripts. Use a clean runner profile without $UserPythonStartupScript."
             }
           }
           $RunnerSessionId = (Get-Process -Id $PID).SessionId
@@ -222,6 +330,11 @@ jobs:
             throw "No interactive Windows desktop was found in runner session $RunnerSessionId. Start the GUI runner from a logged-in desktop session."
           }
           Write-Host "Validated interactive GUI runner session $RunnerSessionId."
+          @(
+            "embedded_python_version=$DetectedPythonVersion"
+            "cef_product_version=$DetectedCefProductVersion"
+            "cef_chromium_version=$DetectedCefChromiumVersion"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           node scripts/validate-node-version.mjs
           if ($LASTEXITCODE -ne 0) { throw "Unsupported Node.js version on self-hosted runner." }
           npm --version
@@ -230,7 +343,7 @@ jobs:
         id: automation_tool_logs
         shell: powershell
         run: |
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $AutomationToolLogDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-AutomationToolLogs-$RunSuffix"
           $BuildPluginConsoleLog = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BuildPlugin-$RunSuffix.log"
           if (Test-Path -LiteralPath $AutomationToolLogDir) {
@@ -253,7 +366,7 @@ jobs:
           UE_BUILDPLUGIN_CONSOLE_LOG: ${{ steps.automation_tool_logs.outputs.console_log }}
         run: |
           $RunUAT = Join-Path $env:UE_ROOT "Engine/Build/BatchFiles/RunUAT.bat"
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"
           if (Test-Path -LiteralPath $PackageDir) {
             throw "Package directory is not fresh: $PackageDir"
@@ -298,6 +411,12 @@ jobs:
           }
           if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "UnrealEditorWebUI.uplugin") -PathType Leaf)) {
             throw "Packaged plugin descriptor missing."
+          }
+          $PackagedDescriptor = Get-Content -LiteralPath (Join-Path $PackageDir "UnrealEditorWebUI.uplugin") -Raw | ConvertFrom-Json
+          $ExpectedPackagedEngineVersion = "$($env:UE_VERSION).0"
+          if ($PackagedDescriptor.Installed -ne $true -or
+              [string]$PackagedDescriptor.EngineVersion -cne $ExpectedPackagedEngineVersion) {
+            throw "Packaged plugin descriptor is not installed for exact engine $ExpectedPackagedEngineVersion."
           }
           if (-not (Test-Path -LiteralPath (Join-Path $PackageDir "Web/dist/index.html") -PathType Leaf)) {
             throw "Packaged React frontend entry point missing."
@@ -352,21 +471,18 @@ jobs:
       - name: Create temporary host project
         shell: powershell
         run: |
-          $ProjectDirName = "UnrealEditorWebUI-HostProject-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $ProjectDirName = "UnrealEditorWebUI-HostProject-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $ProjectDir = Join-Path $env:RUNNER_TEMP $ProjectDirName
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $PluginPackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"
           $CatalogMarker = [guid]::NewGuid().ToString("N")
           if ($CatalogMarker -cnotmatch "^[0-9a-f]{32}$") { throw "Generated tool catalog marker is invalid." }
           $CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"
-          $ToolPackSourceDirs = @()
-          if ($env:UE_VERSION -eq "5.8") {
-            $ToolPackSourceDirs = @(
-              (Join-Path $PWD "tests/fixtures/ue-tool-packs/AssetToolsFixture")
-              (Join-Path $PWD "tests/fixtures/ue-tool-packs/LevelToolsFixture")
-              (Join-Path $PWD "examples/tool-packs/ExampleAssetTools")
-            )
-          }
+          $ToolPackSourceDirs = @(
+            (Join-Path $PWD "tests/fixtures/ue-tool-packs/AssetToolsFixture")
+            (Join-Path $PWD "tests/fixtures/ue-tool-packs/LevelToolsFixture")
+            (Join-Path $PWD "examples/tool-packs/ExampleAssetTools")
+          )
           $ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress
           $ProjectOutput = @(
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 `
@@ -381,14 +497,60 @@ jobs:
           if ($ProjectOutput.Count -ne 1) { throw "Host project creation returned $($ProjectOutput.Count) output lines; expected exactly one project path." }
           $ProjectPath = $ProjectOutput[0]
           if (-not (Test-Path -LiteralPath $ProjectPath -PathType Leaf)) { throw "Host project was not created: $ProjectPath" }
+          $RunnerTempPath = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\') + '\'
+          $ResolvedProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path
+          if (-not $ResolvedProjectPath.StartsWith($RunnerTempPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Temporary host project escaped RUNNER_TEMP."
+          }
+          $HostPluginPath = Join-Path (Split-Path -Parent $ResolvedProjectPath) "Plugins/UnrealEditorWebUI"
+          $ResolvedHostPluginPath = (Resolve-Path -LiteralPath $HostPluginPath).Path
+          if (-not ($ResolvedHostPluginPath + '\').StartsWith($RunnerTempPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Temporary host plugin escaped RUNNER_TEMP."
+          }
+          $ResolvedHostPluginRoot = $ResolvedHostPluginPath.TrimEnd('\') + '\'
+          foreach ($BuildInputDirectory in @("Source", "Intermediate")) {
+            $BuildInputPath = Join-Path $ResolvedHostPluginPath $BuildInputDirectory
+            if (Test-Path -LiteralPath $BuildInputPath) {
+              $BuildInputItem = Get-Item -LiteralPath $BuildInputPath -Force
+              if (-not $BuildInputItem.PSIsContainer -or
+                  ($BuildInputItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Binary-only build input is not a regular directory: $BuildInputDirectory."
+              }
+              $ResolvedBuildInputPath = (Resolve-Path -LiteralPath $BuildInputPath).Path
+              if (-not ($ResolvedBuildInputPath + '\').StartsWith($ResolvedHostPluginRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Binary-only build input escaped the temporary host plugin: $BuildInputDirectory."
+              }
+              Remove-Item -LiteralPath $BuildInputPath -Recurse -Force
+            }
+            if (Test-Path -LiteralPath $BuildInputPath) {
+              throw "Binary-only host retained $BuildInputDirectory."
+            }
+          }
+          $HostBinariesPath = Join-Path $ResolvedHostPluginPath "Binaries/Win64"
+          $HostModuleManifests = @(Get-ChildItem -LiteralPath $HostBinariesPath -Filter "*.modules" -File)
+          if ($HostModuleManifests.Count -ne 1) { throw "Binary-only host requires exactly one module manifest." }
+          $HostModules = Get-Content -LiteralPath $HostModuleManifests[0].FullName -Raw | ConvertFrom-Json
+          if ([string]$HostModules.BuildId -cne $env:UE_EXPECTED_BUILD_ID -or
+              [string]$HostModules.Modules.UnrealEditorWebUI -cne "UnrealEditor-UnrealEditorWebUI.dll") {
+            throw "Binary-only host module identity is invalid for $env:UE_RELEASE_VARIANT."
+          }
+          $HostDllPath = Join-Path $HostBinariesPath ([string]$HostModules.Modules.UnrealEditorWebUI)
+          if (-not (Test-Path -LiteralPath $HostDllPath -PathType Leaf) -or
+              (Get-Item -LiteralPath $HostDllPath).Length -le 0) {
+            throw "Binary-only host module DLL is missing or empty."
+          }
+          foreach ($RequiredPath in @("Web/dist/index.html", "Python", "Config")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $ResolvedHostPluginPath $RequiredPath))) {
+              throw "Binary-only host is missing required packaged path $RequiredPath."
+            }
+          }
           $HostEnvironment = @(
             "HOST_PROJECT=$ProjectPath"
             "UE_WEBUI_CATALOG_MARKER=$CatalogMarker"
             "UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=$($ToolPackSourceDirs.Count)"
+            "UE_WEBUI_BINARY_ONLY_HOST=1"
           )
-          if ($env:UE_VERSION -eq "5.8") {
-            $HostEnvironment += "UE_WEBUI_TOOL_PACK_TEST=1"
-          }
+          $HostEnvironment += "UE_WEBUI_TOOL_PACK_TEST=1"
           $HostEnvironment | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run UE automation tests
@@ -399,7 +561,7 @@ jobs:
           if ($env:UE_VERSION -eq "5.8") {
             $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
           }
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Automation-$RunSuffix.log"
           & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -ExecCmds="Automation RunTests StartsWith:UnrealEditorWebUI.Bridge+StartsWith:UnrealEditorWebUI.Settings; Quit" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
           if ($LASTEXITCODE -ne 0) {
@@ -419,9 +581,7 @@ jobs:
             "UnrealEditorWebUI.Bridge.WebUIHealth",
             "UnrealEditorWebUI.Settings.URLAllowlist"
           )
-          if ($env:UE_VERSION -eq "5.8") {
-            $RequiredTests += "UnrealEditorWebUI.Bridge.ThirdPartyToolPacks"
-          }
+          $RequiredTests += "UnrealEditorWebUI.Bridge.ThirdPartyToolPacks"
           foreach ($TestPath in $RequiredTests) {
             $Pattern = "Test Completed\. Result=\{Success\}.*Path=\{$([regex]::Escape($TestPath))\}"
             if (-not [regex]::IsMatch($LogText, $Pattern)) {
@@ -437,7 +597,7 @@ jobs:
           if ($env:UE_VERSION -eq "5.8") {
             $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
           }
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke-$RunSuffix.log"
           $ResultPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-PackagedBridgeSmoke-$RunSuffix.json"
           if (Test-Path -LiteralPath $ResultPath) {
@@ -478,7 +638,7 @@ jobs:
           if ($env:UE_VERSION -eq "5.8") {
             $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
           }
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-SettingsSmoke-$RunSuffix.log"
           & $EditorCmd $env:HOST_PROJECT @PythonIsolationArgs -run=pythonscript "-script=$PWD/scripts/validate-settings-smoke.py" -unattended -nopause -nosplash -NullRHI -abslog="$LogPath"
           if ($LASTEXITCODE -ne 0) {
@@ -497,7 +657,7 @@ jobs:
           if ($env:UE_VERSION -eq "5.8") {
             $PythonIsolationArgs += $env:UE_PYTHON_STARTUP_ISOLATION
           }
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $LogPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomation-$RunSuffix.log"
           $ReportPath = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BrowserAutomationReport-$RunSuffix"
           # Windows PowerShell does not otherwise wait reliably for a GUI-subsystem executable.
@@ -513,33 +673,60 @@ jobs:
             throw "Required GUI CEF automation test did not report success: $TestPath"
           }
 
+      - name: Assert the host stayed binary-only
+        shell: powershell
+        run: |
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
+          $ProjectDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-HostProject-$RunSuffix"
+          $HostPluginPath = Join-Path $ProjectDir "Plugins/UnrealEditorWebUI"
+          if (Test-Path -LiteralPath (Join-Path $HostPluginPath "Source")) {
+            throw "Binary-only host unexpectedly regained plugin source."
+          }
+          $LogFiles = @(
+            Get-ChildItem -LiteralPath $env:RUNNER_TEMP -File -Filter "UnrealEditorWebUI-*-$RunSuffix.log" -ErrorAction SilentlyContinue
+          ) + @(
+            Get-ChildItem -LiteralPath (Join-Path $ProjectDir "Saved/Logs") -File -Recurse -ErrorAction SilentlyContinue
+          )
+          if ($LogFiles.Count -eq 0) { throw "Binary-only host produced no inspectable logs." }
+          $ForbiddenPattern = "Running UnrealBuildTool|Compiling UnrealEditorWebUI|Building [0-9]+ action.*UnrealEditorWebUI|Unable to load module.*UnrealEditorWebUI|Missing or incompatible module.*UnrealEditorWebUI"
+          foreach ($LogFile in $LogFiles) {
+            $LogText = Get-Content -LiteralPath $LogFile.FullName -Raw
+            if ($LogText -match $ForbiddenPattern) {
+              throw "Binary-only host attempted a plugin rebuild or reported an incompatible module in $($LogFile.FullName)."
+            }
+          }
+
       - name: Upload packaged plugin
         id: package_artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: ${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE58' }}
-          path: ${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ matrix.package_artifact }}
+          path: ${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create UE 5.8 build-environment evidence
+      - name: Create exact UE build-environment evidence
         id: build_environment
-        if: success() && env.UE_VERSION == '5.8'
+        if: success()
         shell: powershell
         env:
           PACKAGE_ARTIFACT_ID: ${{ steps.package_artifact.outputs.artifact-id }}
           PACKAGE_ARTIFACT_DIGEST: ${{ steps.package_artifact.outputs.artifact-digest }}
           UE_AUTOMATION_TOOL_LOG_DIR: ${{ steps.automation_tool_logs.outputs.directory }}
           UE_BUILDPLUGIN_CONSOLE_LOG: ${{ steps.automation_tool_logs.outputs.console_log }}
+          UE_DETECTED_PYTHON_VERSION: ${{ steps.runner_identity.outputs.embedded_python_version }}
+          UE_DETECTED_CEF_PRODUCT_VERSION: ${{ steps.runner_identity.outputs.cef_product_version }}
+          UE_DETECTED_CEF_CHROMIUM_VERSION: ${{ steps.runner_identity.outputs.cef_chromium_version }}
         run: |
-          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+          $RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"
           $PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"
           $SourceManifestPath = Join-Path $PackageDir "SourceManifest.json"
           $BuildVersionPath = Join-Path $env:UE_ROOT "Engine/Build/Build.version"
+          $EditorVersionPath = Join-Path $env:UE_ROOT "Engine/Binaries/Win64/UnrealEditor.version"
           $OutputDirectory = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-BuildEnvironment-$RunSuffix"
           $OutputPath = Join-Path $OutputDirectory "BuildEnvironment.json"
-          $PackageArtifactName = "UnrealEditorWebUI-Package-UE58"
+          $PackageArtifactName = $env:UE_PACKAGE_ARTIFACT_NAME
 
           if (Test-Path -LiteralPath $OutputDirectory) {
             throw "Build-environment evidence directory is not fresh: $OutputDirectory"
@@ -569,7 +756,13 @@ jobs:
             --console-log $env:UE_BUILDPLUGIN_CONSOLE_LOG `
             --log-directory $env:UE_AUTOMATION_TOOL_LOG_DIR `
             --build-version $BuildVersionPath `
+            --editor-version $EditorVersionPath `
             --source-manifest $SourceManifestPath `
+            --package-directory $PackageDir `
+            --variant $env:UE_VARIANT_ID `
+            --embedded-python-version $env:UE_DETECTED_PYTHON_VERSION `
+            --cef-product-version $env:UE_DETECTED_CEF_PRODUCT_VERSION `
+            --cef-chromium-version $env:UE_DETECTED_CEF_CHROMIUM_VERSION `
             --package-artifact-id $env:PACKAGE_ARTIFACT_ID `
             --package-artifact-name $PackageArtifactName `
             --package-artifact-digest $PackageArtifactDigest `
@@ -578,7 +771,7 @@ jobs:
             --run-id $env:GITHUB_RUN_ID `
             --run-attempt $env:GITHUB_RUN_ATTEMPT `
             --job-key $env:GITHUB_JOB `
-            --job-name "UE 5.8 BuildPlugin and automation" `
+            --job-name $env:UE_JOB_NAME `
             --output $OutputPath
           if ($LASTEXITCODE -ne 0) {
             throw "Build-environment evidence creation failed with exit code $LASTEXITCODE."
@@ -589,12 +782,12 @@ jobs:
           }
           "path=$OutputPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Upload UE 5.8 build-environment evidence
+      - name: Upload exact UE build-environment evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success() && env.UE_VERSION == '5.8' && steps.build_environment.outputs.path != ''
+        if: success() && steps.build_environment.outputs.path != ''
         with:
-          name: UnrealEditorWebUI-BuildEnvironment-UE58
-          path: ${{ runner.temp }}/UnrealEditorWebUI-BuildEnvironment-${{ github.run_id }}-${{ github.run_attempt }}/BuildEnvironment.json
+          name: ${{ matrix.build_environment_artifact }}
+          path: ${{ runner.temp }}/UnrealEditorWebUI-BuildEnvironment-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/BuildEnvironment.json
           if-no-files-found: error
           retention-days: 14
 
@@ -602,15 +795,15 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always() && steps.automation_tool_logs.outputs.directory != '' && steps.automation_tool_logs.outputs.console_log != ''
         with:
-          name: unreal-editor-webui-ue-logs
+          name: unreal-editor-webui-ue-logs-${{ matrix.variant_id }}
           path: |
-            ${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.json
-            ${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}.log
-            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}/**
-            ${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}/Saved/Logs/**
+            ${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.json
+            ${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log
+            ${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/**
+            ${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/Saved/Logs/**
             ${{ steps.automation_tool_logs.outputs.console_log }}
             ${{ steps.automation_tool_logs.outputs.directory }}/**
           if-no-files-found: ignore

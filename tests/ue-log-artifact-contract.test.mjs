@@ -36,23 +36,23 @@ const AUTOMATION_TOOL_DIRECTORY_OUTPUT = '${{ steps.automation_tool_logs.outputs
 const BUILDPLUGIN_CONSOLE_LOG_OUTPUT =
   '${{ steps.automation_tool_logs.outputs.console_log }}'
 const RUN_SUFFIX_ASSIGNMENT =
-  '$RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"'
+  '$RunSuffix = "$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)-$env:UE_VARIANT_ID"'
 const SCOPED_PACKAGE_ASSIGNMENT =
   '$PackageDir = Join-Path $env:RUNNER_TEMP "UnrealEditorWebUI-Package-$RunSuffix"'
 const EXPECTED_PACKAGE_UPLOAD_PATH =
-  '${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}'
+  '${{ runner.temp }}/UnrealEditorWebUI-Package-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}'
 const EXPECTED_BUILD_ENVIRONMENT_PATH =
-  '${{ runner.temp }}/UnrealEditorWebUI-BuildEnvironment-${{ github.run_id }}-${{ github.run_attempt }}/BuildEnvironment.json'
+  '${{ runner.temp }}/UnrealEditorWebUI-BuildEnvironment-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/BuildEnvironment.json'
 const PYTHON_RESTRICTIVE_MODE_ARGUMENT =
   '-ini:Engine:[ConsoleVariables]:Engine.Python.IsPythonInRestrictiveMode=1'
 const EXPECTED_LOG_PATHS = [
-  '${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}.json',
-  '${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}.log',
-  '${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}/**',
-  '${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}/Saved/Logs/**',
+  '${{ runner.temp }}/UnrealEditorWebUI-Automation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
+  '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
+  '${{ runner.temp }}/UnrealEditorWebUI-PackagedBridgeSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.json',
+  '${{ runner.temp }}/UnrealEditorWebUI-SettingsSmoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
+  '${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomation-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}.log',
+  '${{ runner.temp }}/UnrealEditorWebUI-BrowserAutomationReport-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/**',
+  '${{ runner.temp }}/UnrealEditorWebUI-HostProject-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.variant_id }}/Saved/Logs/**',
   BUILDPLUGIN_CONSOLE_LOG_OUTPUT,
   `${AUTOMATION_TOOL_DIRECTORY_OUTPUT}/**`,
 ]
@@ -100,12 +100,18 @@ test('hosted checks validate the build-environment evidence tooling before the U
   assert.ok(ueHostedStep, 'UE hosted prerequisites must validate build-environment evidence')
   assert.ok(ciStep, 'regular CI must validate release helper syntax')
   assertOrdered(ueHostedStep.run, [
+    'node --check scripts/ue-release-variants.mjs',
     'node --check scripts/ue-build-environment.mjs',
     'node --test tests/ue-build-environment.test.mjs',
+    'node --test tests/ue-build-environment-variants.test.mjs',
+    'node --test tests/ue-multi-variant-contract.test.mjs',
   ])
   assertOrdered(ciStep.run, [
+    'node --check scripts/ue-release-variants.mjs',
     'node --check scripts/ue-build-environment.mjs',
     'node --test tests/ue-build-environment.test.mjs',
+    'node --test tests/ue-build-environment-variants.test.mjs',
+    'node --test tests/ue-multi-variant-contract.test.mjs',
   ])
   assert.deepEqual(JOB.needs, ['fast-checks', 'ue-config-validation'])
 })
@@ -201,8 +207,6 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     '$CatalogMarker = [guid]::NewGuid().ToString("N")',
     '$CatalogMarker -cnotmatch "^[0-9a-f]{32}$"',
     '$CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"',
-    '$ToolPackSourceDirs = @()',
-    'if ($env:UE_VERSION -eq "5.8")',
     '$ToolPackSourceDirs = @(\n',
     'tests/fixtures/ue-tool-packs/AssetToolsFixture',
     'tests/fixtures/ue-tool-packs/LevelToolsFixture',
@@ -215,6 +219,15 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     '-ToolCatalogTemplate $CatalogTemplate',
     '-ToolCatalogMarker $CatalogMarker',
     '-ToolPackSourceDirsJson $ToolPackSourceDirsJson',
+    '$ResolvedProjectPath = (Resolve-Path -LiteralPath $ProjectPath).Path',
+    'throw "Temporary host project escaped RUNNER_TEMP."',
+    '$ResolvedHostPluginPath = (Resolve-Path -LiteralPath $HostPluginPath).Path',
+    'foreach ($BuildInputDirectory in @("Source", "Intermediate"))',
+    'Remove-Item -LiteralPath $BuildInputPath -Recurse -Force',
+    'throw "Binary-only host retained $BuildInputDirectory."',
+    '$HostModuleManifests = @(Get-ChildItem -LiteralPath $HostBinariesPath -Filter "*.modules" -File)',
+    '[string]$HostModules.BuildId -cne $env:UE_EXPECTED_BUILD_ID',
+    'throw "Binary-only host module identity is invalid for $env:UE_RELEASE_VARIANT."',
     '"HOST_PROJECT=$ProjectPath"',
     '"UE_WEBUI_CATALOG_MARKER=$CatalogMarker"',
     '"UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=$($ToolPackSourceDirs.Count)"',
@@ -225,20 +238,17 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
 
 test('host exports a validated version-specific Tool Pack count for the GUI contract', () => {
   const hostRun = stepNamed('Create temporary host project').run
-  const branchStart = hostRun.indexOf('if ($env:UE_VERSION -eq "5.8") {')
-  const branchEnd = hostRun.indexOf('$ToolPackSourceDirsJson = ConvertTo-Json', branchStart)
-  assert.ok(branchStart >= 0 && branchEnd > branchStart)
-  const fixtureBranch = hostRun.slice(branchStart, branchEnd)
-  const fixturePaths = fixtureBranch.match(
+  const fixturePaths = hostRun.match(
     /(?:tests\/fixtures\/ue-tool-packs|examples\/tool-packs)\/[A-Za-z0-9_-]+/gu,
   ) || []
   assert.equal(fixturePaths.length, 3)
   assert.equal(new Set(fixturePaths).size, 3)
 
-  const expectedCount = (version) => (version === '5.8' ? fixturePaths.length : 0)
-  assert.equal(expectedCount('5.3'), 0)
-  assert.equal(expectedCount('5.8'), 3)
-  assert.match(hostRun, /\$ToolPackSourceDirs = @\(\)/u)
+  for (const version of ['5.4', '5.5', '5.8']) {
+    assert.equal(fixturePaths.length, 3, `${version} must install the three retained packs`)
+  }
+  assert.doesNotMatch(hostRun, /\$ToolPackSourceDirs = @\(\)/u)
+  assert.doesNotMatch(hostRun, /if \(\$env:UE_VERSION -eq "5\.8"\)[\s\S]*ToolPackSourceDirs/u)
   assert.match(
     hostRun,
     /"UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=\$\(\$ToolPackSourceDirs\.Count\)"/u,
@@ -480,16 +490,18 @@ test('UE 5.8 editor launches isolate CI from user-global Python startup scripts'
   }
 })
 
-test('UE 5.3 validation rejects user-global Python startup scripts before packaging', () => {
-  const prerequisites = stepNamed('Validate runner prerequisites').run
+test('UE 5.4 and 5.5 validation reject user-global Python startup scripts before packaging', () => {
+  const prerequisiteStep = stepNamed('Validate runner prerequisites')
+  const prerequisites = prerequisiteStep.run
 
   assertOrdered(prerequisites, [
-    'if ($env:UE_VERSION -eq "5.3")',
+    'if ($env:UE_VERSION -ne "5.8")',
     '[Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments)',
     '$UserPythonStartupScript = Join-Path $DocumentsPath "UnrealEngine/Python/init_unreal.py"',
-    'Test-Path -LiteralPath $UserPythonStartupScript -PathType Leaf',
-    'UE 5.3 cannot isolate user-global Python startup scripts.',
+    'Test-Path -LiteralPath $UserPythonStartupScript',
+    '$env:UE_RELEASE_VARIANT cannot isolate user-global Python startup scripts.',
   ])
+  assert.ok(STEPS.indexOf(prerequisiteStep) < STEPS.indexOf(stepNamed('Build packaged plugin')))
 })
 
 test('UE diagnostic uploads select only the current run and attempt', () => {
@@ -500,26 +512,28 @@ test('UE diagnostic uploads select only the current run and attempt', () => {
     upload.if,
     "always() && steps.automation_tool_logs.outputs.directory != '' && steps.automation_tool_logs.outputs.console_log != ''",
   )
-  assert.equal(upload.with.name, 'unreal-editor-webui-ue-logs')
+  assert.equal(upload.with.name, 'unreal-editor-webui-ue-logs-${{ matrix.variant_id }}')
   assert.deepEqual(paths, EXPECTED_LOG_PATHS)
   assert.equal(upload.with['if-no-files-found'], 'ignore')
   assert.equal(upload.with['retention-days'], 14)
 
-  const currentRoot = 'C:/runner-temp/UnrealEditorWebUI-AutomationToolLogs-777-2'
-  const priorAttemptRoot = currentRoot.replace(/-2$/u, '-1')
+  const currentRoot = 'C:/runner-temp/UnrealEditorWebUI-AutomationToolLogs-777-2-ue54'
+  const priorAttemptRoot = currentRoot.replace(/-2-ue54$/u, '-1-ue54')
+  const otherVariantRoot = currentRoot.replace(/-ue54$/u, '-ue55')
   const automationToolUpload = paths.at(-1)
   const renderedUpload = automationToolUpload
     .replace(AUTOMATION_TOOL_DIRECTORY_OUTPUT, currentRoot)
   assert.notEqual(currentRoot, priorAttemptRoot)
   assert.equal(renderedUpload, `${currentRoot}/**`)
   assert.equal(renderedUpload.startsWith(`${priorAttemptRoot}/`), false)
+  assert.equal(renderedUpload.startsWith(`${otherVariantRoot}/`), false)
   assert.equal(paths.some((path) => path.includes('APPDATA')), false)
 })
 
 test('the release package identity stays unchanged and uploads before diagnostics', () => {
   const packageUpload = stepNamed('Upload packaged plugin')
-  const evidenceCreate = stepNamed('Create UE 5.8 build-environment evidence')
-  const evidenceUpload = stepNamed('Upload UE 5.8 build-environment evidence')
+  const evidenceCreate = stepNamed('Create exact UE build-environment evidence')
+  const evidenceUpload = stepNamed('Upload exact UE build-environment evidence')
   const logUpload = stepNamed('Upload UE logs')
 
   assert.ok(STEPS.indexOf(packageUpload) < STEPS.indexOf(evidenceCreate))
@@ -527,20 +541,17 @@ test('the release package identity stays unchanged and uploads before diagnostic
   assert.ok(STEPS.indexOf(evidenceUpload) < STEPS.indexOf(logUpload))
   assert.equal(packageUpload.id, 'package_artifact')
   assert.equal(packageUpload.if, 'success()')
-  assert.equal(
-    packageUpload.with.name,
-    "${{ github.event_name == 'workflow_dispatch' && inputs.ue_version == '5.3' && 'UnrealEditorWebUI-Package-UE53' || 'UnrealEditorWebUI-Package-UE58' }}",
-  )
+  assert.equal(packageUpload.with.name, '${{ matrix.package_artifact }}')
   assert.equal(packageUpload.with.path, EXPECTED_PACKAGE_UPLOAD_PATH)
   assert.equal(packageUpload.with['if-no-files-found'], 'error')
   assert.equal(packageUpload.with['retention-days'], 14)
 })
 
-test('UE 5.8 evidence binds the completed package to the exact run-attempt environment', () => {
+test('each exact UE variant evidence binds the completed package to the run-attempt environment', () => {
   const prerequisites = stepNamed('Validate runner prerequisites')
   const packageUpload = stepNamed('Upload packaged plugin')
-  const create = stepNamed('Create UE 5.8 build-environment evidence')
-  const upload = stepNamed('Upload UE 5.8 build-environment evidence')
+  const create = stepNamed('Create exact UE build-environment evidence')
+  const upload = stepNamed('Upload exact UE build-environment evidence')
   const diagnostics = stepNamed('Upload UE logs')
 
   for (const validationStep of [
@@ -561,8 +572,8 @@ test('UE 5.8 evidence binds the completed package to the exact run-attempt envir
   assert.equal(STEPS.at(-1), diagnostics, 'the always-run diagnostics upload must remain last')
 
   assert.equal(create.id, 'build_environment')
-  assert.equal(create.if, "success() && env.UE_VERSION == '5.8'")
-  assert.equal(prerequisites.id, undefined)
+  assert.equal(create.if, 'success()')
+  assert.equal(prerequisites.id, 'runner_identity')
   assert.match(prerequisites.run, /npm --version/u)
   assert.equal(
     create.env.PACKAGE_ARTIFACT_ID,
@@ -585,6 +596,7 @@ test('UE 5.8 evidence binds the completed package to the exact run-attempt envir
     '"UnrealEditorWebUI-Package-$RunSuffix"',
     '"SourceManifest.json"',
     '"Engine/Build/Build.version"',
+    '"Engine/Binaries/Win64/UnrealEditor.version"',
     '"UnrealEditorWebUI-BuildEnvironment-$RunSuffix"',
     '$OutputPath = Join-Path $OutputDirectory "BuildEnvironment.json"',
     'if (Test-Path -LiteralPath $OutputDirectory)',
@@ -594,7 +606,13 @@ test('UE 5.8 evidence binds the completed package to the exact run-attempt envir
     '--console-log $env:UE_BUILDPLUGIN_CONSOLE_LOG',
     '--log-directory $env:UE_AUTOMATION_TOOL_LOG_DIR',
     '--build-version $BuildVersionPath',
+    '--editor-version $EditorVersionPath',
     '--source-manifest $SourceManifestPath',
+    '--package-directory $PackageDir',
+    '--variant $env:UE_VARIANT_ID',
+    '--embedded-python-version $env:UE_DETECTED_PYTHON_VERSION',
+    '--cef-product-version $env:UE_DETECTED_CEF_PRODUCT_VERSION',
+    '--cef-chromium-version $env:UE_DETECTED_CEF_CHROMIUM_VERSION',
     '--package-artifact-id $env:PACKAGE_ARTIFACT_ID',
     '--package-artifact-name $PackageArtifactName',
     '--package-artifact-digest $PackageArtifactDigest',
@@ -603,16 +621,12 @@ test('UE 5.8 evidence binds the completed package to the exact run-attempt envir
     '--run-id $env:GITHUB_RUN_ID',
     '--run-attempt $env:GITHUB_RUN_ATTEMPT',
     '--job-key $env:GITHUB_JOB',
-    '--job-name "UE 5.8 BuildPlugin and automation"',
+    '--job-name $env:UE_JOB_NAME',
     '--output $OutputPath',
     'if ($LASTEXITCODE -ne 0)',
     '"path=$OutputPath"',
   ])
-  assert.ok(
-    create.run.includes(
-      '$PackageArtifactName = "UnrealEditorWebUI-Package-UE58"',
-    ),
-  )
+  assert.ok(create.run.includes('$PackageArtifactName = $env:UE_PACKAGE_ARTIFACT_NAME'))
   assert.doesNotMatch(
     create.run,
     /--node-version|--node-architecture|--npm-version|npm --version/iu,
@@ -622,9 +636,9 @@ test('UE 5.8 evidence binds the completed package to the exact run-attempt envir
   assert.match(upload.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/u)
   assert.equal(
     upload.if,
-    "success() && env.UE_VERSION == '5.8' && steps.build_environment.outputs.path != ''",
+    "success() && steps.build_environment.outputs.path != ''",
   )
-  assert.equal(upload.with.name, 'UnrealEditorWebUI-BuildEnvironment-UE58')
+  assert.equal(upload.with.name, '${{ matrix.build_environment_artifact }}')
   assert.equal(upload.with.path, EXPECTED_BUILD_ENVIRONMENT_PATH)
   assert.equal(upload.with.path.includes('\n'), false, 'the evidence artifact must upload one file')
   assert.equal(upload.with['if-no-files-found'], 'error')
@@ -638,15 +652,19 @@ test('UE 5.8 evidence binds the completed package to the exact run-attempt envir
 
 test('release candidates require the exact-commit package source manifest', () => {
   const step = RELEASE_WORKFLOW.jobs.assemble.steps.find(
-    ({ name }) => name === 'Validate packaged plugin structure',
+    ({ name }) => name === 'Validate every packaged plugin identity',
   )
   assert.ok(step)
   assert.equal(step.env.RELEASE_COMMIT, '${{ steps.release.outputs.release_commit }}')
   assertOrdered(step.run, [
-    'test -f trusted-package/SourceManifest.json',
+    'for variant_id in ue54 ue55 ue58',
+    'test -f "$package/SourceManifest.json"',
     'value.schemaVersion !== 1',
     "file.path === 'Web/dist/index.html' && file.source === 'generated'",
     "process.stdout.write(value.sourceCommit ?? '')",
     'if [[ "$manifest_commit" != "$RELEASE_COMMIT" ]]',
+    'cmp -s LICENSE "$package/LICENSE"',
+    'node scripts/validate-plugin-version.mjs',
+    'modules.BuildId !== variant.engine.buildId',
   ])
 })

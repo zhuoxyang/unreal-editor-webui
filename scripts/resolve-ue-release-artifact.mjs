@@ -8,20 +8,27 @@ import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { pathToFileURL } from 'node:url'
 
+import { RELEASE_VARIANTS } from './ue-release-variants.mjs'
+
 const API_VERSION = '2022-11-28'
 const EXPECTED_WORKFLOW_PATH = '.github/workflows/ue-ci.yml'
-export const EXPECTED_JOB_NAME = 'UE 5.8 BuildPlugin and automation'
-export const EXPECTED_ARTIFACT_NAME = 'UnrealEditorWebUI-Package-UE58'
+export const EXPECTED_RELEASE_VARIANTS = RELEASE_VARIANTS
+export const EXPECTED_JOB_NAME = RELEASE_VARIANTS[2].jobName
+export const EXPECTED_ARTIFACT_NAME = RELEASE_VARIANTS[2].packageArtifactName
 export const EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME =
-  'UnrealEditorWebUI-BuildEnvironment-UE58'
-export const EXPECTED_RUNNER_LABELS = ['self-hosted', 'windows', 'gui', 'ue-5.8']
+  RELEASE_VARIANTS[2].buildEnvironmentArtifactName
+export const EXPECTED_RUNNER_LABELS = RELEASE_VARIANTS[2].runnerLabels
 
 function parseArguments(argv) {
   const result = new Map()
 
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index]
-    if (!key.startsWith('--') || index + 1 >= argv.length) {
+    if (
+      !key.startsWith('--') ||
+      index + 1 >= argv.length ||
+      result.has(key.slice(2))
+    ) {
       throw new Error(`Expected --name value arguments, received '${key}'.`)
     }
 
@@ -238,8 +245,8 @@ export function validateRunMetadata(run, repository, commit) {
   if (!['push', 'workflow_dispatch'].includes(run.event)) {
     errors.push(`event '${run.event}' is not trusted for UE release validation`)
   }
-  if (run.event === 'push' && run.head_branch !== 'main') {
-    errors.push(`push validation came from '${run.head_branch}', expected main`)
+  if (run.head_branch !== 'main') {
+    errors.push(`validation came from '${run.head_branch}', expected main`)
   }
   if (run.head_repository?.full_name !== repository) {
     errors.push(`head repository is '${run.head_repository?.full_name}', expected '${repository}'`)
@@ -396,68 +403,190 @@ function validateBoundArtifact(artifact, expectedName, run, commit) {
 export function validateReleaseCandidate({ artifacts, commit, jobs, repository, run }) {
   validateRunMetadata(run, repository, commit)
 
-  const expectedJobs = jobs.filter((job) => job.name === EXPECTED_JOB_NAME)
-  if (expectedJobs.length !== 1 || expectedJobs[0].conclusion !== 'success') {
-    const conclusions = expectedJobs.map((job) => job.conclusion).join(', ') || 'missing'
+  const trustedJobNames = new Set(RELEASE_VARIANTS.map((variant) => variant.jobName))
+  const candidateTrustedJobs = jobs.filter((job) =>
+    typeof job.name === 'string' && /^UE 5\.[0-9]+ BuildPlugin and automation/u.test(job.name),
+  )
+  if (
+    candidateTrustedJobs.length !== RELEASE_VARIANTS.length ||
+    candidateTrustedJobs.some((job) => !trustedJobNames.has(job.name))
+  ) {
     throw new Error(
-      `UE workflow run ${run.id} does not contain exactly one successful '${EXPECTED_JOB_NAME}' job (found ${conclusions}).`,
+      `UE workflow run ${run.id} must expose exactly the three closed release-variant jobs.`,
     )
   }
 
-  const expectedJob = expectedJobs[0]
-  if (!Number.isSafeInteger(expectedJob.id) || expectedJob.id <= 0) {
-    throw new Error(
-      `UE workflow run ${run.id} job '${EXPECTED_JOB_NAME}' does not expose a safe positive id.`,
-    )
-  }
-  const jobLabels = new Set(
-    (Array.isArray(expectedJob.labels) ? expectedJob.labels : [])
-      .filter((label) => typeof label === 'string')
-      .map((label) => label.toLowerCase()),
+  const expectedPackageNames = new Set(
+    RELEASE_VARIANTS.map((variant) => variant.packageArtifactName),
   )
-  const missingLabels = EXPECTED_RUNNER_LABELS.filter(
-    (label) => !jobLabels.has(label),
+  const packageArtifacts = artifacts.filter((artifact) =>
+    typeof artifact.name === 'string' &&
+    artifact.name.startsWith('UnrealEditorWebUI-Package-'),
   )
-  const hasNamedRunner =
-    typeof expectedJob.runner_name === 'string' && expectedJob.runner_name.trim().length > 0
-  if (missingLabels.length > 0 || !hasNamedRunner) {
+  if (
+    packageArtifacts.length !== RELEASE_VARIANTS.length ||
+    packageArtifacts.some((artifact) => !expectedPackageNames.has(artifact.name))
+  ) {
     throw new Error(
-      `UE job ${expectedJob.id} was not assigned to the required trusted runner labels (missing: ${missingLabels.join(', ') || 'none'}).`,
+      `UE workflow run ${run.id} must expose exactly the three closed package artifacts.`,
     )
   }
 
-  const expectedArtifacts = artifacts.filter(
-    (artifact) => artifact.name === EXPECTED_ARTIFACT_NAME,
+  const expectedEnvironmentNames = new Set(
+    RELEASE_VARIANTS.map((variant) => variant.buildEnvironmentArtifactName),
   )
-  if (expectedArtifacts.length !== 1) {
+  const environmentArtifacts = artifacts.filter((artifact) =>
+    typeof artifact.name === 'string' &&
+    artifact.name.startsWith('UnrealEditorWebUI-BuildEnvironment-'),
+  )
+  if (
+    environmentArtifacts.length !== RELEASE_VARIANTS.length ||
+    environmentArtifacts.some((artifact) => !expectedEnvironmentNames.has(artifact.name))
+  ) {
     throw new Error(
-      `UE workflow run ${run.id} must contain exactly one '${EXPECTED_ARTIFACT_NAME}' artifact; found ${expectedArtifacts.length}.`,
+      `UE workflow run ${run.id} must expose exactly the three closed build-environment artifacts.`,
     )
   }
 
-  const expectedBuildEnvironmentArtifacts = artifacts.filter(
-    (artifact) => artifact.name === EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME,
-  )
-  if (expectedBuildEnvironmentArtifacts.length !== 1) {
-    throw new Error(
-      `UE workflow run ${run.id} must contain exactly one '${EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME}' artifact; found ${expectedBuildEnvironmentArtifacts.length}.`,
+  const selections = RELEASE_VARIANTS.map((variant) => {
+    const expectedJobs = jobs.filter((job) => job.name === variant.jobName)
+    if (expectedJobs.length !== 1 || expectedJobs[0].conclusion !== 'success') {
+      const conclusions = expectedJobs.map((job) => job.conclusion).join(', ') || 'missing'
+      throw new Error(
+        `UE workflow run ${run.id} does not contain exactly one successful '${variant.jobName}' job (found ${conclusions}).`,
+      )
+    }
+    const job = expectedJobs[0]
+    if (!Number.isSafeInteger(job.id) || job.id <= 0) {
+      throw new Error(
+        `UE workflow run ${run.id} job '${variant.jobName}' does not expose a safe positive id.`,
+      )
+    }
+    if (
+      job.status !== 'completed' ||
+      job.conclusion !== 'success' ||
+      job.run_id !== run.id ||
+      job.head_sha?.toLowerCase() !== commit ||
+      job.workflow_name !== 'UE CI'
+    ) {
+      throw new Error(
+        `UE job ${job.id} does not match the selected completed workflow run and commit.`,
+      )
+    }
+    const jobLabels = new Set(
+      (Array.isArray(job.labels) ? job.labels : [])
+        .filter((label) => typeof label === 'string')
+        .map((label) => label.toLowerCase()),
     )
+    const missingLabels = variant.runnerLabels.filter((label) => !jobLabels.has(label))
+    const closedEngineLabels = RELEASE_VARIANTS
+      .map((candidate) => candidate.runnerLabel)
+      .filter((label) => jobLabels.has(label))
+    const hasNamedRunner =
+      typeof job.runner_name === 'string' && job.runner_name.trim().length > 0
+    if (
+      missingLabels.length > 0 ||
+      !hasNamedRunner ||
+      closedEngineLabels.length !== 1 ||
+      closedEngineLabels[0] !== variant.runnerLabel
+    ) {
+      throw new Error(
+        `UE job ${job.id} was not assigned to the required trusted runner labels for ${variant.releaseVariant} (missing: ${missingLabels.join(', ') || 'none'}).`,
+      )
+    }
+
+    const expectedArtifacts = artifacts.filter(
+      (artifact) => artifact.name === variant.packageArtifactName,
+    )
+    if (expectedArtifacts.length !== 1) {
+      throw new Error(
+        `UE workflow run ${run.id} must contain exactly one '${variant.packageArtifactName}' artifact; found ${expectedArtifacts.length}.`,
+      )
+    }
+    const expectedBuildEnvironmentArtifacts = artifacts.filter(
+      (artifact) => artifact.name === variant.buildEnvironmentArtifactName,
+    )
+    if (expectedBuildEnvironmentArtifacts.length !== 1) {
+      throw new Error(
+        `UE workflow run ${run.id} must contain exactly one '${variant.buildEnvironmentArtifactName}' artifact; found ${expectedBuildEnvironmentArtifacts.length}.`,
+      )
+    }
+    return {
+      variant,
+      job,
+      artifact: validateBoundArtifact(
+        expectedArtifacts[0],
+        variant.packageArtifactName,
+        run,
+        commit,
+      ),
+      buildEnvironmentArtifact: validateBoundArtifact(
+        expectedBuildEnvironmentArtifacts[0],
+        variant.buildEnvironmentArtifactName,
+        run,
+        commit,
+      ),
+    }
+  })
+
+  if (new Set(selections.map((selection) => selection.job.id)).size !== selections.length) {
+    throw new Error(`UE workflow run ${run.id} reused one job id across release variants.`)
+  }
+  const selectedArtifactIds = selections.flatMap((selection) => [
+    selection.artifact.id,
+    selection.buildEnvironmentArtifact.id,
+  ])
+  if (new Set(selectedArtifactIds).size !== selectedArtifactIds.length) {
+    throw new Error(`UE workflow run ${run.id} reused one artifact id across release variants.`)
   }
 
-  const artifact = validateBoundArtifact(
-    expectedArtifacts[0],
-    EXPECTED_ARTIFACT_NAME,
-    run,
-    commit,
-  )
-  const buildEnvironmentArtifact = validateBoundArtifact(
-    expectedBuildEnvironmentArtifacts[0],
-    EXPECTED_BUILD_ENVIRONMENT_ARTIFACT_NAME,
-    run,
-    commit,
-  )
+  return { run, variants: selections }
+}
 
-  return { artifact, buildEnvironmentArtifact, job: expectedJob, run }
+export async function downloadVerifiedArtifactSet({
+  directory,
+  fetchImpl = fetch,
+  repository,
+  selection,
+  token,
+}) {
+  if (!directory) throw new Error('A fresh artifact download directory is required.')
+  const destination = resolve(directory)
+  await assertPathDoesNotExist(destination)
+  await mkdir(destination, { recursive: false })
+  const results = []
+  try {
+    for (const selected of selection.variants) {
+      const packageOutputPath = join(destination, `trusted-package-${selected.variant.id}.zip`)
+      const buildEnvironmentOutputPath = join(
+        destination,
+        `trusted-build-environment-${selected.variant.id}.zip`,
+      )
+      const downloads = await downloadVerifiedArtifactPair({
+        buildEnvironmentArtifactId: selected.buildEnvironmentArtifact.id,
+        buildEnvironmentExpectedDigest: selected.buildEnvironmentArtifact.digest,
+        buildEnvironmentOutputPath,
+        fetchImpl,
+        packageArtifactId: selected.artifact.id,
+        packageExpectedDigest: selected.artifact.digest,
+        packageOutputPath,
+        repository,
+        token,
+      })
+      results.push({ variant: selected.variant, ...downloads })
+    }
+    return results
+  } catch (error) {
+    try {
+      await rm(destination, { force: true, recursive: true })
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Artifact set verification failed and cleanup was incomplete.',
+      )
+    }
+    throw error
+  }
 }
 
 export async function validateRun(
@@ -490,13 +619,15 @@ export function releaseCandidateOutputs(selection) {
     `ue_run_id=${selection.run.id}`,
     `ue_run_attempt=${selection.run.run_attempt}`,
     `ue_run_url=${selection.run.html_url}`,
-    `ue_job_id=${selection.job.id}`,
-    `ue_artifact_id=${selection.artifact.id}`,
-    `ue_artifact_digest=${selection.artifact.digest}`,
-    `ue_artifact_name=${selection.artifact.name}`,
-    `ue_build_environment_artifact_id=${selection.buildEnvironmentArtifact.id}`,
-    `ue_build_environment_artifact_digest=${selection.buildEnvironmentArtifact.digest}`,
-    `ue_build_environment_artifact_name=${selection.buildEnvironmentArtifact.name}`,
+    ...selection.variants.flatMap(({ artifact, buildEnvironmentArtifact, job, variant }) => [
+      `${variant.id}_job_id=${job.id}`,
+      `${variant.id}_artifact_id=${artifact.id}`,
+      `${variant.id}_artifact_digest=${artifact.digest}`,
+      `${variant.id}_artifact_name=${artifact.name}`,
+      `${variant.id}_build_environment_artifact_id=${buildEnvironmentArtifact.id}`,
+      `${variant.id}_build_environment_artifact_digest=${buildEnvironmentArtifact.digest}`,
+      `${variant.id}_build_environment_artifact_name=${buildEnvironmentArtifact.name}`,
+    ]),
   ]
 }
 
@@ -510,17 +641,22 @@ function writeOutputs(selection) {
   console.log(
     JSON.stringify(
       {
-        artifactId: selection.artifact.id,
-        artifactDigest: selection.artifact.digest,
-        artifactName: selection.artifact.name,
-        buildEnvironmentArtifactDigest: selection.buildEnvironmentArtifact.digest,
-        buildEnvironmentArtifactId: selection.buildEnvironmentArtifact.id,
-        buildEnvironmentArtifactName: selection.buildEnvironmentArtifact.name,
         commit: selection.run.head_sha,
-        jobId: selection.job.id,
         runId: selection.run.id,
         runAttempt: selection.run.run_attempt,
         runUrl: selection.run.html_url,
+        variants: selection.variants.map(
+          ({ artifact, buildEnvironmentArtifact, job, variant }) => ({
+            releaseVariant: variant.releaseVariant,
+            jobId: job.id,
+            artifactId: artifact.id,
+            artifactDigest: artifact.digest,
+            artifactName: artifact.name,
+            buildEnvironmentArtifactDigest: buildEnvironmentArtifact.digest,
+            buildEnvironmentArtifactId: buildEnvironmentArtifact.id,
+            buildEnvironmentArtifactName: buildEnvironmentArtifact.name,
+          }),
+        ),
       },
       null,
       2,
@@ -533,9 +669,7 @@ async function main() {
   const repository = argumentsMap.get('repository') ?? process.env.GITHUB_REPOSITORY ?? ''
   const commit = (argumentsMap.get('commit') ?? process.env.RELEASE_COMMIT ?? '').toLowerCase()
   const requestedRunId = argumentsMap.get('run-id') ?? ''
-  const archiveOutputPath = argumentsMap.get('download-to') ?? ''
-  const buildEnvironmentArchiveOutputPath =
-    argumentsMap.get('build-environment-download-to') ?? ''
+  const downloadDirectory = argumentsMap.get('download-directory') ?? ''
   const token = process.env.GITHUB_TOKEN ?? ''
 
   if (!/^[0-9a-f]{40}$/.test(commit)) {
@@ -544,13 +678,8 @@ async function main() {
   if (requestedRunId && !/^[1-9][0-9]*$/.test(requestedRunId)) {
     throw new Error(`Invalid workflow run id '${requestedRunId}'.`)
   }
-  if (!archiveOutputPath || !buildEnvironmentArchiveOutputPath) {
-    throw new Error(
-      'Both --download-to and --build-environment-download-to are required; release consumers must verify the package and build-environment archives together.',
-    )
-  }
-  if (resolve(archiveOutputPath) === resolve(buildEnvironmentArchiveOutputPath)) {
-    throw new Error('Package and build-environment artifact archives require distinct output paths.')
+  if (!downloadDirectory) {
+    throw new Error('--download-directory is required for the closed six-artifact set.')
   }
   if (!token) {
     throw new Error('GITHUB_TOKEN is required to verify UE workflow metadata and artifacts.')
@@ -595,22 +724,17 @@ async function main() {
     )
   }
 
-  const downloads = await downloadVerifiedArtifactPair({
-    buildEnvironmentArtifactId: selection.buildEnvironmentArtifact.id,
-    buildEnvironmentExpectedDigest: selection.buildEnvironmentArtifact.digest,
-    buildEnvironmentOutputPath: buildEnvironmentArchiveOutputPath,
-    packageArtifactId: selection.artifact.id,
-    packageExpectedDigest: selection.artifact.digest,
-    packageOutputPath: archiveOutputPath,
+  const downloads = await downloadVerifiedArtifactSet({
+    directory: downloadDirectory,
     repository,
+    selection,
     token,
   })
-  console.log(
-    `Verified ${downloads.package.sizeInBytes} package artifact bytes against ${downloads.package.digest} before writing ${downloads.package.path}.`,
-  )
-  console.log(
-    `Verified ${downloads.buildEnvironment.sizeInBytes} build-environment artifact bytes against ${downloads.buildEnvironment.digest} before writing ${downloads.buildEnvironment.path}.`,
-  )
+  for (const download of downloads) {
+    console.log(
+      `Verified ${download.variant.releaseVariant}: ${download.package.sizeInBytes} package bytes and ${download.buildEnvironment.sizeInBytes} build-environment bytes.`,
+    )
+  }
 
   writeOutputs(selection)
 }
