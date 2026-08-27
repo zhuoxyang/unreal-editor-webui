@@ -486,7 +486,7 @@ test('CLI default scan is repository-relative and empty directories fail closed'
       encoding: 'utf8',
     })
     assert.equal(defaultScan.status, 0, defaultScan.stderr)
-    assert.match(defaultScan.stdout, /Validated 19 .* across 3 workflow files/u)
+    assert.match(defaultScan.stdout, /Validated 20 .* across 3 workflow files/u)
 
     const emptyScan = spawnSync(process.execPath, [VALIDATOR_PATH, directory], { encoding: 'utf8' })
     assert.equal(emptyScan.status, 1)
@@ -500,7 +500,7 @@ test('the real repository scan accounts for every executable action reference', 
   const workflowsDirectory = fileURLToPath(new URL('../.github/workflows/', import.meta.url))
   const files = discoverWorkflowFiles(workflowsDirectory)
   const expectedCounts = new Map([
-    ['ci.yml', 8],
+    ['ci.yml', 9],
     ['release-candidate.yml', 3],
     ['ue-ci.yml', 8],
   ])
@@ -516,5 +516,5 @@ test('the real repository scan accounts for every executable action reference', 
     externalReferences += result.counts.external
   }
 
-  assert.equal(externalReferences, 19)
+  assert.equal(externalReferences, 20)
 })
