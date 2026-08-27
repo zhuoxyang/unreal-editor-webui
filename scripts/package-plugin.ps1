@@ -43,6 +43,24 @@ function Get-ExistingVolumeIdentity {
     }
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $Stream = [System.IO.File]::OpenRead($LiteralPath)
+    try {
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return [System.BitConverter]::ToString($Hasher.ComputeHash($Stream)).Replace("-", "")
+        }
+        finally {
+            $Hasher.Dispose()
+        }
+    }
+    finally {
+        $Stream.Dispose()
+    }
+}
+
 if ($SourceCommit.Length -ne 40 -or $SourceCommit -notmatch "\A[0-9a-fA-F]{40}\z") {
     throw "SourceCommit must be a full 40-character Git commit SHA."
 }
@@ -141,7 +159,7 @@ try {
     if (-not (Test-Path -LiteralPath $PackagedLicense -PathType Leaf)) {
         throw "Packaged plugin license missing: $PackagedLicense"
     }
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $PackagedLicense).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PluginStage "LICENSE")).Hash) {
+    if ((Get-Sha256Hex -LiteralPath $PackagedLicense) -ne (Get-Sha256Hex -LiteralPath (Join-Path $PluginStage "LICENSE"))) {
         throw "Packaged plugin license does not match the selected commit."
     }
 

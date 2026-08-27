@@ -85,6 +85,9 @@ def parse_response(response_json):
 class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.registry, self.unreal = load_registry()
+        self.registration_scope = self.registry._registration_context("test")
+        self.registration_scope.__enter__()
+        self.addCleanup(self.registration_scope.__exit__, None, None, None)
 
     def test_read_command_executes_without_permission_policy(self):
         response = parse_response(
@@ -231,6 +234,15 @@ class RegistryTests(unittest.TestCase):
     def test_duplicate_command_registration_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "already registered"):
             self.registry.command("system.ping")
+
+    def test_deferred_decorator_cannot_escape_its_registration_context(self):
+        with self.registry._registration_context("temporary"):
+            deferred = self.registry.command("test.deferred")
+
+        with self.assertRaisesRegex(RuntimeError, "outside its registration context"):
+            deferred(lambda payload: payload)
+
+        self.assertNotIn("test.deferred", self.registry.COMMANDS)
 
     def test_unknown_schema_type_is_rejected_during_registration(self):
         with self.assertRaisesRegex(ValueError, "unsupported type"):
@@ -513,6 +525,10 @@ class RegistryTests(unittest.TestCase):
         response = parse_response(self.registry.execute_command(request("system.commands")))
 
         self.assertTrue(response["ok"])
+        self.assertEqual(
+            set(response["result"]),
+            {"metadataVersion", "commands", "loadErrors"},
+        )
         self.assertEqual(response["result"]["metadataVersion"], self.registry.METADATA_VERSION)
         self.assertEqual(response["result"]["loadErrors"], [])
         commands = {command["name"]: command for command in response["result"]["commands"]}
@@ -534,6 +550,26 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(rename_batch["icon"], "edit-3")
         self.assertEqual(rename_batch["resultType"], "changeSet")
         self.assertIn("asset", rename_batch["tags"])
+
+    def test_tool_pack_status_is_a_separate_empty_versioned_catalogue(self):
+        response = parse_response(
+            self.registry.execute_command(request("system.toolPacks"))
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            response["result"],
+            {
+                "statusVersion": self.registry.TOOL_PACK_STATUS_VERSION,
+                "coreApiVersion": self.registry.SDK_API_VERSION,
+                "packs": [],
+                "truncatedCount": 0,
+            },
+        )
+        self.assertEqual(
+            self.registry.COMMAND_OWNERS["system.toolPacks"],
+            "core",
+        )
 
     def test_command_module_load_errors_are_reported_without_clearing_healthy_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1044,18 +1080,24 @@ class RegistryTests(unittest.TestCase):
         )
 
     def test_handler_exception_hides_traceback_from_response(self):
+        private_error = r"SENSITIVE_HANDLER_DETAIL E:\private\secret.txt"
+
         @self.registry.command("test.raise")
         def raise_error(payload):
-            raise RuntimeError("boom")
+            raise RuntimeError(private_error)
 
         response = parse_response(self.registry.execute_command(request("test.raise")))
 
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["code"], "handler_exception")
-        self.assertEqual(response["error"]["message"], "boom")
+        self.assertEqual(
+            response["error"]["message"],
+            "Command failed unexpectedly; see the Unreal Log.",
+        )
+        self.assertNotIn(private_error, json.dumps(response))
         self.assertNotIn("traceback", response["error"])
         self.assertEqual(len(self.unreal.error_logs), 1)
-        self.assertIn("RuntimeError: boom", self.unreal.error_logs[0])
+        self.assertIn(f"RuntimeError: {private_error}", self.unreal.error_logs[0])
 
 
 class BridgeEntryTests(unittest.TestCase):

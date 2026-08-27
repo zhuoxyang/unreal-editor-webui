@@ -1,0 +1,17 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Level Tools Fixture",
+  "Description": "Second content-only Tool Pack fixture for multi-pack validation.",
+  "Category": "Testing",
+  "CanContainContent": true,
+  "NoCode": true,
+  "Installed": false,
+  "Plugins": [
+    {
+      "Name": "UnrealEditorWebUI",
+      "Enabled": true
+    }
+  ]
+}

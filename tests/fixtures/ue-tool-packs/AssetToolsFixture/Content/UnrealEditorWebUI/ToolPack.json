@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "com.openai.fixture.asset-tools",
+  "requiredCoreApi": 1,
+  "pythonPackage": "ue_webui_asset_tools_fixture",
+  "commandNamespace": "fixture.asset"
+}

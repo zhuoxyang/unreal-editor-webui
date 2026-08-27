@@ -4,7 +4,7 @@ from typing import Any
 
 import unreal
 
-from unreal_editor_webui_registry import command
+from unreal_editor_webui_sdk import command
 
 
 def _asset_to_dict(asset: Any) -> dict[str, str]:

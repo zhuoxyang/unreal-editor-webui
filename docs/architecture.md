@@ -13,6 +13,8 @@ flowchart LR
     E --> F["Python command registry<br/>unreal_editor_webui_registry"]
     F --> G["Trusted command modules"]
     G --> H["Unreal Editor Python API"]
+    M["Enabled Tool Pack plugins<br/>fixed manifest + Content/Python"] --> N["Tool Pack discovery and loader"]
+    N --> F
     D --> I["Task store and cooperative ticker"]
     I --> J["SWebBrowser::ExecuteJavascript"]
     J --> K["window CustomEvent<br/>unreal-editor-webui"]
@@ -26,7 +28,9 @@ flowchart LR
 - `Source/UnrealEditorWebUI/Private/UnrealEditorWebUIModule.cpp` creates the dock tab, owns `SWebBrowser`, binds the bridge object as `window.ue.editorwebui`, dispatches task events back into the page, and blocks unsafe navigations.
 - `Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp` implements bridge methods, request preflight, native confirmation for privileged commands, task lifecycle storage, cancellation, timeout handling, settings reads/writes, and the bounded read-only project catalog transport.
 - `Python/unreal_editor_webui_bridge_entry.py` is the C++ to Python entry point. C++ evaluates a short import/dispatch expression with base64 arguments and receives JSON in memory through `ExecPythonCommandEx`.
-- `Python/unreal_editor_webui_registry.py` registers trusted commands, exposes `system.commands`, applies schema defaults, validates payloads, checks permission policy, and dispatches handlers.
+- `Python/unreal_editor_webui_sdk` is the stable decorator and structured-error API imported by built-in and third-party commands.
+- `Python/unreal_editor_webui_toolpacks.py` discovers enabled and mounted Unreal plugins with a fixed schema-v1 manifest under `Content/UnrealEditorWebUI/ToolPack.json`.
+- `Python/unreal_editor_webui_registry.py` registers trusted commands, atomically loads each Tool Pack, exposes `system.commands` plus the bounded `system.toolPacks` provider-status view, applies schema defaults, validates payloads, checks permission policy, and dispatches handlers.
 - `frontend/src/` is the React tool rack. It discovers commands from `system.commands`, strictly decodes either the fixed project catalog or the bundled starter, renders schema-driven forms, persists reconciled project-scoped preferences only after both native contexts resolve, shows task state, and renders structured results.
 
 ## Request Flow
@@ -76,6 +80,13 @@ rejected file also falls back but disables automatic preference rewrites until a
 loaded, preventing a transient configuration error from destroying project-specific selections.
 Catalog contents organize already trusted registry metadata and never grant command permissions.
 
+Third-party Tool Packs are also trusted code, not a Python sandbox. Discovery accepts no arbitrary
+path from a manifest and verifies the package under the enabled plugin's canonical
+`Content/Python` root. Registration state and newly imported modules are rolled back when a pack
+fails, but Unreal, filesystem, thread, network, or process side effects performed during import
+cannot be undone. Enabling a Tool Pack is therefore a code-trust decision. See
+[Third-Party Tool Packs](tool-packs.md) for the extension contract and conflict rules.
+
 Runtime health uses a separate no-argument `getwebuihealth()` method. Native code classifies the
 validated document session into `packaged`, `loopback_http`, `loopback_https`, or `inactive` and
 stores only that category, never the URL or authority. Its closed response contains only public,
@@ -94,7 +105,7 @@ The native bridge rejects command requests above 256 Ki characters, settings abo
 
 Local and CI validation entry points:
 
-- `python -m unittest tests.test_registry` covers the registry and Python entry dispatch.
+- `python -m unittest discover -s tests -v` covers the registry, Tool Pack discovery/isolation, and Python entry dispatch. The Node test suite covers host-project and Tool Pack scaffolding contracts.
 - `npm run lint`, `npm test`, and `npm run build` cover the React frontend.
 - Root `npm ci`, `node --test tests/validate-github-action-references.test.mjs`, and `node scripts/validate-github-action-references.mjs` validate every executable workflow action reference through a YAML 1.2 AST and require immutable external commit SHAs.
 - `scripts/package-plugin.ps1` and `scripts/package-plugin.sh` use the shared exact-commit staging helper to rebuild the frontend, emit a pre-UBT source manifest, and run UE `BuildPlugin` without consuming dirty or untracked working-tree files.

@@ -9,18 +9,33 @@ import pkgutil
 import re
 import sys
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
+from heapq import nsmallest
+from importlib import util as importlib_util
+from importlib.machinery import PathFinder
+from pathlib import Path
 from types import GeneratorType
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import unreal
+
+from unreal_editor_webui_sdk import CommandExecutionError, SDK_API_VERSION
+from unreal_editor_webui_toolpacks import (
+    COMMAND_NAME_PATTERN,
+    MAX_COMMAND_NAME_LENGTH,
+    ToolPackDescriptor,
+    discover_tool_packs,
+)
 
 CommandHandler = Callable[[dict[str, Any]], Any]
 COMMANDS: dict[str, CommandHandler] = {}
 COMMAND_METADATA: dict[str, dict[str, Any]] = {}
+COMMAND_OWNERS: dict[str, str] = {}
 COMMAND_LOAD_ERRORS: list[dict[str, str]] = []
 COOPERATIVE_JOBS: dict[str, "CooperativeJob"] = {}
 METADATA_VERSION = 1
+TOOL_PACK_STATUS_VERSION = 1
 SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean"}
 MAX_COMMAND_SCHEMA_DEPTH = 16
@@ -41,6 +56,34 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 10_000
 MAX_COOPERATIVE_JOBS = 64
+MAX_COMMAND_COUNT = 256
+MAX_COMMAND_METADATA_BYTES = 256 * 1024
+MAX_COMMAND_CATALOG_BYTES = 3 * 1024 * 1024
+MAX_TOOL_PACK_MODULE_COUNT = 256
+MAX_COMMAND_LOAD_ERRORS = 128
+MAX_TOOL_PACK_STATUS_COUNT = MAX_COMMAND_COUNT + MAX_COMMAND_LOAD_ERRORS
+MAX_TOOL_PACK_DESCRIPTOR_COUNT = MAX_TOOL_PACK_STATUS_COUNT
+MAX_TOOL_PACK_DISCOVERY_ERROR_COUNT = MAX_TOOL_PACK_STATUS_COUNT
+MAX_TOOL_PACK_TRUNCATED_COUNT = 2_147_483_647
+GENERIC_HANDLER_ERROR_MESSAGE = "Command failed unexpectedly; see the Unreal Log."
+COMMAND_METADATA_KEYS = {
+    "metadataVersion",
+    "name",
+    "description",
+    "permission",
+    "schema",
+    "supportsDryRun",
+    "category",
+    "icon",
+    "tags",
+    "order",
+    "supportedAssetTypes",
+    "ui",
+    "resultType",
+    "warnings",
+    "execution",
+}
+COMMAND_EXECUTION_KEYS = {"thread", "cancellationMode", "timeoutPolicy"}
 STRICT_DECIMAL_PATTERN = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
 DEFAULT_PERMISSION_POLICY = {
     "allowedCommand": "",
@@ -48,21 +91,85 @@ DEFAULT_PERMISSION_POLICY = {
 }
 
 
-class CommandExecutionError(RuntimeError):
-    """A command failure that can be returned as a stable, structured envelope."""
+@dataclass(frozen=True)
+class _CommandRegistrationContext:
+    owner: str
+    command_namespace: str | None = None
 
-    def __init__(
+
+class _ToolPackLoadError(ValueError):
+    def __init__(self, public_error: str) -> None:
+        super().__init__(public_error)
+        self.public_error = public_error
+
+
+@dataclass(frozen=True)
+class _ToolPackImportTarget:
+    module_name: str
+    source_path: Path
+    package_directory: Path | None = None
+
+
+@dataclass(frozen=True)
+class _LoadedToolPackFingerprint:
+    plugin_name: str
+    plugin_version: str
+    pack_id: str
+    required_core_api: int
+    python_package: str
+    top_level_python_package: str
+    command_namespace: str
+    python_root_key: str
+
+
+class _ToolPackImportGuard:
+    def __init__(self, top_level_package: str, targets: list[_ToolPackImportTarget]) -> None:
+        self._top_level_package = top_level_package
+        self._targets = {target.module_name: target for target in targets}
+
+    def find_spec(
         self,
-        code: str,
-        message: str,
-        *,
-        details: list[str] | None = None,
-        data: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.details = details
-        self.data = data
+        fullname: str,
+        path: Any = None,
+        target: Any = None,
+    ) -> Any:
+        del path, target
+        if (
+            fullname != self._top_level_package
+            and not fullname.startswith(f"{self._top_level_package}.")
+        ):
+            return None
+        import_target = self._targets.get(fullname)
+        if import_target is None:
+            raise ImportError("Tool Pack attempted to import a module outside its fixed allowlist.")
+        submodule_locations = (
+            [str(import_target.package_directory)]
+            if import_target.package_directory is not None
+            else None
+        )
+        spec = importlib_util.spec_from_file_location(
+            fullname,
+            str(import_target.source_path),
+            submodule_search_locations=submodule_locations,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("Tool Pack allowlisted module could not create an exact file loader.")
+        return spec
+
+
+_ACTIVE_REGISTRATION_CONTEXT: _CommandRegistrationContext | None = None
+_LOADED_TOOL_PACK_IDS: set[str] = set()
+_LOADED_TOOL_PACK_FINGERPRINTS: dict[str, _LoadedToolPackFingerprint] = {}
+_TOOL_PACK_PYTHON_ROOTS: list[str] = []
+_TOOL_PACK_STATUSES: list[dict[str, Any]] = []
+_TOOL_PACK_STATUS_META = {"truncatedCount": 0}
+
+
+_PUBLIC_TOOL_PACK_ID_PATTERN = re.compile(
+    r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+\Z"
+)
+_PUBLIC_TOOL_PACK_LABEL_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
+_MAX_PUBLIC_TOOL_PACK_LABEL_LENGTH = 128
 
 
 def _command_error_extra(error: CommandExecutionError) -> dict[str, Any]:
@@ -72,6 +179,161 @@ def _command_error_extra(error: CommandExecutionError) -> dict[str, Any]:
     if error.data is not None:
         extra["data"] = error.data
     return extra
+
+
+def _append_command_load_error(module: str, error: str) -> None:
+    if len(COMMAND_LOAD_ERRORS) >= MAX_COMMAND_LOAD_ERRORS:
+        return
+    normalized_module = module.strip() if isinstance(module, str) else ""
+    normalized_error = error.strip() if isinstance(error, str) else ""
+    if not normalized_module or not normalized_error:
+        return
+    COMMAND_LOAD_ERRORS.append(
+        {
+            "module": normalized_module[:144],
+            "error": normalized_error[:512],
+        }
+    )
+
+
+def _public_tool_pack_label(value: Any, fallback: str = "unknown") -> str:
+    text = str(value).strip() if value is not None else ""
+    text = _PUBLIC_TOOL_PACK_LABEL_PATTERN.sub("-", text).strip("-.")
+    return text[:_MAX_PUBLIC_TOOL_PACK_LABEL_LENGTH] or fallback
+
+
+def _public_tool_pack_id(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > _MAX_PUBLIC_TOOL_PACK_LABEL_LENGTH
+        or _PUBLIC_TOOL_PACK_ID_PATTERN.fullmatch(normalized) is None
+    ):
+        return None
+    return normalized
+
+
+def _tool_pack_status_record(
+    descriptor: ToolPackDescriptor,
+    state: str,
+    commands: list[str] | None = None,
+) -> dict[str, Any]:
+    pack_id = _public_tool_pack_id(descriptor.pack_id)
+    required_core_api = descriptor.required_core_api
+    if (
+        isinstance(required_core_api, bool)
+        or not isinstance(required_core_api, int)
+        or required_core_api <= 0
+    ):
+        required_core_api = None
+    owned_commands = (
+        sorted(set(commands or []))[:MAX_COMMAND_COUNT]
+        if state == "loaded"
+        else []
+    )
+    return {
+        "provider": pack_id,
+        "packId": pack_id,
+        "pluginName": _public_tool_pack_label(descriptor.plugin_name),
+        "pluginVersion": _public_tool_pack_label(descriptor.plugin_version),
+        "requiredCoreApi": required_core_api,
+        "state": "loaded" if state == "loaded" else "rejected",
+        "commandCount": len(owned_commands),
+        "commands": owned_commands,
+    }
+
+
+def _tool_pack_discovery_error_status(diagnostic: Any) -> dict[str, Any] | None:
+    if not isinstance(diagnostic, dict):
+        return None
+    module = diagnostic.get("module")
+    if not isinstance(module, str) or not module.startswith("plugin:"):
+        return None
+    plugin_label = module[len("plugin:") :]
+    if not plugin_label or plugin_label == "discovery":
+        return None
+    return {
+        "provider": None,
+        "packId": None,
+        "pluginName": _public_tool_pack_label(plugin_label),
+        "pluginVersion": None,
+        "requiredCoreApi": None,
+        "state": "rejected",
+        "commandCount": 0,
+        "commands": [],
+    }
+
+
+def _tool_pack_status_sort_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    pack_id = record.get("packId")
+    plugin_name = str(record.get("pluginName", ""))
+    return (
+        pack_id is None,
+        str(pack_id or "").casefold(),
+        plugin_name.casefold(),
+        plugin_name,
+    )
+
+
+def _publish_tool_pack_statuses(
+    records: list[dict[str, Any]],
+    omitted_count: int = 0,
+) -> None:
+    by_plugin: dict[str, dict[str, Any]] = {
+        str(record.get("pluginName", "")).casefold(): copy.deepcopy(record)
+        for record in _TOOL_PACK_STATUSES
+        if isinstance(record, dict) and str(record.get("pluginName", "")).strip()
+    }
+    for record in records:
+        plugin_name = str(record.get("pluginName", "")).strip()
+        if plugin_name:
+            plugin_key = plugin_name.casefold()
+            existing = by_plugin.get(plugin_key)
+            if (
+                isinstance(existing, dict)
+                and existing.get("state") == "loaded"
+                and record.get("state") != "loaded"
+            ):
+                continue
+            by_plugin[plugin_key] = copy.deepcopy(record)
+
+    loaded = sorted(
+        (record for record in by_plugin.values() if record.get("state") == "loaded"),
+        key=_tool_pack_status_sort_key,
+    )
+    rejected = sorted(
+        (record for record in by_plugin.values() if record.get("state") != "loaded"),
+        key=_tool_pack_status_sort_key,
+    )
+    visible = loaded[:MAX_TOOL_PACK_STATUS_COUNT]
+    remaining = max(0, MAX_TOOL_PACK_STATUS_COUNT - len(visible))
+    visible.extend(rejected[:remaining])
+    visible.sort(key=_tool_pack_status_sort_key)
+
+    _TOOL_PACK_STATUSES[:] = visible
+    # Hidden records are deliberately not retained. This bounded counter is the
+    # saturating cumulative number of status observations omitted across
+    # publications, rather than a count of distinct providers currently hidden.
+    omitted_observations = max(0, int(omitted_count)) + max(
+        0,
+        len(loaded) + len(rejected) - len(visible),
+    )
+    _TOOL_PACK_STATUS_META["truncatedCount"] = min(
+        MAX_TOOL_PACK_TRUNCATED_COUNT,
+        max(0, int(_TOOL_PACK_STATUS_META.get("truncatedCount", 0)))
+        + omitted_observations,
+    )
+
+
+def _get_tool_pack_status() -> dict[str, Any]:
+    return {
+        "statusVersion": TOOL_PACK_STATUS_VERSION,
+        "coreApiVersion": SDK_API_VERSION,
+        "packs": copy.deepcopy(_TOOL_PACK_STATUSES),
+        "truncatedCount": int(_TOOL_PACK_STATUS_META["truncatedCount"]),
+    }
 
 
 class ProtocolValidationError(ValueError):
@@ -162,6 +424,139 @@ def _validated_request_id(request: dict[str, Any]) -> str | None:
     return request_id
 
 
+@contextmanager
+def _registration_context(
+    owner: str,
+    command_namespace: str | None = None,
+) -> Iterator[None]:
+    global _ACTIVE_REGISTRATION_CONTEXT
+
+    previous = _ACTIVE_REGISTRATION_CONTEXT
+    _ACTIVE_REGISTRATION_CONTEXT = _CommandRegistrationContext(
+        owner=owner,
+        command_namespace=command_namespace,
+    )
+    try:
+        yield
+    finally:
+        _ACTIVE_REGISTRATION_CONTEXT = previous
+
+
+def _normalize_json_metadata(value: Any, field_name: str) -> Any:
+    node_count = 0
+    active_containers: set[int] = set()
+
+    def normalize(current: Any, depth: int) -> Any:
+        nonlocal node_count
+
+        node_count += 1
+        if node_count > MAX_JSON_NODES:
+            raise ValueError(
+                f'Command metadata field "{field_name}" contains more than {MAX_JSON_NODES} JSON nodes.'
+            )
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError(
+                f'Command metadata field "{field_name}" exceeds the maximum JSON depth of {MAX_JSON_DEPTH}.'
+            )
+        if current is None or isinstance(current, (str, bool, int)):
+            return current
+        if isinstance(current, float):
+            if not math.isfinite(current):
+                raise ValueError(
+                    f'Command metadata field "{field_name}" must contain only finite JSON numbers '
+                    "(finite number values only)."
+                )
+            return current
+        if not isinstance(current, (list, dict)):
+            raise ValueError(
+                f'Command metadata field "{field_name}" must contain only JSON-compatible values.'
+            )
+
+        container_id = id(current)
+        if container_id in active_containers:
+            raise ValueError(f'Command metadata field "{field_name}" must not contain a cycle.')
+        active_containers.add(container_id)
+        try:
+            if isinstance(current, list):
+                return [normalize(item, depth + 1) for item in current]
+            if any(not isinstance(key, str) for key in current):
+                raise ValueError(
+                    f'Command metadata field "{field_name}" must contain only string JSON object keys.'
+                )
+            return {
+                str(key): normalize(item, depth + 1)
+                for key, item in current.items()
+            }
+        finally:
+            active_containers.remove(container_id)
+
+    return normalize(value, 0)
+
+
+def _normalize_metadata_string_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f'Command metadata field "{field_name}" must be an array of strings.')
+    return [str(item) for item in value]
+
+
+def _validate_command_catalog_capacity(
+    command_name: str,
+    metadata: dict[str, Any],
+) -> None:
+    try:
+        metadata_json = json.dumps(metadata, ensure_ascii=False, allow_nan=False)
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f'Command "{command_name}" metadata must be JSON-serializable.'
+        ) from exc
+    metadata_bytes = len(metadata_json.encode("utf-8"))
+    if metadata_bytes > MAX_COMMAND_METADATA_BYTES:
+        raise ValueError(
+            f'Command "{command_name}" metadata exceeds the {MAX_COMMAND_METADATA_BYTES}-byte limit.'
+        )
+
+    if command_name not in COMMAND_METADATA and len(COMMAND_METADATA) >= MAX_COMMAND_COUNT:
+        raise ValueError(f"Command registry exceeds the {MAX_COMMAND_COUNT}-command limit.")
+
+    projected_metadata = dict(COMMAND_METADATA)
+    projected_metadata[command_name] = metadata
+    projected_catalog = {
+        "metadataVersion": METADATA_VERSION,
+        "commands": [projected_metadata[name] for name in sorted(projected_metadata)],
+        "loadErrors": [],
+    }
+    try:
+        projected_json = json.dumps(
+            projected_catalog,
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ValueError("Existing command metadata is not JSON-serializable.") from exc
+    projected_bytes = len(projected_json.encode("utf-8"))
+    if projected_bytes > MAX_COMMAND_CATALOG_BYTES:
+        raise ValueError(
+            f"Command catalogue exceeds the {MAX_COMMAND_CATALOG_BYTES}-byte metadata budget."
+        )
+
+
+def _validate_command_name(name: Any) -> str:
+    if (
+        not isinstance(name, str)
+        or not name
+        or len(name) > MAX_COMMAND_NAME_LENGTH
+        or COMMAND_NAME_PATTERN.fullmatch(name) is None
+    ):
+        raise ValueError(
+            "Command name must be a dotted ASCII identifier no longer than "
+            f"{MAX_COMMAND_NAME_LENGTH} characters; each segment must start with a "
+            "lowercase letter and contain only letters, digits, or underscores."
+        )
+    return name
+
+
 def command(
     name: str,
     *,
@@ -183,19 +578,29 @@ def command(
 ) -> Callable[[CommandHandler], CommandHandler]:
     """Register a Python command that can be called from the editor Web UI."""
 
-    normalized_name = name.strip() if isinstance(name, str) else ""
+    normalized_name = _validate_command_name(name)
     normalized_permission = permission.lower().strip() if isinstance(permission, str) else ""
     normalized_execution_thread = execution_thread.lower().strip() if isinstance(execution_thread, str) else ""
     normalized_cancellation_mode = cancellation_mode.lower().strip() if isinstance(cancellation_mode, str) else ""
     normalized_timeout_policy = timeout_policy.lower().strip() if isinstance(timeout_policy, str) else ""
-    normalized_schema = (
-        copy.deepcopy(schema)
-        if schema is not None
-        else {"type": "object", "properties": {}}
+    registration_context = _ACTIVE_REGISTRATION_CONTEXT
+    if registration_context is None:
+        raise RuntimeError(
+            "Command registration is closed outside an explicit Unreal Editor WebUI load context."
+        )
+    normalized_schema = _normalize_json_metadata(
+        schema if schema is not None else {"type": "object", "properties": {}},
+        "schema",
     )
 
-    if not normalized_name:
-        raise ValueError("Command name must be a non-empty string.")
+    if (
+        registration_context.command_namespace is not None
+        and not normalized_name.startswith(f"{registration_context.command_namespace}.")
+    ):
+        raise _ToolPackLoadError(
+            f'Tool Pack command must use namespace "{registration_context.command_namespace}."; '
+            "the package was not loaded."
+        )
     if normalized_permission not in SUPPORTED_PERMISSIONS:
         raise ValueError(
             f'Command "{normalized_name}" uses unsupported permission "{permission}". '
@@ -211,32 +616,79 @@ def command(
     )
     _validate_command_schema(normalized_name, normalized_schema)
 
+    if not isinstance(description, str):
+        raise ValueError("Command metadata field \"description\" must be a string.")
+    if not isinstance(supports_dry_run, bool):
+        raise ValueError("Command metadata field \"supportsDryRun\" must be a boolean.")
+    if not isinstance(category, str):
+        raise ValueError("Command metadata field \"category\" must be a string.")
+    if not isinstance(icon, str):
+        raise ValueError("Command metadata field \"icon\" must be a string.")
+    if not isinstance(order, int) or isinstance(order, bool):
+        raise ValueError("Command metadata field \"order\" must be an integer.")
+    if not isinstance(result_type, str):
+        raise ValueError("Command metadata field \"resultType\" must be a string.")
+
+    normalized_tags = _normalize_metadata_string_list(tags, "tags")
+    normalized_asset_types = _normalize_metadata_string_list(
+        supported_asset_types,
+        "supportedAssetTypes",
+    )
+    normalized_warnings = _normalize_metadata_string_list(warnings, "warnings")
+    normalized_ui = _normalize_json_metadata(ui if ui is not None else {}, "ui")
+    if not isinstance(normalized_ui, dict):
+        raise ValueError("Command metadata field \"ui\" must be an object.")
+
+    normalized_metadata = {
+        "metadataVersion": METADATA_VERSION,
+        "name": normalized_name,
+        "description": str(description),
+        "permission": normalized_permission,
+        "schema": normalized_schema,
+        "supportsDryRun": supports_dry_run,
+        "category": str(category),
+        "icon": str(icon),
+        "tags": normalized_tags,
+        "order": order,
+        "supportedAssetTypes": normalized_asset_types,
+        "ui": normalized_ui,
+        "resultType": str(result_type),
+        "warnings": normalized_warnings,
+        "execution": {
+            "thread": normalized_execution_thread,
+            "cancellationMode": normalized_cancellation_mode,
+            "timeoutPolicy": normalized_timeout_policy,
+        },
+    }
+
     def decorator(handler: CommandHandler) -> CommandHandler:
+        if _ACTIVE_REGISTRATION_CONTEXT is not registration_context:
+            raise RuntimeError(
+                f'Command "{normalized_name}" decorator was applied outside its registration context.'
+            )
+        if not callable(handler):
+            raise ValueError(f'Command "{normalized_name}" handler must be callable.')
+        if normalized_name in COMMANDS:
+            raise ValueError(f'Command "{normalized_name}" is already registered.')
+        _validate_command_catalog_capacity(normalized_name, normalized_metadata)
         COMMANDS[normalized_name] = handler
-        COMMAND_METADATA[normalized_name] = {
-            "metadataVersion": METADATA_VERSION,
-            "name": normalized_name,
-            "description": description,
-            "permission": normalized_permission,
-            "schema": normalized_schema,
-            "supportsDryRun": supports_dry_run,
-            "category": category,
-            "icon": icon,
-            "tags": tags or [],
-            "order": order,
-            "supportedAssetTypes": supported_asset_types or [],
-            "ui": ui or {},
-            "resultType": result_type,
-            "warnings": warnings or [],
-            "execution": {
-                "thread": normalized_execution_thread,
-                "cancellationMode": normalized_cancellation_mode,
-                "timeoutPolicy": normalized_timeout_policy,
-            },
-        }
+        COMMAND_OWNERS[normalized_name] = registration_context.owner
+        COMMAND_METADATA[normalized_name] = normalized_metadata
         return handler
 
     return decorator
+
+
+def _sdk_command(
+    name: str,
+    **metadata: Any,
+) -> Callable[[CommandHandler], CommandHandler]:
+    if _ACTIVE_REGISTRATION_CONTEXT is None:
+        raise RuntimeError(
+            "Unreal Editor WebUI SDK commands may only register while the core is loading "
+            "built-in modules or an enabled Tool Pack."
+        )
+    return command(name, **metadata)
 
 
 def _validate_execution_metadata(
@@ -293,9 +745,76 @@ def _validate_execution_metadata(
         )
 
 
+def _normalize_registered_command_metadata(
+    command_name: str,
+    metadata: Any,
+) -> dict[str, Any]:
+    normalized = _normalize_json_metadata(metadata, f'command "{command_name}"')
+    if not isinstance(normalized, dict) or set(normalized) != COMMAND_METADATA_KEYS:
+        raise ValueError(f'Command "{command_name}" metadata does not match schema v1.')
+    if normalized["metadataVersion"] != METADATA_VERSION or isinstance(
+        normalized["metadataVersion"],
+        bool,
+    ):
+        raise ValueError(f'Command "{command_name}" metadataVersion is invalid.')
+    if normalized["name"] != command_name:
+        raise ValueError(f'Command "{command_name}" metadata name does not match its registry key.')
+
+    for field_name in ("description", "category", "icon", "resultType"):
+        if not isinstance(normalized[field_name], str):
+            raise ValueError(f'Command "{command_name}" metadata field "{field_name}" must be a string.')
+    if not isinstance(normalized["permission"], str) or normalized["permission"] not in SUPPORTED_PERMISSIONS:
+        raise ValueError(f'Command "{command_name}" metadata permission is invalid.')
+    if not isinstance(normalized["supportsDryRun"], bool):
+        raise ValueError(f'Command "{command_name}" metadata supportsDryRun must be a boolean.')
+    if not isinstance(normalized["order"], int) or isinstance(normalized["order"], bool):
+        raise ValueError(f'Command "{command_name}" metadata order must be an integer.')
+    for field_name in ("tags", "supportedAssetTypes", "warnings"):
+        _normalize_metadata_string_list(normalized[field_name], field_name)
+    if not isinstance(normalized["ui"], dict):
+        raise ValueError(f'Command "{command_name}" metadata ui must be an object.')
+    if not isinstance(normalized["schema"], dict):
+        raise ValueError(f'Command "{command_name}" metadata schema must be an object.')
+    _validate_command_schema(command_name, normalized["schema"])
+
+    execution = normalized["execution"]
+    if not isinstance(execution, dict) or set(execution) != COMMAND_EXECUTION_KEYS:
+        raise ValueError(f'Command "{command_name}" execution metadata is invalid.')
+    if any(not isinstance(execution[key], str) for key in COMMAND_EXECUTION_KEYS):
+        raise ValueError(f'Command "{command_name}" execution metadata must contain strings.')
+    _validate_execution_metadata(
+        command_name,
+        execution["thread"],
+        execution["cancellationMode"],
+        execution["timeoutPolicy"],
+    )
+    return normalized
+
+
+def _validate_tool_pack_registry_state(new_commands: list[str]) -> None:
+    command_names = set(COMMANDS)
+    if command_names != set(COMMAND_METADATA) or command_names != set(COMMAND_OWNERS):
+        raise ValueError("Tool Pack left inconsistent command registry mappings.")
+    if len(command_names) > MAX_COMMAND_COUNT:
+        raise ValueError(f"Command registry exceeds the {MAX_COMMAND_COUNT}-command limit.")
+
+    for command_name in new_commands:
+        _validate_command_name(command_name)
+        if not callable(COMMANDS[command_name]):
+            raise ValueError(f'Command "{command_name}" handler must be callable.')
+        COMMAND_METADATA[command_name] = _normalize_registered_command_metadata(
+            command_name,
+            COMMAND_METADATA[command_name],
+        )
+
+    for command_name in new_commands:
+        _validate_command_catalog_capacity(command_name, COMMAND_METADATA[command_name])
+
+
 def _import_command_module(module_name: str, package_name: str) -> Any:
     handlers_before = dict(COMMANDS)
     metadata_before = copy.deepcopy(COMMAND_METADATA)
+    owners_before = dict(COMMAND_OWNERS)
     modules_before = set(sys.modules)
     try:
         return importlib.import_module(module_name)
@@ -304,6 +823,8 @@ def _import_command_module(module_name: str, package_name: str) -> Any:
         COMMANDS.update(handlers_before)
         COMMAND_METADATA.clear()
         COMMAND_METADATA.update(metadata_before)
+        COMMAND_OWNERS.clear()
+        COMMAND_OWNERS.update(owners_before)
         for loaded_module in set(sys.modules).difference(modules_before):
             if loaded_module == package_name or loaded_module.startswith(f"{package_name}."):
                 sys.modules.pop(loaded_module, None)
@@ -311,26 +832,17 @@ def _import_command_module(module_name: str, package_name: str) -> Any:
 
 
 def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> None:
-    COMMAND_LOAD_ERRORS.clear()
-
     try:
         package = _import_command_module(package_name, package_name)
     except Exception as exc:
-        COMMAND_LOAD_ERRORS.append(
-            {
-                "module": package_name,
-                "error": str(exc),
-            }
-        )
+        _append_command_load_error(package_name, str(exc))
         return
 
     package_paths = getattr(package, "__path__", None)
     if package_paths is None:
-        COMMAND_LOAD_ERRORS.append(
-            {
-                "module": package_name,
-                "error": "Command package does not expose __path__.",
-            }
+        _append_command_load_error(
+            package_name,
+            "Command package does not expose __path__.",
         )
         return
 
@@ -339,12 +851,756 @@ def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> 
         try:
             _import_command_module(module_name, package_name)
         except Exception as exc:
-            COMMAND_LOAD_ERRORS.append(
-                {
-                    "module": module_name,
-                    "error": str(exc),
-                }
+            _append_command_load_error(module_name, str(exc))
+
+
+def _tool_pack_diagnostic(descriptor: ToolPackDescriptor, error: str) -> dict[str, str]:
+    return {
+        "module": f"toolpack:{descriptor.pack_id}"[:144],
+        "error": error[:512],
+    }
+
+
+def _path_key(value: str | Path) -> str:
+    try:
+        return str(Path(value).resolve(strict=False)).casefold()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return str(value).casefold()
+
+
+def _tool_pack_fingerprint(
+    descriptor: ToolPackDescriptor,
+    python_root: Path | None = None,
+) -> _LoadedToolPackFingerprint:
+    return _LoadedToolPackFingerprint(
+        plugin_name=descriptor.plugin_name,
+        plugin_version=descriptor.plugin_version,
+        pack_id=descriptor.pack_id,
+        required_core_api=descriptor.required_core_api,
+        python_package=descriptor.python_package,
+        top_level_python_package=descriptor.python_package.split(".", 1)[0].casefold(),
+        command_namespace=descriptor.command_namespace,
+        python_root_key=_path_key(python_root or descriptor.python_root),
+    )
+
+
+def _tool_pack_owned_commands(pack_id: str) -> list[str]:
+    return sorted(
+        command_name
+        for command_name, owner in COMMAND_OWNERS.items()
+        if owner == pack_id
+    )[:MAX_COMMAND_COUNT]
+
+
+def _tool_pack_namespaces_overlap(left: str, right: str) -> bool:
+    normalized_left = left.casefold()
+    normalized_right = right.casefold()
+    return (
+        normalized_left == normalized_right
+        or normalized_left.startswith(f"{normalized_right}.")
+        or normalized_right.startswith(f"{normalized_left}.")
+    )
+
+
+def _prepare_tool_pack_python_path(
+    python_root: Path,
+    *,
+    prioritize: bool = False,
+) -> tuple[list[str], str]:
+    root_text = str(python_root)
+    root_key = _path_key(root_text)
+    desired_path = [entry for entry in sys.path if _path_key(entry) != root_key]
+
+    if prioritize:
+        desired_path.insert(0, root_text)
+        return desired_path, root_text
+
+    core_root_key = _path_key(Path(__file__).parent)
+    insert_at = 0
+    for index, entry in enumerate(desired_path):
+        if _path_key(entry) == core_root_key:
+            insert_at = index + 1
+            break
+
+    loaded_root_keys = {_path_key(item) for item in _TOOL_PACK_PYTHON_ROOTS}
+    while insert_at < len(desired_path) and _path_key(desired_path[insert_at]) in loaded_root_keys:
+        insert_at += 1
+    desired_path.insert(insert_at, root_text)
+    return desired_path, root_text
+
+
+def _is_path_inside(parent: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_import_path(value: str, expected_root: Path) -> Path:
+    try:
+        resolved = Path(value).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError("Tool Pack import path is unavailable.") from exc
+    if not _is_path_inside(expected_root, resolved):
+        raise ValueError("Tool Pack import path resolved outside its enabled plugin.")
+    return resolved
+
+
+def _preflight_tool_pack_package_chain(
+    python_root: Path,
+    python_package: str,
+) -> tuple[Path, Path, list[_ToolPackImportTarget]]:
+    package_parts = python_package.split(".")
+    expected_directory = python_root
+    expected_init = python_root
+    targets: list[_ToolPackImportTarget] = []
+
+    for index, package_part in enumerate(package_parts):
+        expected_directory = expected_directory / package_part
+        try:
+            resolved_directory = expected_directory.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("Tool Pack Python package is unavailable.") from exc
+        if not resolved_directory.is_dir() or not _is_path_inside(python_root, resolved_directory):
+            raise ValueError("Tool Pack Python package resolved outside its enabled plugin.")
+
+        module_name = ".".join(package_parts[: index + 1])
+        try:
+            expected_init = (resolved_directory / "__init__.py").resolve(strict=True)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("Every Tool Pack package segment must contain __init__.py.") from exc
+        if (
+            not expected_init.is_file()
+            or expected_init.name != "__init__.py"
+            or expected_init.suffix != ".py"
+            or not _is_path_inside(python_root, expected_init)
+        ):
+            raise ValueError("Every Tool Pack package segment must contain an internal __init__.py.")
+        targets.append(
+            _ToolPackImportTarget(
+                module_name=module_name,
+                source_path=expected_init,
+                package_directory=resolved_directory,
             )
+        )
+
+    return expected_directory.resolve(strict=True), expected_init, targets
+
+
+def _reject_foreign_top_level_package(python_root: Path, python_package: str) -> None:
+    top_level_package = python_package.split(".", 1)[0]
+    if top_level_package in sys.builtin_module_names or top_level_package in getattr(
+        sys,
+        "stdlib_module_names",
+        (),
+    ):
+        raise ValueError("Tool Pack pythonPackage conflicts with a Python standard-library package.")
+
+    root_key = _path_key(python_root)
+    other_paths = [
+        entry
+        for entry in sys.path
+        if isinstance(entry, str) and _path_key(entry) != root_key
+    ]
+    if PathFinder.find_spec(top_level_package, other_paths) is not None:
+        raise ValueError("Tool Pack pythonPackage conflicts with another Python search root.")
+
+
+def _preflight_tool_pack_modules(
+    package_name: str,
+    package_directory: Path,
+) -> list[_ToolPackImportTarget]:
+    targets: dict[str, _ToolPackImportTarget] = {}
+    pending: list[tuple[Path, str]] = [(package_directory, f"{package_name}.")]
+    while pending:
+        current_directory, prefix = pending.pop()
+        try:
+            entries = sorted(
+                current_directory.iterdir(),
+                key=lambda item: (item.name.casefold(), item.name),
+            )
+        except OSError as exc:
+            raise ValueError("Tool Pack package directory could not be enumerated.") from exc
+        for entry in entries:
+            if entry.name == "__init__.py":
+                continue
+            if entry.is_file() and entry.suffix == ".py" and entry.stem.isidentifier():
+                module_name = f"{prefix}{entry.stem}"
+                source_path = _resolve_import_path(str(entry), package_directory)
+                targets[module_name] = _ToolPackImportTarget(
+                    module_name=module_name,
+                    source_path=source_path,
+                )
+            elif entry.is_dir() and entry.name.isidentifier():
+                init_candidate = entry / "__init__.py"
+                if not init_candidate.is_file():
+                    continue
+                resolved_child = _resolve_import_path(str(entry), package_directory)
+                expected_init = _resolve_import_path(str(init_candidate), package_directory)
+                module_name = f"{prefix}{entry.name}"
+                targets[module_name] = _ToolPackImportTarget(
+                    module_name=module_name,
+                    source_path=expected_init,
+                    package_directory=resolved_child,
+                )
+                pending.append((resolved_child, f"{module_name}."))
+
+            if len(targets) > MAX_TOOL_PACK_MODULE_COUNT:
+                raise ValueError(
+                    f"Tool Pack contains more than {MAX_TOOL_PACK_MODULE_COUNT} importable submodules."
+                )
+
+    return [targets[name] for name in sorted(targets)]
+
+
+def _validate_imported_package_path(package: Any, package_directory: Path) -> None:
+    package_paths = getattr(package, "__path__", None)
+    if package_paths is None:
+        raise ValueError("Tool Pack pythonPackage must expose __path__.")
+    try:
+        resolved_paths = {
+            Path(path).resolve(strict=True)
+            for path in package_paths
+        }
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError("Tool Pack package search path is unavailable.") from exc
+    if resolved_paths != {package_directory}:
+        raise ValueError("Tool Pack package search path escaped its fixed package directory.")
+
+
+def _validate_imported_module_origin(module: Any, expected_origin: Path) -> None:
+    module_file = getattr(module, "__file__", None)
+    if not isinstance(module_file, str):
+        raise ValueError("Tool Pack submodule has no filesystem import origin.")
+    try:
+        resolved_file = Path(module_file).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Tool Pack submodule import origin is unavailable.") from exc
+    if resolved_file != expected_origin:
+        raise ValueError("Tool Pack submodule did not use its allowlisted file origin.")
+
+
+def _validate_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> tuple[Path, Path]:
+    if descriptor.required_core_api != SDK_API_VERSION:
+        raise _ToolPackLoadError(
+            f"Tool Pack requires core API {descriptor.required_core_api}, but this core provides "
+            f"API {SDK_API_VERSION}; the package was not loaded."
+        )
+    if not descriptor.pack_id or not descriptor.python_package or not descriptor.command_namespace:
+        raise ValueError("Tool Pack descriptor is incomplete.")
+    try:
+        python_root = Path(descriptor.python_root).resolve(strict=True)
+        package_directory = python_root.joinpath(*descriptor.python_package.split(".")).resolve(strict=True)
+        package_directory.relative_to(python_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("Tool Pack Python package is unavailable.") from exc
+    if not python_root.is_dir() or not package_directory.is_dir() or not (package_directory / "__init__.py").is_file():
+        raise ValueError("Tool Pack pythonPackage must name a real package containing __init__.py.")
+    return python_root, package_directory
+
+
+def _restore_tool_pack_registry(
+    handlers_before: dict[str, CommandHandler],
+    metadata_before: dict[str, dict[str, Any]],
+    owners_before: dict[str, str],
+    load_errors_before: list[dict[str, str]],
+    loaded_ids_before: set[str],
+    loaded_fingerprints_before: dict[str, _LoadedToolPackFingerprint],
+    python_roots_before: list[str],
+    statuses_before: list[dict[str, Any]],
+    status_meta_before: dict[str, int],
+) -> None:
+    COMMANDS.clear()
+    COMMANDS.update(handlers_before)
+    COMMAND_METADATA.clear()
+    COMMAND_METADATA.update(metadata_before)
+    COMMAND_OWNERS.clear()
+    COMMAND_OWNERS.update(owners_before)
+    COMMAND_LOAD_ERRORS.clear()
+    COMMAND_LOAD_ERRORS.extend(load_errors_before)
+    _LOADED_TOOL_PACK_IDS.clear()
+    _LOADED_TOOL_PACK_IDS.update(loaded_ids_before)
+    _LOADED_TOOL_PACK_FINGERPRINTS.clear()
+    _LOADED_TOOL_PACK_FINGERPRINTS.update(loaded_fingerprints_before)
+    _TOOL_PACK_PYTHON_ROOTS[:] = python_roots_before
+    _TOOL_PACK_STATUSES[:] = statuses_before
+    _TOOL_PACK_STATUS_META.clear()
+    _TOOL_PACK_STATUS_META.update(status_meta_before)
+
+
+def _remove_failed_tool_pack_modules(
+    modules_before: dict[str, Any],
+    python_package: str,
+    python_root: Path,
+) -> None:
+    top_level_package = python_package.split(".", 1)[0]
+    reserved_modules = {
+        "unreal_editor_webui_bridge_entry",
+        "unreal_editor_webui_registry",
+        "unreal_editor_webui_sdk",
+        "unreal_editor_webui_toolpacks",
+    }
+    for module_name, module in list(sys.modules.items()):
+        try:
+            module_file = getattr(module, "__file__", None)
+        except Exception:
+            module_file = None
+        belongs_to_root = False
+        if isinstance(module_file, str) and module_file:
+            try:
+                belongs_to_root = _is_path_inside(
+                    python_root,
+                    Path(module_file).resolve(strict=False),
+                )
+            except (OSError, RuntimeError, ValueError):
+                belongs_to_root = False
+        if (
+            module_name == top_level_package
+            or module_name.startswith(f"{top_level_package}.")
+            or belongs_to_root
+        ) and module_name not in modules_before:
+            sys.modules.pop(module_name, None)
+
+    for module_name in reserved_modules:
+        previous = modules_before.get(module_name)
+        if previous is not None:
+            sys.modules[module_name] = previous
+
+
+def _existing_commands_were_preserved(
+    handlers_before: dict[str, CommandHandler],
+    metadata_before: dict[str, dict[str, Any]],
+    owners_before: dict[str, str],
+    load_errors_before: list[dict[str, str]],
+    loaded_ids_before: set[str],
+    loaded_fingerprints_before: dict[str, _LoadedToolPackFingerprint],
+    python_roots_before: list[str],
+    statuses_before: list[dict[str, Any]],
+    status_meta_before: dict[str, int],
+) -> bool:
+    if COMMAND_LOAD_ERRORS != load_errors_before:
+        return False
+    if _LOADED_TOOL_PACK_IDS != loaded_ids_before:
+        return False
+    if _LOADED_TOOL_PACK_FINGERPRINTS != loaded_fingerprints_before:
+        return False
+    if _TOOL_PACK_PYTHON_ROOTS != python_roots_before:
+        return False
+    if _TOOL_PACK_STATUSES != statuses_before:
+        return False
+    if _TOOL_PACK_STATUS_META != status_meta_before:
+        return False
+    for command_name, handler in handlers_before.items():
+        if COMMANDS.get(command_name) is not handler:
+            return False
+        if COMMAND_METADATA.get(command_name) != metadata_before.get(command_name):
+            return False
+        if COMMAND_OWNERS.get(command_name) != owners_before.get(command_name):
+            return False
+    return True
+
+
+def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str] | None:
+    try:
+        handlers_before = dict(COMMANDS)
+        metadata_before = copy.deepcopy(COMMAND_METADATA)
+        owners_before = dict(COMMAND_OWNERS)
+        load_errors_before = copy.deepcopy(COMMAND_LOAD_ERRORS)
+        loaded_ids_before = set(_LOADED_TOOL_PACK_IDS)
+        loaded_fingerprints_before = dict(_LOADED_TOOL_PACK_FINGERPRINTS)
+        python_roots_before = list(_TOOL_PACK_PYTHON_ROOTS)
+        statuses_before = copy.deepcopy(_TOOL_PACK_STATUSES)
+        status_meta_before = dict(_TOOL_PACK_STATUS_META)
+        modules_before = dict(sys.modules)
+        sys_path_before = list(sys.path)
+        meta_path_container_before = sys.meta_path
+        if not isinstance(meta_path_container_before, list):
+            raise TypeError("sys.meta_path must be a list.")
+        sys_meta_path_before = list(meta_path_container_before)
+    except Exception:
+        _log_exception(
+            f'Unreal Editor WebUI could not snapshot state before Tool Pack "{descriptor.pack_id}".'
+        )
+        return _tool_pack_diagnostic(
+            descriptor,
+            "Tool Pack could not start an isolated load; see the Unreal Log.",
+        )
+
+    python_root: Path | None = None
+    root_text = ""
+
+    try:
+        python_root, package_directory = _validate_tool_pack_descriptor(descriptor)
+        top_level_package = descriptor.python_package.split(".", 1)[0]
+        if any(
+            module_name == top_level_package or module_name.startswith(f"{top_level_package}.")
+            for module_name in sys.modules
+        ):
+            raise ValueError("Tool Pack Python package was imported before registry discovery.")
+
+        (
+            expected_package_directory,
+            _expected_package_init,
+            package_chain_targets,
+        ) = _preflight_tool_pack_package_chain(
+            python_root,
+            descriptor.python_package,
+        )
+        if expected_package_directory != package_directory:
+            raise ValueError("Tool Pack pythonPackage did not match its fixed package directory.")
+        _reject_foreign_top_level_package(python_root, descriptor.python_package)
+        module_targets = _preflight_tool_pack_modules(
+            descriptor.python_package,
+            package_directory,
+        )
+        import_targets = [*package_chain_targets, *module_targets]
+        import_guard = _ToolPackImportGuard(top_level_package, import_targets)
+
+        desired_path, root_text = _prepare_tool_pack_python_path(
+            python_root,
+            prioritize=True,
+        )
+        sys.path[:] = desired_path
+        meta_path_container_before[:] = [import_guard, *sys_meta_path_before]
+        sys.meta_path = meta_path_container_before
+        try:
+            with _registration_context(descriptor.pack_id, descriptor.command_namespace):
+                importlib.import_module(descriptor.python_package)
+                for import_target in import_targets:
+                    # Reassert the scoped guard before each import so ordinary package
+                    # side effects cannot accidentally expose the declared prefix to a
+                    # preinstalled finder later in the deterministic traversal.
+                    meta_path_container_before[:] = [import_guard, *sys_meta_path_before]
+                    sys.meta_path = meta_path_container_before
+                    module = importlib.import_module(import_target.module_name)
+                    _validate_imported_module_origin(module, import_target.source_path)
+                    if import_target.package_directory is not None:
+                        _validate_imported_package_path(
+                            module,
+                            import_target.package_directory,
+                        )
+        finally:
+            meta_path_container_before[:] = sys_meta_path_before
+            sys.meta_path = meta_path_container_before
+
+        if not _existing_commands_were_preserved(
+            handlers_before,
+            metadata_before,
+            owners_before,
+            load_errors_before,
+            loaded_ids_before,
+            loaded_fingerprints_before,
+            python_roots_before,
+            statuses_before,
+            status_meta_before,
+        ):
+            raise ValueError("Tool Pack modified commands owned by another provider.")
+
+        new_commands = sorted(set(COMMANDS).difference(handlers_before))
+        if not new_commands:
+            raise ValueError("Tool Pack did not register any commands.")
+        for command_name in new_commands:
+            if COMMAND_OWNERS.get(command_name) != descriptor.pack_id:
+                raise ValueError("Tool Pack registered a command without an owner.")
+            if not command_name.startswith(f"{descriptor.command_namespace}."):
+                raise ValueError("Tool Pack registered a command outside its namespace.")
+            if command_name not in COMMAND_METADATA:
+                raise ValueError("Tool Pack registered a command without metadata.")
+        _validate_tool_pack_registry_state(new_commands)
+
+        # Preserve only the core-managed Python root insertion. A package cannot
+        # persist arbitrary import path or finder edits as a side effect of registration.
+        sys.path[:] = sys_path_before
+        desired_path, _ = _prepare_tool_pack_python_path(python_root)
+        sys.path[:] = desired_path
+        _TOOL_PACK_PYTHON_ROOTS.append(root_text)
+        _LOADED_TOOL_PACK_IDS.add(descriptor.pack_id)
+        _LOADED_TOOL_PACK_FINGERPRINTS[descriptor.pack_id] = _tool_pack_fingerprint(
+            descriptor,
+            python_root,
+        )
+        return None
+    except Exception as exc:
+        meta_path_container_before[:] = sys_meta_path_before
+        sys.meta_path = meta_path_container_before
+        _restore_tool_pack_registry(
+            handlers_before,
+            metadata_before,
+            owners_before,
+            load_errors_before,
+            loaded_ids_before,
+            loaded_fingerprints_before,
+            python_roots_before,
+            statuses_before,
+            status_meta_before,
+        )
+        sys.path[:] = sys_path_before
+        if python_root is not None:
+            _remove_failed_tool_pack_modules(
+                modules_before,
+                descriptor.python_package,
+                python_root,
+            )
+        _log_exception(
+            f'Unreal Editor WebUI Tool Pack "{descriptor.pack_id}" failed to load.'
+        )
+        return _tool_pack_diagnostic(
+            descriptor,
+            exc.public_error
+            if isinstance(exc, _ToolPackLoadError)
+            else "Tool Pack Python package failed to load; see the Unreal Log.",
+        )
+
+
+def _conflicting_tool_pack_indexes(
+    descriptors: list[ToolPackDescriptor],
+) -> tuple[set[int], list[dict[str, str]]]:
+    conflicts: set[int] = set()
+    errors: list[dict[str, str]] = []
+    fields = (
+        ("pack_id", "id", False),
+        ("python_package", "pythonPackage top-level", True),
+    )
+    for attribute, label, top_level_only in fields:
+        groups: dict[str, list[int]] = {}
+        for index, descriptor in enumerate(descriptors):
+            raw_value = str(getattr(descriptor, attribute))
+            value = raw_value.split(".", 1)[0] if top_level_only else raw_value
+            groups.setdefault(value.casefold(), []).append(index)
+        for group_value, indexes in groups.items():
+            if len(indexes) < 2:
+                continue
+            conflicts.update(indexes)
+            for index in indexes:
+                descriptor = descriptors[index]
+                errors.append(
+                    _tool_pack_diagnostic(
+                        descriptor,
+                        f'Duplicate Tool Pack {label} "{group_value}"; '
+                        "all conflicting Tool Packs were not loaded.",
+                    )
+                )
+
+    namespace_conflicts: dict[int, set[str]] = {}
+    normalized_namespaces = [
+        str(descriptor.command_namespace).casefold()
+        for descriptor in descriptors
+    ]
+    for left_index, left_namespace in enumerate(normalized_namespaces):
+        for right_index in range(left_index + 1, len(normalized_namespaces)):
+            right_namespace = normalized_namespaces[right_index]
+            if not (
+                left_namespace == right_namespace
+                or left_namespace.startswith(f"{right_namespace}.")
+                or right_namespace.startswith(f"{left_namespace}.")
+            ):
+                continue
+            namespace_conflicts.setdefault(left_index, set()).add(right_namespace)
+            namespace_conflicts.setdefault(right_index, set()).add(left_namespace)
+
+    conflicts.update(namespace_conflicts)
+    for index, overlapping_namespaces in sorted(namespace_conflicts.items()):
+        descriptor = descriptors[index]
+        namespace = normalized_namespaces[index]
+        if namespace in overlapping_namespaces:
+            error = (
+                f'Duplicate Tool Pack commandNamespace "{namespace}"; '
+                "all conflicting Tool Packs were not loaded."
+            )
+        else:
+            overlap = sorted(overlapping_namespaces)[0]
+            error = (
+                f'Tool Pack commandNamespace "{descriptor.command_namespace}" overlaps '
+                f'commandNamespace "{overlap}"; all conflicting Tool Packs were not loaded.'
+            )
+        errors.append(
+            _tool_pack_diagnostic(
+                descriptor,
+                error,
+            )
+        )
+    return conflicts, errors
+
+
+def _tool_pack_descriptor_sort_key(
+    descriptor: ToolPackDescriptor,
+) -> tuple[str, ...]:
+    return (
+        descriptor.pack_id.casefold(),
+        descriptor.pack_id,
+        descriptor.plugin_name.casefold(),
+        descriptor.plugin_name,
+        descriptor.python_package.casefold(),
+        descriptor.python_package,
+        descriptor.command_namespace.casefold(),
+        descriptor.command_namespace,
+        str(descriptor.python_root).casefold(),
+        str(descriptor.python_root),
+    )
+
+
+def _loaded_tool_pack_conflict_error(
+    descriptor: ToolPackDescriptor,
+    fingerprint: _LoadedToolPackFingerprint,
+) -> str | None:
+    for loaded in sorted(
+        _LOADED_TOOL_PACK_FINGERPRINTS.values(),
+        key=lambda item: (item.pack_id.casefold(), item.pack_id),
+    ):
+        if fingerprint.top_level_python_package == loaded.top_level_python_package:
+            return (
+                f'Tool Pack pythonPackage top-level "{fingerprint.top_level_python_package}" '
+                f'is already owned by loaded Tool Pack "{loaded.pack_id}"; '
+                "the new Tool Pack was not loaded."
+            )
+        if _tool_pack_namespaces_overlap(
+            descriptor.command_namespace,
+            loaded.command_namespace,
+        ):
+            return (
+                f'Tool Pack commandNamespace "{descriptor.command_namespace}" overlaps '
+                f'the loaded Tool Pack "{loaded.pack_id}" commandNamespace '
+                f'"{loaded.command_namespace}"; the new Tool Pack was not loaded.'
+            )
+    return None
+
+
+def load_tool_packs(
+    descriptors: list[ToolPackDescriptor] | None = None,
+    discovery_errors: list[dict[str, str]] | None = None,
+) -> None:
+    """Load discovered Tool Packs once, preserving healthy registry state."""
+
+    if descriptors is None:
+        descriptors, discovered_errors = discover_tool_packs(SDK_API_VERSION)
+        if discovery_errors is None:
+            discovery_errors = discovered_errors
+        else:
+            discovery_errors = [*discovery_errors, *discovered_errors]
+
+    tool_pack_errors: list[dict[str, str]] = []
+    status_updates: list[dict[str, Any]] = []
+    omitted_status_count = 0
+
+    descriptor_count = len(descriptors)
+    if descriptor_count > MAX_TOOL_PACK_DESCRIPTOR_COUNT:
+        ordered_descriptors = nsmallest(
+            MAX_TOOL_PACK_DESCRIPTOR_COUNT,
+            descriptors,
+            key=_tool_pack_descriptor_sort_key,
+        )
+        omitted_descriptor_count = descriptor_count - len(ordered_descriptors)
+        omitted_status_count += omitted_descriptor_count
+        tool_pack_errors.append(
+            {
+                "module": "plugin:discovery",
+                "error": (
+                    f"Tool Pack descriptor processing is limited to "
+                    f"{MAX_TOOL_PACK_DESCRIPTOR_COUNT} entries; "
+                    f"{omitted_descriptor_count} additional entries were not processed."
+                ),
+            }
+        )
+    else:
+        ordered_descriptors = sorted(
+            descriptors,
+            key=_tool_pack_descriptor_sort_key,
+        )
+
+    processed_discovery_errors = 0
+    omitted_discovery_errors = 0
+    for diagnostic in discovery_errors or []:
+        module = diagnostic.get("module") if isinstance(diagnostic, dict) else None
+        error = diagnostic.get("error") if isinstance(diagnostic, dict) else None
+        if isinstance(module, str) and module.strip() and isinstance(error, str) and error.strip():
+            if processed_discovery_errors >= MAX_TOOL_PACK_DISCOVERY_ERROR_COUNT:
+                omitted_discovery_errors += 1
+                if _tool_pack_discovery_error_status(diagnostic) is not None:
+                    omitted_status_count += 1
+                continue
+            processed_discovery_errors += 1
+            tool_pack_errors.append({"module": module[:144], "error": error[:512]})
+            status = _tool_pack_discovery_error_status(diagnostic)
+            if status is not None:
+                status_updates.append(status)
+
+    if omitted_discovery_errors:
+        tool_pack_errors.append(
+            {
+                "module": "plugin:discovery",
+                "error": (
+                    f"Tool Pack discovery diagnostics are limited to "
+                    f"{MAX_TOOL_PACK_DISCOVERY_ERROR_COUNT} entries; "
+                    f"{omitted_discovery_errors} additional diagnostics were omitted."
+                ),
+            }
+        )
+
+    new_descriptors: list[ToolPackDescriptor] = []
+    for descriptor in ordered_descriptors:
+        fingerprint = _tool_pack_fingerprint(descriptor)
+        loaded_fingerprint = _LOADED_TOOL_PACK_FINGERPRINTS.get(descriptor.pack_id)
+        loaded_id_present = descriptor.pack_id in _LOADED_TOOL_PACK_IDS
+        if loaded_fingerprint is not None or loaded_id_present:
+            if (
+                loaded_fingerprint is not None
+                and loaded_id_present
+                and fingerprint == loaded_fingerprint
+            ):
+                status_updates.append(
+                    _tool_pack_status_record(
+                        descriptor,
+                        "loaded",
+                        _tool_pack_owned_commands(descriptor.pack_id),
+                    )
+                )
+            else:
+                tool_pack_errors.append(
+                    _tool_pack_diagnostic(
+                        descriptor,
+                        f'Tool Pack id "{descriptor.pack_id}" is already loaded with a '
+                        "different descriptor; the new Tool Pack was not loaded.",
+                    )
+                )
+                status_updates.append(
+                    _tool_pack_status_record(descriptor, "rejected")
+                )
+            continue
+
+        loaded_conflict = _loaded_tool_pack_conflict_error(descriptor, fingerprint)
+        if loaded_conflict is not None:
+            tool_pack_errors.append(
+                _tool_pack_diagnostic(descriptor, loaded_conflict)
+            )
+            status_updates.append(_tool_pack_status_record(descriptor, "rejected"))
+            continue
+        new_descriptors.append(descriptor)
+
+    conflicting_indexes, conflict_errors = _conflicting_tool_pack_indexes(new_descriptors)
+    tool_pack_errors.extend(conflict_errors)
+    for index, descriptor in enumerate(new_descriptors):
+        if index in conflicting_indexes:
+            status_updates.append(_tool_pack_status_record(descriptor, "rejected"))
+            continue
+        error = _load_tool_pack_descriptor(descriptor)
+        if error is not None:
+            tool_pack_errors.append(error)
+            status_updates.append(_tool_pack_status_record(descriptor, "rejected"))
+        else:
+            status_updates.append(
+                _tool_pack_status_record(
+                    descriptor,
+                    "loaded",
+                    _tool_pack_owned_commands(descriptor.pack_id),
+                )
+            )
+
+    _publish_tool_pack_statuses(status_updates, omitted_status_count)
+
+    tool_pack_errors.sort(key=lambda item: (item["module"].casefold(), item["error"]))
+    for diagnostic in tool_pack_errors:
+        _append_command_load_error(diagnostic["module"], diagnostic["error"])
 
 
 def _serialize_response(request_id: str | None, envelope: dict[str, Any]) -> str:
@@ -918,12 +2174,12 @@ def inspect_command(request_json: str) -> str:
         return _error(request_id, exc.code, str(exc))
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
-    except Exception as exc:
+    except Exception:
         _log_exception("Unreal Editor WebUI command inspection failed.")
         return _error(
             request_id,
             "handler_exception",
-            str(exc),
+            GENERIC_HANDLER_ERROR_MESSAGE,
         )
 
 
@@ -978,12 +2234,12 @@ def execute_command(request_json: str, permission_policy: dict[str, Any] | None 
     except CommandExecutionError as exc:
         _log_exception("Unreal Editor WebUI command execution failed.")
         return _error(request_id, exc.code, str(exc), **_command_error_extra(exc))
-    except Exception as exc:
+    except Exception:
         _log_exception("Unreal Editor WebUI command handler failed.")
         return _error(
             request_id,
             "handler_exception",
-            str(exc),
+            GENERIC_HANDLER_ERROR_MESSAGE,
         )
 
 
@@ -1083,9 +2339,9 @@ def start_cooperative_command(
     except CommandExecutionError as exc:
         _log_exception("Unreal Editor WebUI cooperative command start failed.")
         return _error(request_id, exc.code, str(exc), **_command_error_extra(exc))
-    except Exception as exc:
+    except Exception:
         _log_exception("Unreal Editor WebUI cooperative command start failed.")
-        return _error(request_id, "handler_exception", str(exc))
+        return _error(request_id, "handler_exception", GENERIC_HANDLER_ERROR_MESSAGE)
 
 
 def step_cooperative_command(control_json: str) -> str:
@@ -1146,11 +2402,11 @@ def step_cooperative_command(control_json: str) -> str:
             _close_cooperative_job(job)
             _log_exception("Unreal Editor WebUI cooperative command failed.")
             return _error(job.request_id, exc.code, str(exc), **_command_error_extra(exc))
-        except Exception as exc:
+        except Exception:
             COOPERATIVE_JOBS.pop(task_id, None)
             _close_cooperative_job(job)
             _log_exception("Unreal Editor WebUI cooperative command failed.")
-            return _error(job.request_id, "handler_exception", str(exc))
+            return _error(job.request_id, "handler_exception", GENERIC_HANDLER_ERROR_MESSAGE)
 
         if not isinstance(update, dict):
             COOPERATIVE_JOBS.pop(task_id, None)
@@ -1191,12 +2447,12 @@ def step_cooperative_command(control_json: str) -> str:
         return _error(request_id, exc.code, str(exc))
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
-    except Exception as exc:
+    except Exception:
         job = COOPERATIVE_JOBS.pop(task_id, None) if task_id else None
         if job is not None:
             _close_cooperative_job(job)
         _log_exception("Unreal Editor WebUI cooperative command dispatch failed.")
-        return _error(request_id, "handler_exception", str(exc))
+        return _error(request_id, "handler_exception", GENERIC_HANDLER_ERROR_MESSAGE)
 
 
 def cancel_all_cooperative_commands(control_json: str = "{}") -> str:
@@ -1218,9 +2474,11 @@ def cancel_all_cooperative_commands(control_json: str = "{}") -> str:
         return _error(request_id, exc.code, str(exc))
     except json.JSONDecodeError as exc:
         return _error(request_id, "invalid_json", str(exc))
-    except Exception as exc:
+    except Exception:
         _log_exception("Unreal Editor WebUI cooperative cleanup failed.")
-        return _error(request_id, "handler_exception", str(exc))
+        return _error(request_id, "handler_exception", GENERIC_HANDLER_ERROR_MESSAGE)
 
 
-load_command_modules()
+with _registration_context("core"):
+    load_command_modules()
+load_tool_packs()

@@ -1,0 +1,18 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Example Asset Tools",
+  "Description": "Example content-only Tool Pack for Unreal Editor WebUI.",
+  "Category": "Editor",
+  "CreatedBy": "Unreal Editor WebUI",
+  "CanContainContent": true,
+  "NoCode": true,
+  "Installed": false,
+  "Plugins": [
+    {
+      "Name": "UnrealEditorWebUI",
+      "Enabled": true
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "com.openai.fixture.level-tools",
+  "requiredCoreApi": 1,
+  "pythonPackage": "ue_webui_level_tools_fixture",
+  "commandNamespace": "fixture.level"
+}

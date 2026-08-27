@@ -201,14 +201,20 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     '$CatalogMarker = [guid]::NewGuid().ToString("N")',
     '$CatalogMarker -cnotmatch "^[0-9a-f]{32}$"',
     '$CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"',
+    '$ToolPackSourceDirs = @(',
+    'tests/fixtures/ue-tool-packs/AssetToolsFixture',
+    'tests/fixtures/ue-tool-packs/LevelToolsFixture',
+    '$ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress',
     'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1',
     '-ProjectDir $ProjectDir',
     '-PluginSourceDir $PluginPackageDir',
     '-EngineAssociation $env:UE_VERSION',
     '-ToolCatalogTemplate $CatalogTemplate',
     '-ToolCatalogMarker $CatalogMarker',
+    '-ToolPackSourceDirsJson $ToolPackSourceDirsJson',
     '"HOST_PROJECT=$ProjectPath"',
     '"UE_WEBUI_CATALOG_MARKER=$CatalogMarker"',
+    '"UE_WEBUI_TOOL_PACK_TEST=1"',
     'Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append',
   ])
 })
@@ -226,10 +232,12 @@ test('custom host catalog evidence reaches native automation and the packaged Re
     'node --test tests/package-plugin-registry-guard.test.mjs',
     'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
     'node --test tests/create-host-project.test.mjs',
+    'node --test tests/create-tool-pack.test.mjs',
   ])
   assert.ok(STEPS.indexOf(host) < STEPS.indexOf(automation))
   assert.ok(STEPS.indexOf(automation) < STEPS.indexOf(gui))
   assert.match(automation.run, /"UnrealEditorWebUI\.Bridge\.ProjectToolCatalog"/u)
+  assert.match(automation.run, /"UnrealEditorWebUI\.Bridge\.ThirdPartyToolPacks"/u)
   assert.match(automation.run, /"UnrealEditorWebUI\.Bridge\.WebUIHealth"/u)
 
   assert.match(
