@@ -30,7 +30,7 @@ flowchart LR
 - `Python/unreal_editor_webui_bridge_entry.py` is the C++ to Python entry point. C++ evaluates a short import/dispatch expression with base64 arguments and receives JSON in memory through `ExecPythonCommandEx`.
 - `Python/unreal_editor_webui_sdk` is the stable decorator and structured-error API imported by built-in and third-party commands.
 - `Python/unreal_editor_webui_toolpacks.py` discovers enabled and mounted Unreal plugins with a fixed schema-v1 manifest under `Content/UnrealEditorWebUI/ToolPack.json`.
-- `Python/unreal_editor_webui_registry.py` registers trusted commands, atomically loads each Tool Pack, exposes `system.commands`, applies schema defaults, validates payloads, checks permission policy, and dispatches handlers.
+- `Python/unreal_editor_webui_registry.py` registers trusted commands, atomically loads each Tool Pack, exposes `system.commands` plus the bounded `system.toolPacks` provider-status view, applies schema defaults, validates payloads, checks permission policy, and dispatches handlers.
 - `frontend/src/` is the React tool rack. It discovers commands from `system.commands`, strictly decodes either the fixed project catalog or the bundled starter, renders schema-driven forms, persists reconciled project-scoped preferences only after both native contexts resolve, shows task state, and renders structured results.
 
 ## Request Flow

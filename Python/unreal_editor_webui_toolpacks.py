@@ -12,6 +12,7 @@ MAX_MANIFEST_BYTES = 64 * 1024
 MAX_MANIFEST_DEPTH = 8
 MAX_IDENTIFIER_LENGTH = 128
 MAX_PACKAGE_LENGTH = 256
+MAX_COMMAND_NAME_LENGTH = 256
 MANIFEST_RELATIVE_PATH = Path("Content") / "UnrealEditorWebUI" / "ToolPack.json"
 PYTHON_ROOT_RELATIVE_PATH = Path("Content") / "Python"
 MANIFEST_KEYS = {
@@ -26,6 +27,9 @@ PACK_ID_PATTERN = re.compile(
 )
 PYTHON_PACKAGE_PATTERN = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*\Z")
 COMMAND_NAMESPACE_PATTERN = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\Z")
+COMMAND_NAME_PATTERN = re.compile(
+    r"[a-z][A-Za-z0-9_]*(?:\.[a-z][A-Za-z0-9_]*)+\Z"
+)
 SAFE_LABEL_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 
 

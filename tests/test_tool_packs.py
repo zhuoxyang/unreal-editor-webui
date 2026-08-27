@@ -184,6 +184,11 @@ class ToolPackContractTests(unittest.TestCase):
     def diagnostics(self) -> list[dict[str, str]]:
         return list(self.registry.COMMAND_LOAD_ERRORS)
 
+    def tool_pack_status(self) -> dict[str, object]:
+        response = self.execute("system.toolPacks")
+        self.assertTrue(response["ok"])
+        return response["result"]
+
     def test_two_healthy_packs_share_the_sdk_registry_and_load_in_stable_order(self):
         alpha = self.create_pack(
             plugin_name="AlphaPlugin",
@@ -252,6 +257,177 @@ class ToolPackContractTests(unittest.TestCase):
             self.sdk.CommandExecutionError,
             self.registry.CommandExecutionError,
         )
+        status = self.tool_pack_status()
+        self.assertEqual(status["statusVersion"], 1)
+        self.assertEqual(status["coreApiVersion"], self.sdk.SDK_API_VERSION)
+        self.assertEqual(status["truncatedCount"], 0)
+        self.assertEqual(
+            status["packs"],
+            [
+                {
+                    "provider": "com.example.alpha",
+                    "packId": "com.example.alpha",
+                    "pluginName": "AlphaPlugin",
+                    "pluginVersion": "1.0.0",
+                    "requiredCoreApi": self.sdk.SDK_API_VERSION,
+                    "state": "loaded",
+                    "commandCount": 2,
+                    "commands": ["alpha.echo", "alpha.fail"],
+                },
+                {
+                    "provider": "com.example.beta",
+                    "packId": "com.example.beta",
+                    "pluginName": "BetaPlugin",
+                    "pluginVersion": "1.0.0",
+                    "requiredCoreApi": self.sdk.SDK_API_VERSION,
+                    "state": "loaded",
+                    "commandCount": 1,
+                    "commands": ["beta.echo"],
+                },
+            ],
+        )
+        rendered_status = json.dumps(status, ensure_ascii=False)
+        self.assertNotIn(str(alpha.python_root), rendered_status)
+        self.assertNotIn(str(beta.python_root), rendered_status)
+        self.assertTrue(
+            all(
+                set(pack)
+                == {
+                    "provider",
+                    "packId",
+                    "pluginName",
+                    "pluginVersion",
+                    "requiredCoreApi",
+                    "state",
+                    "commandCount",
+                    "commands",
+                }
+                for pack in status["packs"]
+            )
+        )
+        self.assertTrue(
+            all(pack["commandCount"] == len(pack["commands"]) for pack in status["packs"])
+        )
+
+    def test_repeat_load_uses_authoritative_fingerprint_and_rejects_same_id_spoof(self):
+        original = self.create_pack(
+            plugin_name="OriginalPlugin",
+            pack_id="com.example.authoritative",
+            python_package="authoritative_pack",
+            command_namespace="authoritative",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('authoritative.echo')\n"
+                "def echo(payload): return {'loaded': True}\n"
+            ),
+        )
+        self.registry.load_tool_packs([original], [])
+        authoritative_fingerprint = self.registry._LOADED_TOOL_PACK_FINGERPRINTS[
+            original.pack_id
+        ]
+        spoof = self.toolpacks.ToolPackDescriptor(
+            plugin_name="SpoofPlugin",
+            plugin_version="9.9.9",
+            pack_id=original.pack_id,
+            required_core_api=self.sdk.SDK_API_VERSION + 99,
+            python_package="missing_spoof_pack",
+            command_namespace="spoof",
+            python_root=self.temp_root / "missing-spoof-root",
+        )
+
+        self.registry.load_tool_packs([spoof], [])
+
+        self.assertIn("authoritative.echo", self.registry.COMMANDS)
+        self.assertNotIn("spoof.echo", self.registry.COMMANDS)
+        self.assertEqual(
+            self.registry._LOADED_TOOL_PACK_FINGERPRINTS[original.pack_id],
+            authoritative_fingerprint,
+        )
+        status_by_plugin = {
+            pack["pluginName"]: pack for pack in self.tool_pack_status()["packs"]
+        }
+        self.assertEqual(status_by_plugin["OriginalPlugin"]["state"], "loaded")
+        self.assertEqual(
+            status_by_plugin["OriginalPlugin"]["commands"],
+            ["authoritative.echo"],
+        )
+        self.assertEqual(status_by_plugin["SpoofPlugin"]["state"], "rejected")
+        self.assertEqual(status_by_plugin["SpoofPlugin"]["commands"], [])
+        self.assertIn("different descriptor", self.diagnostics()[0]["error"])
+
+        diagnostics_before = list(self.diagnostics())
+        self.registry.load_tool_packs([original], [])
+        self.assertEqual(self.diagnostics(), diagnostics_before)
+        self.assertEqual(
+            {
+                pack["pluginName"]: pack["state"]
+                for pack in self.tool_pack_status()["packs"]
+            },
+            {"OriginalPlugin": "loaded", "SpoofPlugin": "rejected"},
+        )
+
+    def test_incremental_load_rejects_namespace_overlap_with_loaded_pack_only(self):
+        parent = self.create_pack(
+            plugin_name="LoadedParentPlugin",
+            pack_id="com.example.loaded-parent",
+            python_package="loaded_parent_pack",
+            command_namespace="studio.assets",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('studio.assets.scan')\n"
+                "def scan(payload): return {'loaded': True}\n"
+            ),
+        )
+        child = self.create_pack(
+            plugin_name="IncrementalChildPlugin",
+            pack_id="com.example.incremental-child",
+            python_package="incremental_child_pack",
+            command_namespace="studio.assets.validate",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('studio.assets.validate.run')\n"
+                "def run(payload): return {'loaded': True}\n"
+            ),
+        )
+        package_conflict = self.create_pack(
+            plugin_name="IncrementalPackageConflictPlugin",
+            pack_id="com.example.incremental-package-conflict",
+            python_package="loaded_parent_pack.child",
+            command_namespace="studio.other",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('studio.other.run')\n"
+                "def run(payload): return {'loaded': True}\n"
+            ),
+        )
+
+        self.registry.load_tool_packs([parent], [])
+        self.registry.load_tool_packs([child], [])
+        self.registry.load_tool_packs([package_conflict], [])
+
+        self.assertIn("studio.assets.scan", self.registry.COMMANDS)
+        self.assertNotIn("studio.assets.validate.run", self.registry.COMMANDS)
+        self.assertNotIn("studio.other.run", self.registry.COMMANDS)
+        self.assertIn(parent.pack_id, self.registry._LOADED_TOOL_PACK_FINGERPRINTS)
+        self.assertNotIn(child.pack_id, self.registry._LOADED_TOOL_PACK_FINGERPRINTS)
+        self.assertNotIn(
+            package_conflict.pack_id,
+            self.registry._LOADED_TOOL_PACK_FINGERPRINTS,
+        )
+        self.assertTrue(any("overlaps" in item["error"] for item in self.diagnostics()))
+        self.assertTrue(any("top-level" in item["error"] for item in self.diagnostics()))
+        status_by_id = {
+            pack["packId"]: pack for pack in self.tool_pack_status()["packs"]
+        }
+        self.assertEqual(status_by_id[parent.pack_id]["state"], "loaded")
+        self.assertEqual(
+            status_by_id[parent.pack_id]["commands"],
+            ["studio.assets.scan"],
+        )
+        self.assertEqual(status_by_id[child.pack_id]["state"], "rejected")
+        self.assertEqual(status_by_id[child.pack_id]["commands"], [])
+        self.assertEqual(status_by_id[package_conflict.pack_id]["state"], "rejected")
+        self.assertEqual(status_by_id[package_conflict.pack_id]["commands"], [])
 
     def test_successful_pack_restores_sys_path_side_effects_and_keeps_managed_root(self):
         preexisting_path = str(self.temp_root / "preexisting-sys-path")
@@ -276,7 +452,7 @@ class ToolPackContractTests(unittest.TestCase):
 
         self.registry.load_tool_packs([pack], [])
 
-        managed_root = str(pack.python_root)
+        managed_root = str(pack.python_root.resolve())
         self.assertIn("syspath.echo", self.registry.COMMANDS)
         self.assertEqual(self.diagnostics(), [])
         self.assertIn(preexisting_path, sys.path)
@@ -693,7 +869,7 @@ class ToolPackContractTests(unittest.TestCase):
         self.registry.COMMAND_LOAD_ERRORS.clear()
         discovery_errors = [
             {"module": f"plugin:error-{index:03d}", "error": "rejected manifest"}
-            for index in range(self.registry.MAX_COMMAND_LOAD_ERRORS + 20)
+            for index in range(self.registry.MAX_TOOL_PACK_DISCOVERY_ERROR_COUNT + 20)
         ]
         self.registry.load_tool_packs([], discovery_errors)
         self.assertEqual(
@@ -706,6 +882,120 @@ class ToolPackContractTests(unittest.TestCase):
             len(catalogue["result"]["loadErrors"]),
             self.registry.MAX_COMMAND_LOAD_ERRORS,
         )
+        status = self.tool_pack_status()
+        self.assertEqual(
+            len(status["packs"]),
+            self.registry.MAX_TOOL_PACK_STATUS_COUNT,
+        )
+        self.assertEqual(status["truncatedCount"], 21)
+        self.assertEqual(status["packs"][0]["packId"], "com.example.module-limit")
+        self.assertTrue(
+            all(pack["state"] == "rejected" for pack in status["packs"])
+        )
+        self.assertTrue(
+            all(pack["commandCount"] == len(pack["commands"]) for pack in status["packs"])
+        )
+
+        self.registry.load_tool_packs([], [])
+        self.assertEqual(self.tool_pack_status(), status)
+
+    def test_truncated_count_accumulates_omitted_observations_and_saturates(self):
+        discovery_errors = [
+            {"module": f"plugin:error-{index:03d}", "error": "rejected manifest"}
+            for index in range(self.registry.MAX_TOOL_PACK_DISCOVERY_ERROR_COUNT + 21)
+        ]
+        self.registry.load_tool_packs([], discovery_errors)
+
+        initial_status = self.tool_pack_status()
+        self.assertEqual(
+            len(initial_status["packs"]),
+            self.registry.MAX_TOOL_PACK_STATUS_COUNT,
+        )
+        self.assertEqual(initial_status["truncatedCount"], 21)
+
+        hidden_observation = {
+            "module": "plugin:zzzz-hidden",
+            "error": "rejected manifest",
+        }
+        self.registry.load_tool_packs([], [hidden_observation])
+        second_status = self.tool_pack_status()
+        self.assertEqual(second_status["truncatedCount"], 22)
+        self.assertNotIn(
+            "zzzz-hidden",
+            {pack["pluginName"] for pack in second_status["packs"]},
+        )
+
+        self.registry.load_tool_packs([], [hidden_observation])
+        self.assertEqual(self.tool_pack_status()["truncatedCount"], 23)
+        self.registry.load_tool_packs([], [])
+        self.assertEqual(self.tool_pack_status()["truncatedCount"], 23)
+
+        self.registry._TOOL_PACK_STATUS_META["truncatedCount"] = (
+            self.registry.MAX_TOOL_PACK_TRUNCATED_COUNT - 1
+        )
+        self.registry.load_tool_packs([], [hidden_observation])
+        self.assertEqual(
+            self.tool_pack_status()["truncatedCount"],
+            self.registry.MAX_TOOL_PACK_TRUNCATED_COUNT,
+        )
+        self.registry.load_tool_packs([], [hidden_observation])
+        self.assertEqual(
+            self.tool_pack_status()["truncatedCount"],
+            self.registry.MAX_TOOL_PACK_TRUNCATED_COUNT,
+        )
+
+    def test_descriptor_processing_budget_bounds_conflict_work_and_status(self):
+        overflow = 20
+        descriptors = [
+            self.toolpacks.ToolPackDescriptor(
+                plugin_name=f"BudgetPlugin{index:04d}",
+                plugin_version="1.0.0",
+                pack_id=f"com.example.budget-{index:04d}",
+                required_core_api=self.sdk.SDK_API_VERSION,
+                python_package=f"budget_pack_{index:04d}",
+                command_namespace=f"budget{index:04d}",
+                python_root=self.temp_root / f"budget-root-{index:04d}",
+            )
+            for index in range(self.registry.MAX_TOOL_PACK_DESCRIPTOR_COUNT + overflow)
+        ]
+        attempted_ids: list[str] = []
+        original_loader = self.registry._load_tool_pack_descriptor
+
+        def reject_without_import(descriptor):
+            attempted_ids.append(descriptor.pack_id)
+            return {
+                "module": f"toolpack:{descriptor.pack_id}",
+                "error": "Fixture rejection.",
+            }
+
+        self.registry._load_tool_pack_descriptor = reject_without_import
+        try:
+            self.registry.load_tool_packs(list(reversed(descriptors)), [])
+        finally:
+            self.registry._load_tool_pack_descriptor = original_loader
+
+        self.assertEqual(
+            len(attempted_ids),
+            self.registry.MAX_TOOL_PACK_DESCRIPTOR_COUNT,
+        )
+        self.assertEqual(attempted_ids, sorted(attempted_ids))
+        status = self.tool_pack_status()
+        self.assertEqual(
+            len(status["packs"]),
+            self.registry.MAX_TOOL_PACK_STATUS_COUNT,
+        )
+        self.assertEqual(status["truncatedCount"], overflow)
+        self.assertTrue(
+            all(
+                pack["state"] == "rejected"
+                and pack["commandCount"] == 0
+                and pack["commands"] == []
+                for pack in status["packs"]
+            )
+        )
+
+        self.registry.load_tool_packs([], [])
+        self.assertEqual(self.tool_pack_status(), status)
 
     def test_failed_pack_rolls_back_all_registry_and_module_mutations(self):
         healthy = self.create_pack(
@@ -738,6 +1028,9 @@ class ToolPackContractTests(unittest.TestCase):
                 "\n"
                 "registry.COMMANDS.pop('system.ping')\n"
                 "registry.COMMAND_METADATA.pop('system.ping')\n"
+                "registry._LOADED_TOOL_PACK_FINGERPRINTS.clear()\n"
+                "registry._TOOL_PACK_STATUSES.append({'pluginName': 'private-status-canary'})\n"
+                "registry._TOOL_PACK_STATUS_META['truncatedCount'] = 999\n"
                 "raise RuntimeError('broken import')\n"
             ),
         )
@@ -746,6 +1039,10 @@ class ToolPackContractTests(unittest.TestCase):
         self.registry.load_tool_packs([healthy, broken], [])
 
         self.assertIn("healthy.echo", self.registry.COMMANDS)
+        self.assertIn(
+            healthy.pack_id,
+            self.registry._LOADED_TOOL_PACK_FINGERPRINTS,
+        )
         self.assertNotIn("broken.partial", self.registry.COMMANDS)
         self.assertIs(self.registry.COMMANDS["system.ping"], original_ping)
         self.assertEqual(
@@ -759,6 +1056,72 @@ class ToolPackContractTests(unittest.TestCase):
         rendered_diagnostic = json.dumps(self.diagnostics(), ensure_ascii=False)
         self.assertNotIn("Traceback", rendered_diagnostic)
         self.assertNotIn(private_path_canary, rendered_diagnostic)
+        status = self.tool_pack_status()
+        self.assertEqual(status["truncatedCount"], 0)
+        self.assertEqual(
+            [(pack["packId"], pack["state"], pack["commandCount"]) for pack in status["packs"]],
+            [
+                ("com.example.broken", "rejected", 0),
+                ("com.example.healthy", "loaded", 1),
+            ],
+        )
+        self.assertNotIn("private-status-canary", json.dumps(status))
+
+    def test_tool_pack_cannot_mutate_existing_public_status_state(self):
+        healthy = self.create_pack(
+            plugin_name="StatusHealthyPlugin",
+            pack_id="com.example.status-healthy",
+            python_package="status_healthy_pack",
+            command_namespace="statushealthy",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('statushealthy.echo')\n"
+                "def echo(payload): return {'healthy': True}\n"
+            ),
+        )
+        tampering = self.create_pack(
+            plugin_name="StatusTamperingPlugin",
+            pack_id="com.example.status-tampering",
+            python_package="status_tampering_pack",
+            command_namespace="statustampering",
+            source=(
+                "import unreal_editor_webui_registry as registry\n"
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('statustampering.echo')\n"
+                "def echo(payload): return {}\n"
+                "registry._LOADED_TOOL_PACK_FINGERPRINTS.clear()\n"
+                "registry._TOOL_PACK_STATUSES.clear()\n"
+                "registry._TOOL_PACK_STATUS_META['truncatedCount'] = 321\n"
+            ),
+        )
+
+        self.registry.load_tool_packs([healthy], [])
+        original_status = self.tool_pack_status()
+        self.registry.load_tool_packs([tampering], [])
+
+        self.assertIn("statushealthy.echo", self.registry.COMMANDS)
+        self.assertIn(
+            healthy.pack_id,
+            self.registry._LOADED_TOOL_PACK_FINGERPRINTS,
+        )
+        self.assertNotIn("statustampering.echo", self.registry.COMMANDS)
+        self.assertNotIn(tampering.python_package, sys.modules)
+        status = self.tool_pack_status()
+        self.assertEqual(status["truncatedCount"], 0)
+        self.assertEqual(status["packs"][0], original_status["packs"][0])
+        self.assertEqual(
+            status["packs"][1],
+            {
+                "provider": "com.example.status-tampering",
+                "packId": "com.example.status-tampering",
+                "pluginName": "StatusTamperingPlugin",
+                "pluginVersion": "1.0.0",
+                "requiredCoreApi": self.sdk.SDK_API_VERSION,
+                "state": "rejected",
+                "commandCount": 0,
+                "commands": [],
+            },
+        )
 
     def test_command_conflict_after_partial_registration_rolls_back_the_pack(self):
         existing_handler = self.registry.COMMANDS["asset.listByPath"]
@@ -819,6 +1182,72 @@ class ToolPackContractTests(unittest.TestCase):
             self.diagnostics()[0]["module"], "toolpack:com.example.namespace"
         )
         self.assertIn("namespace", self.diagnostics()[0]["error"].lower())
+
+    def test_invalid_or_oversized_command_names_roll_back_the_entire_pack(self):
+        invalid_characters = self.create_pack(
+            plugin_name="InvalidCommandCharactersPlugin",
+            pack_id="com.example.invalid-command-characters",
+            python_package="invalid_command_characters_pack",
+            command_namespace="invalidcharacters",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('invalidcharacters.validFirst')\n"
+                "def valid_first(payload): return {}\n"
+                "@command('invalidcharacters.bad-name')\n"
+                "def invalid(payload): return {}\n"
+            ),
+        )
+        oversized_name = "oversizedcommand." + (
+            "a" * self.registry.MAX_COMMAND_NAME_LENGTH
+        )
+        oversized = self.create_pack(
+            plugin_name="OversizedCommandNamePlugin",
+            pack_id="com.example.oversized-command-name",
+            python_package="oversized_command_name_pack",
+            command_namespace="oversizedcommand",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                f"@command({oversized_name!r})\n"
+                "def oversized(payload): return {}\n"
+            ),
+        )
+
+        self.registry.load_tool_packs([oversized, invalid_characters], [])
+
+        self.assertNotIn("invalidcharacters.validFirst", self.registry.COMMANDS)
+        self.assertNotIn("invalidcharacters.bad-name", self.registry.COMMANDS)
+        self.assertNotIn(oversized_name, self.registry.COMMANDS)
+        self.assertNotIn(invalid_characters.python_package, sys.modules)
+        self.assertNotIn(oversized.python_package, sys.modules)
+        self.assertEqual(
+            [item["module"] for item in self.diagnostics()],
+            [
+                "toolpack:com.example.invalid-command-characters",
+                "toolpack:com.example.oversized-command-name",
+            ],
+        )
+
+    def test_command_name_at_length_limit_and_camel_case_segments_loads(self):
+        command_name = "a.bC" + (
+            "d" * (self.registry.MAX_COMMAND_NAME_LENGTH - 4)
+        )
+        pack = self.create_pack(
+            plugin_name="BoundaryCommandNamePlugin",
+            pack_id="com.example.boundary-command-name",
+            python_package="boundary_command_name_pack",
+            command_namespace="a",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                f"@command({command_name!r})\n"
+                "def boundary(payload): return {'loaded': True}\n"
+            ),
+        )
+
+        self.registry.load_tool_packs([pack], [])
+
+        self.assertEqual(len(command_name), self.registry.MAX_COMMAND_NAME_LENGTH)
+        self.assertIn(command_name, self.registry.COMMANDS)
+        self.assertEqual(self.diagnostics(), [])
 
     def test_duplicate_id_package_and_namespace_fail_closed_for_every_conflict(self):
         id_a = self.create_pack(
@@ -930,6 +1359,79 @@ class ToolPackContractTests(unittest.TestCase):
                 "toolpack:com.example.package-b",
             },
         )
+        status = self.tool_pack_status()
+        self.assertEqual(len(status["packs"]), 6)
+        self.assertTrue(
+            all(
+                pack["state"] == "rejected" and pack["commandCount"] == 0
+                for pack in status["packs"]
+            )
+        )
+        self.assertEqual(
+            [pack["pluginName"] for pack in status["packs"]],
+            [
+                "AlphaIdPlugin",
+                "ZetaIdPlugin",
+                "NamespaceWinnerPlugin",
+                "NamespaceLoserPlugin",
+                "PackageWinnerPlugin",
+                "PackageLoserPlugin",
+            ],
+        )
+
+    def test_overlapping_namespace_prefixes_reject_every_conflicting_pack(self):
+        parent = self.create_pack(
+            plugin_name="ParentNamespacePlugin",
+            pack_id="com.example.parent-namespace",
+            python_package="parent_namespace_pack",
+            command_namespace="studio.assets",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('studio.assets.scan')\n"
+                "def scan(payload): return {}\n"
+            ),
+        )
+        child = self.create_pack(
+            plugin_name="ChildNamespacePlugin",
+            pack_id="com.example.child-namespace",
+            python_package="child_namespace_pack",
+            command_namespace="studio.assets.validate",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('studio.assets.validate.run')\n"
+                "def validate(payload): return {}\n"
+            ),
+        )
+        adjacent = self.create_pack(
+            plugin_name="AdjacentNamespacePlugin",
+            pack_id="com.example.adjacent-namespace",
+            python_package="adjacent_namespace_pack",
+            command_namespace="studio.assets2",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('studio.assets2.scan')\n"
+                "def scan(payload): return {'loaded': True}\n"
+            ),
+        )
+
+        self.registry.load_tool_packs([child, adjacent, parent], [])
+
+        self.assertNotIn("studio.assets.scan", self.registry.COMMANDS)
+        self.assertNotIn("studio.assets.validate.run", self.registry.COMMANDS)
+        self.assertIn("studio.assets2.scan", self.registry.COMMANDS)
+        self.assertNotIn(parent.python_package, sys.modules)
+        self.assertNotIn(child.python_package, sys.modules)
+        self.assertIn(adjacent.python_package, sys.modules)
+        self.assertEqual(
+            [item["module"] for item in self.diagnostics()],
+            [
+                "toolpack:com.example.child-namespace",
+                "toolpack:com.example.parent-namespace",
+            ],
+        )
+        self.assertTrue(
+            all("overlap" in item["error"].lower() for item in self.diagnostics())
+        )
 
     def test_incompatible_core_api_is_rejected_before_import_and_errors_aggregate(self):
         import_marker = self.temp_root / "incompatible-imported.txt"
@@ -976,6 +1478,45 @@ class ToolPackContractTests(unittest.TestCase):
         incompatible_error = self.diagnostics()[1]["error"].lower()
         self.assertIn("core api", incompatible_error)
         self.assertNotIn("incompatible pack was imported", incompatible_error)
+        status = self.tool_pack_status()
+        self.assertEqual(
+            status["packs"],
+            [
+                {
+                    "provider": "com.example.compatible",
+                    "packId": "com.example.compatible",
+                    "pluginName": "CompatiblePlugin",
+                    "pluginVersion": "1.0.0",
+                    "requiredCoreApi": self.sdk.SDK_API_VERSION,
+                    "state": "loaded",
+                    "commandCount": 1,
+                    "commands": ["compatible.echo"],
+                },
+                {
+                    "provider": "com.example.incompatible",
+                    "packId": "com.example.incompatible",
+                    "pluginName": "IncompatiblePlugin",
+                    "pluginVersion": "1.0.0",
+                    "requiredCoreApi": self.sdk.SDK_API_VERSION + 1,
+                    "state": "rejected",
+                    "commandCount": 0,
+                    "commands": [],
+                },
+                {
+                    "provider": None,
+                    "packId": None,
+                    "pluginName": "invalid-manifest",
+                    "pluginVersion": None,
+                    "requiredCoreApi": None,
+                    "state": "rejected",
+                    "commandCount": 0,
+                    "commands": [],
+                },
+            ],
+        )
+        rendered_status = json.dumps(status, ensure_ascii=False)
+        self.assertNotIn(str(self.temp_root), rendered_status)
+        self.assertNotIn("Traceback", rendered_status)
 
     def test_import_failures_and_discovery_errors_are_aggregated_in_stable_order(self):
         alpha = self.create_pack(
@@ -1278,6 +1819,54 @@ class ToolPackDiscoveryContractTests(unittest.TestCase):
         self.assertNotIn(str(self.temp_root), rendered_errors)
         self.assertTrue(all(error["error"].strip() for error in errors))
         self.assertIn("core api", errors[1]["error"].lower())
+
+    def test_incompatible_discovery_load_reports_only_sanitized_available_status(self):
+        plugin_name = "IncompatibleStatusPlugin"
+        manifest = self.manifest(
+            pack_id="com.example.incompatible-status",
+            python_package="incompatible_status_tools",
+            command_namespace="incompatiblestatus",
+            required_core_api=self.sdk.SDK_API_VERSION + 1,
+        )
+        base_directory = self.create_plugin(
+            plugin_name,
+            manifest=manifest,
+            python_package="incompatible_status_tools",
+        )
+        self.install_plugin_library(
+            enabled_names=[plugin_name],
+            mounted_names={plugin_name},
+            base_directories={plugin_name: base_directory},
+            versions={plugin_name: "7.8.9"},
+        )
+
+        descriptors, errors = self.toolpacks.discover_tool_packs(
+            self.sdk.SDK_API_VERSION
+        )
+        self.registry.load_tool_packs(descriptors, errors)
+        response = json.loads(
+            self.registry.execute_command(request("system.toolPacks"))
+        )
+
+        self.assertEqual(descriptors, [])
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            response["result"]["packs"],
+            [
+                {
+                    "provider": None,
+                    "packId": None,
+                    "pluginName": plugin_name,
+                    "pluginVersion": None,
+                    "requiredCoreApi": None,
+                    "state": "rejected",
+                    "commandCount": 0,
+                    "commands": [],
+                }
+            ],
+        )
+        self.assertEqual(response["result"]["truncatedCount"], 0)
 
     def test_manifest_symlink_escape_is_rejected_without_leaking_the_target_path(self):
         plugin_name = "EscapingManifestPlugin"

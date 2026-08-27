@@ -240,6 +240,28 @@ Defaults must satisfy the complete schema node, including enum, nested item, and
 
 Modules are registered independently. A schema-contract failure rolls back that module's partial commands and appears in `loadErrors`; healthy modules and their commands remain available. Treat `loadErrors` as visible catalogue diagnostics, not as a reason to discard valid commands.
 
+Tool Pack deployment status is a separate, versioned command so the metadata-v1 catalogue shape
+does not change:
+
+```js
+const status = await executeCommand("system.toolPacks");
+if (status.statusVersion !== 1) {
+  throw new Error(`Unsupported Tool Pack status version: ${status.statusVersion}`);
+}
+for (const pack of status.packs) {
+  console.log(pack.packId, pack.pluginVersion, pack.state, pack.commandCount, pack.commands);
+}
+```
+
+The bounded response contains sanitized provider, version, API, and state fields plus a sorted
+list of owned command names already exposed by `system.commands`. A manifest rejected before its
+descriptor is trusted has only a sanitized plugin label, null descriptor fields, and an empty
+command list. The response deliberately omits paths, Python package names, the manifest namespace
+as a separate field, exception text, and tracebacks. Use the existing `loadErrors` list for safe
+rejection reasons. `truncatedCount` is a saturating cumulative count of status observations
+omitted across publications; repeated omitted observations increment it again without retaining
+an unbounded hidden-provider history.
+
 ## Error Codes
 
 Common codes:

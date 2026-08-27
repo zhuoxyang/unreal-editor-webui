@@ -112,6 +112,26 @@ function assertClosedManifest(manifest, expected) {
   assert.deepEqual(manifest, expected)
 }
 
+test('Python registration and frontend catalog share one command-name length limit', () => {
+  const toolPackSource = readFileSync(
+    join(REPOSITORY_ROOT, 'Python', 'unreal_editor_webui_toolpacks.py'),
+    'utf8',
+  )
+  const frontendSource = readFileSync(
+    join(REPOSITORY_ROOT, 'frontend', 'src', 'tool-catalog.ts'),
+    'utf8',
+  )
+  const pythonLimit = toolPackSource.match(/^MAX_COMMAND_NAME_LENGTH = ([0-9]+)$/mu)
+  const frontendLimit = frontendSource.match(
+    /^export const MAX_TOOL_COMMAND_NAME_LENGTH = ([0-9]+)$/mu,
+  )
+
+  assert.ok(pythonLimit, 'Python command-name limit must remain explicit')
+  assert.ok(frontendLimit, 'frontend command-name limit must remain explicit')
+  assert.equal(Number(pythonLimit[1]), 256)
+  assert.equal(Number(frontendLimit[1]), Number(pythonLimit[1]))
+})
+
 test('the repository includes a real content-only example Tool Pack', () => {
   const descriptor = readJson(join(EXAMPLE_TOOL_PACK, 'ExampleAssetTools.uplugin'))
   assert.equal(descriptor.Version, 1)

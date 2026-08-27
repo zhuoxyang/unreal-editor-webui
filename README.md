@@ -30,7 +30,8 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 - Routes commands through `Python/unreal_editor_webui_registry.py`.
 - Discovers commands from independent content-only Tool Pack plugins through the stable
   `unreal_editor_webui_sdk` API, so many tools can share one installed core plugin.
-- Exposes command metadata through `system.commands`.
+- Exposes command metadata through `system.commands` and bounded provider status through
+  `system.toolPacks`.
 - Generates frontend command forms from command metadata and schemas, including bounds, defaults, arrays, and nested objects.
 - Supports command search, permission filtering, schema defaults, project-scoped recent payload reuse, and editable startup settings in the React console.
 - Loads an optional schema-v1 project/stage/category catalog at runtime from the fixed project
@@ -39,6 +40,7 @@ The current automated build and release target is Unreal Engine 5.8 on Windows. 
 - Shows command-specific result views for starter asset commands.
 - Includes starter commands:
   - `system.commands`
+  - `system.toolPacks`
   - `system.ping`
   - `editor.projectInfo`
   - `editor.log`
@@ -314,7 +316,11 @@ def scan_assets(payload):
     return {"count": 0}
 ```
 
-The Tool Pack manifest declares and enforces the `studio.assets` namespace. See
+The Tool Pack manifest declares and enforces the `studio.assets` namespace. Command names are
+dotted ASCII identifiers with at least two segments, a 256-character maximum, and a lowercase
+letter at the start of every segment; later characters may be letters, digits, or underscores.
+Declared namespaces may not be equal to, an ancestor of, or a descendant of another Tool Pack's
+namespace. See
 [`docs/tool-packs.md`](docs/tool-packs.md) for the fixed plugin layout, scaffold command,
 compatibility contract, whole-pack rollback behavior, and multi-pack installation steps.
 
@@ -335,6 +341,16 @@ if any of its modules violates the contract, every registration from that pack i
 `system.commands.loadErrors` reports the bounded diagnostic while commands from healthy packs and
 core modules remain available. Consumers should surface these diagnostics instead of treating
 them as a failure of the entire catalogue.
+
+`system.toolPacks` keeps deployment diagnostics separate from command metadata v1. Its versioned,
+bounded result reports each accepted descriptor's sanitized identity, plugin version, required
+core API, state, owned-command count, and stable list of owned command names. Those names are
+already public in `system.commands` and make provider ownership inspectable. If discovery rejects
+a manifest before a descriptor can be trusted, only the sanitized plugin label and `rejected`
+state are present; descriptor fields are `null` and `commands` is empty. It never returns package
+paths, Python package names, the manifest namespace as a separate field, exceptions, or
+tracebacks; detailed rejection reasons remain in the bounded `system.commands.loadErrors` list and
+the full traceback remains only in the Unreal log.
 
 `write` and `destructive` commands require a bridge-supplied exact-command capability after native confirmation, so command permissions are not only frontend labels. Every real privileged invocation receives a fresh, payload-specific confirmation; approvals are never cached or reusable, and a dry run cannot authorize a later write. Handler exceptions return concise Web-facing errors while full tracebacks are written to the Unreal log. Keep commands small, explicit, and trusted. Avoid exposing raw Python execution to Web UI pages.
 

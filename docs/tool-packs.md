@@ -94,7 +94,9 @@ Schema v1 is a closed object with exactly these fields:
   Packs and must not collide with an already importable or Python standard-library package. The
   scaffolder adds a `ue_webui_toolpack_` prefix for this reason.
 - `commandNamespace` owns that dotted command prefix. Every command registered by the pack must
-  start with `<commandNamespace>.`.
+  start with `<commandNamespace>.`. It must not equal, contain, or be contained by another Tool
+  Pack namespace on a dot boundary. For example, `studio.assets` conflicts with
+  `studio.assets.validate`, while `studio.assets2` is independent.
 
 Unknown keys, duplicate JSON keys, unsupported versions, malformed identifiers, oversized or
 deep manifests, escaped paths, and missing packages reject that pack. The manifest cannot add a
@@ -142,6 +144,12 @@ Do not import the package from `init_unreal.py` or another startup hook. SDK reg
 only while the core is explicitly loading built-ins or that Tool Pack; registration outside that
 context is rejected so namespace ownership and whole-pack rollback cannot be bypassed.
 
+Every command name must be a dotted ASCII identifier with at least two segments and at most 256
+characters. Each segment starts with a lowercase letter; remaining characters may be ASCII
+letters, digits, or underscores, so lower-camel names such as `studio.assets.validateNaming` are
+valid. Whitespace, hyphens, empty segments, uppercase segment starts, and oversized names reject
+the complete pack atomically.
+
 The command schema, permissions, task execution metadata, and response envelopes are the same as
 built-in commands. See [the integration guide](integration-guide.md#discover-commands)
 for the schema-v1 contract.
@@ -167,6 +175,17 @@ Open `Window > Unreal Editor WebUI` and search for the new commands. For a direc
 - `loadErrors` is empty;
 - each pack's generated `<namespace>.ping` command executes successfully.
 
+Then run `system.toolPacks`. Its `statusVersion: 1` response should contain one `loaded` entry per
+pack, the expected `.uplugin` `pluginVersion` and `requiredCoreApi`, and the number of commands
+owned by that pack. Its sorted `commands` list maps the already-public `system.commands` names to
+their provider. Rejected descriptors and manifest-discovery failures are also listed with
+`state: "rejected"` and an empty `commands` list; a manifest rejected before its descriptor is
+trusted exposes only a sanitized `pluginName`, with `provider`, `packId`, `pluginVersion`, and
+`requiredCoreApi` set to `null`. Safe reasons remain in `system.commands.loadErrors`.
+`truncatedCount` is a saturating cumulative count of status observations omitted across
+publications by the fixed processing and output bounds. Re-observing an omitted status increments
+the count again; the core does not retain an unbounded hidden-provider history.
+
 Each Tool Pack can be versioned and distributed as its own Unreal plugin archive. Because its
 manifest and Python sources live under `Content/`, Unreal `BuildPlugin` includes them without a
 custom root-file filter. Recipients still need one compatible `UnrealEditorWebUI` core plugin;
@@ -175,21 +194,27 @@ the `.uplugin` dependency expresses the requirement but does not download it.
 ## Isolation And Conflict Rules
 
 - Packs are loaded in a stable order independent of Unreal's plugin enumeration order.
-- Duplicate pack IDs, Python packages, or exact command namespaces reject every member of the
-  conflicting group before import. Python-package conflicts are evaluated by case-insensitive
-  top-level package segment, so dotted packages such as `vendor.alpha` and `vendor.beta` must not
-  be split across independent packs.
+- Duplicate pack IDs or Python packages reject every member of the conflicting group before
+  import. Equal or dot-boundary ancestor/descendant command namespaces are also rejected on both
+  sides. Python-package conflicts are evaluated by case-insensitive top-level package segment, so
+  dotted packages such as `vendor.alpha` and `vendor.beta` must not be split across independent
+  packs.
 - If a pack fails halfway through import, all commands it registered are removed. Healthy packs
   and core commands remain available.
 - A command outside the declared namespace or a command collision rejects the entire offending
   pack.
 - Bounded diagnostics appear in `system.commands.loadErrors`; full tracebacks go only to the
   Unreal log and do not expose absolute paths to the Web UI.
-- Core bootstrap commands such as `system.ping` and `system.commands` remain available even when a
-  third-party pack fails.
+- `system.toolPacks` exposes sanitized provider/version/API/state fields plus bounded command
+  counts and sorted owned command names already present in `system.commands`. It does not return
+  paths, Python package names, the manifest namespace as a separate field, errors, or tracebacks.
+- Core bootstrap commands such as `system.ping`, `system.commands`, and `system.toolPacks` remain
+  available even when a third-party pack fails.
 - V1 limits the shared registry to 256 commands, each command's metadata to 256 KiB, the metadata
   catalogue to 3 MiB, each Tool Pack to 256 discovered submodules, and surfaced load diagnostics
-  to 128 entries. Exceeding a limit rejects the offending pack atomically.
+  to 128 entries. Command names are capped at 256 characters. Tool Pack status is capped at 384
+  entries and reports a saturating cumulative count of omitted status observations. Exceeding a
+  registration limit rejects the offending pack atomically.
 
 This is registration isolation, not a security sandbox. Tool Pack Python is trusted editor code
 and can call Unreal, Python, OS, network, and filesystem APIs. Registry and module-cache rollback

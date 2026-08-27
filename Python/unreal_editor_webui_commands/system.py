@@ -7,6 +7,7 @@ from unreal_editor_webui_registry import (
     COMMAND_LOAD_ERRORS,
     COMMAND_METADATA,
     METADATA_VERSION,
+    _get_tool_pack_status,
 )
 
 
@@ -27,6 +28,19 @@ def list_commands(payload: dict[str, Any]) -> dict[str, Any]:
         "commands": commands,
         "loadErrors": list(COMMAND_LOAD_ERRORS),
     }
+
+
+@command(
+    "system.toolPacks",
+    description="List bounded status summaries for discovered Tool Packs.",
+    permission="read",
+    category="System",
+    icon="package",
+    tags=["metadata", "registry", "tool-packs"],
+    order=1,
+)
+def list_tool_packs(payload: dict[str, Any]) -> dict[str, Any]:
+    return _get_tool_pack_status()
 
 
 @command(

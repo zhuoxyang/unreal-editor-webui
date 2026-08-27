@@ -311,6 +311,71 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
     TestTrue(TEXT("The first independent Tool Pack is discoverable"), bFoundAssetFixture);
     TestTrue(TEXT("The second independent Tool Pack is discoverable"), bFoundLevelFixture);
 
+    const FString StatusJson = Bridge->ExecuteCommand(
+        TEXT("{\"id\":\"tool-pack-status\",\"command\":\"system.toolPacks\",\"payload\":{}}"));
+    const TSharedPtr<FJsonObject> StatusResponse = ParseJsonObject(StatusJson);
+    bool bStatusOk = false;
+    TestTrue(TEXT("The Tool Pack status returns JSON"), StatusResponse.IsValid());
+    TestTrue(
+        TEXT("The Tool Pack status exposes an ok field"),
+        StatusResponse.IsValid() && StatusResponse->TryGetBoolField(TEXT("ok"), bStatusOk));
+    TestTrue(*FString::Printf(TEXT("The Tool Pack status succeeds: %s"), *StatusJson), bStatusOk);
+
+    const TSharedPtr<FJsonObject> Status = ParseResultObject(StatusJson);
+    TestTrue(TEXT("The Tool Pack status includes a result object"), Status.IsValid());
+    if (!Status.IsValid())
+    {
+        return false;
+    }
+
+    TestEqual(TEXT("The Tool Pack status uses schema version 1"), Status->GetIntegerField(TEXT("statusVersion")), 1);
+    TestEqual(TEXT("The Tool Pack status reports core API 1"), Status->GetIntegerField(TEXT("coreApiVersion")), 1);
+    TestEqual(TEXT("The Tool Pack status is not truncated"), Status->GetIntegerField(TEXT("truncatedCount")), 0);
+
+    const TArray<TSharedPtr<FJsonValue>>* Packs = nullptr;
+    TestTrue(TEXT("The Tool Pack status includes packs"), Status->TryGetArrayField(TEXT("packs"), Packs));
+    TestEqual(TEXT("The packaged host reports exactly two Tool Packs"), Packs != nullptr ? Packs->Num() : -1, 2);
+    bool bFoundAssetStatus = false;
+    bool bFoundLevelStatus = false;
+    if (Packs != nullptr)
+    {
+        for (const TSharedPtr<FJsonValue>& PackValue : *Packs)
+        {
+            const TSharedPtr<FJsonObject> Pack = PackValue.IsValid() ? PackValue->AsObject() : nullptr;
+            FString PackId;
+            if (!Pack.IsValid() || !Pack->TryGetStringField(TEXT("packId"), PackId))
+            {
+                continue;
+            }
+
+            const bool bExpectedPack =
+                PackId == TEXT("com.openai.fixture.asset-tools")
+                || PackId == TEXT("com.openai.fixture.level-tools");
+            if (bExpectedPack)
+            {
+                TestEqual(TEXT("A loaded Tool Pack identifies its provider"), Pack->GetStringField(TEXT("provider")), PackId);
+                TestEqual(TEXT("A loaded Tool Pack reports its plugin version"), Pack->GetStringField(TEXT("pluginVersion")), FString(TEXT("1.0.0")));
+                TestEqual(TEXT("A loaded Tool Pack requires core API 1"), Pack->GetIntegerField(TEXT("requiredCoreApi")), 1);
+                TestEqual(TEXT("A loaded Tool Pack reports loaded state"), Pack->GetStringField(TEXT("state")), FString(TEXT("loaded")));
+                TestEqual(TEXT("Each fixture owns one command"), Pack->GetIntegerField(TEXT("commandCount")), 1);
+                const TArray<TSharedPtr<FJsonValue>>* OwnedCommands = nullptr;
+                TestTrue(TEXT("A loaded Tool Pack lists its owned commands"), Pack->TryGetArrayField(TEXT("commands"), OwnedCommands));
+                TestEqual(TEXT("Each fixture status lists one owned command"), OwnedCommands != nullptr ? OwnedCommands->Num() : -1, 1);
+                if (OwnedCommands != nullptr && OwnedCommands->Num() == 1)
+                {
+                    const FString ExpectedCommand = PackId == TEXT("com.openai.fixture.asset-tools")
+                        ? TEXT("fixture.asset.echo")
+                        : TEXT("fixture.level.echo");
+                    TestEqual(TEXT("The status maps the command to its provider"), (*OwnedCommands)[0]->AsString(), ExpectedCommand);
+                }
+            }
+            bFoundAssetStatus |= PackId == TEXT("com.openai.fixture.asset-tools");
+            bFoundLevelStatus |= PackId == TEXT("com.openai.fixture.level-tools");
+        }
+    }
+    TestTrue(TEXT("The first Tool Pack has a loaded status"), bFoundAssetStatus);
+    TestTrue(TEXT("The second Tool Pack has a loaded status"), bFoundLevelStatus);
+
     const auto VerifyEcho = [this, Bridge](
         const TCHAR* RequestId,
         const TCHAR* CommandName,

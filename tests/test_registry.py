@@ -525,6 +525,10 @@ class RegistryTests(unittest.TestCase):
         response = parse_response(self.registry.execute_command(request("system.commands")))
 
         self.assertTrue(response["ok"])
+        self.assertEqual(
+            set(response["result"]),
+            {"metadataVersion", "commands", "loadErrors"},
+        )
         self.assertEqual(response["result"]["metadataVersion"], self.registry.METADATA_VERSION)
         self.assertEqual(response["result"]["loadErrors"], [])
         commands = {command["name"]: command for command in response["result"]["commands"]}
@@ -546,6 +550,26 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(rename_batch["icon"], "edit-3")
         self.assertEqual(rename_batch["resultType"], "changeSet")
         self.assertIn("asset", rename_batch["tags"])
+
+    def test_tool_pack_status_is_a_separate_empty_versioned_catalogue(self):
+        response = parse_response(
+            self.registry.execute_command(request("system.toolPacks"))
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            response["result"],
+            {
+                "statusVersion": self.registry.TOOL_PACK_STATUS_VERSION,
+                "coreApiVersion": self.registry.SDK_API_VERSION,
+                "packs": [],
+                "truncatedCount": 0,
+            },
+        )
+        self.assertEqual(
+            self.registry.COMMAND_OWNERS["system.toolPacks"],
+            "core",
+        )
 
     def test_command_module_load_errors_are_reported_without_clearing_healthy_commands(self):
         with tempfile.TemporaryDirectory() as temp_dir:
