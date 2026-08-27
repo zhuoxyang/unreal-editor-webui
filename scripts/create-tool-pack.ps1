@@ -68,6 +68,16 @@ if (Test-Path -LiteralPath $TargetDirectory) {
     throw "Refusing to overwrite existing path: $TargetDirectory"
 }
 
+$ValidatorPath = Join-Path $PSScriptRoot "validate-tool-pack.py"
+if (-not (Test-Path -LiteralPath $ValidatorPath -PathType Leaf)) {
+    throw "Tool Pack validator not found: $ValidatorPath"
+}
+$PythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($null -eq $PythonCommand) {
+    throw "Python is required to validate generated Tool Packs."
+}
+
 $PythonPackageSuffix = [System.Text.RegularExpressions.Regex]::Replace(
     $Name,
     "(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])",
@@ -165,6 +175,18 @@ def ping(payload: dict[str, Any]) -> dict[str, Any]:
         (Join-Path $PythonDirectory "commands.py"),
         $CommandsSource,
         $Utf8NoBom)
+
+    $ValidatorArguments = @(
+        $ValidatorPath,
+        "--plugin-dir",
+        $StagingDirectory,
+        "--format",
+        "json"
+    )
+    $ValidationOutput = & $PythonCommand.Source @ValidatorArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Generated Tool Pack failed validation:`n$($ValidationOutput -join [Environment]::NewLine)"
+    }
 
     [System.IO.Directory]::Move($StagingDirectory, $TargetDirectory)
 }

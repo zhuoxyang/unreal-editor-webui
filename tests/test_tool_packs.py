@@ -1591,10 +1591,27 @@ class ToolPackDiscoveryContractTests(unittest.TestCase):
         manifest_at_fixed_path: bool = True,
         create_package: bool = True,
         create_package_init: bool = True,
+        plugin_version: str = "1.0.0",
     ) -> pathlib.Path:
         base_directory = self.temp_root / plugin_name
         python_root = base_directory / "Content" / "Python"
         python_root.mkdir(parents=True, exist_ok=True)
+
+        (base_directory / f"{plugin_name}.uplugin").write_text(
+            json.dumps(
+                {
+                    "FileVersion": 3,
+                    "Version": 1,
+                    "VersionName": plugin_version,
+                    "CanContainContent": True,
+                    "Plugins": [
+                        {"Name": "UnrealEditorWebUI", "Enabled": True},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
         if create_package:
             package_directory = python_root.joinpath(*python_package.split("."))
@@ -1664,11 +1681,13 @@ class ToolPackDiscoveryContractTests(unittest.TestCase):
                 "AlphaPlugin",
                 manifest=alpha_manifest,
                 python_package="alpha_discovery_tools",
+                plugin_version="1.2.3",
             ),
             "ZetaPlugin": self.create_plugin(
                 "ZetaPlugin",
                 manifest=zeta_manifest,
                 python_package="zeta_discovery_tools",
+                plugin_version="4.5.6",
             ),
             "UnmountedPlugin": self.create_plugin(
                 "UnmountedPlugin",
@@ -1691,6 +1710,12 @@ class ToolPackDiscoveryContractTests(unittest.TestCase):
                 manifest=None,
             ),
         }
+        # A mounted plugin without the fixed manifest is not a Tool Pack. Runtime discovery
+        # must skip it silently without parsing an unrelated or even malformed descriptor.
+        (
+            base_directories["NoManifestPlugin"]
+            / "NoManifestPlugin.uplugin"
+        ).write_text("{", encoding="utf-8")
         library = self.install_plugin_library(
             enabled_names=[
                 "ZetaPlugin",
@@ -1867,6 +1892,71 @@ class ToolPackDiscoveryContractTests(unittest.TestCase):
             ],
         )
         self.assertEqual(response["result"]["truncatedCount"], 0)
+
+    def test_mounted_version_mismatch_rejects_instead_of_masking_descriptor_version(self):
+        plugin_name = "VersionMismatchPlugin"
+        manifest = self.manifest(
+            pack_id="com.example.version-mismatch",
+            python_package="version_mismatch_tools",
+            command_namespace="versionmismatch",
+        )
+        base_directory = self.create_plugin(
+            plugin_name,
+            manifest=manifest,
+            python_package="version_mismatch_tools",
+            plugin_version="1.2.3",
+        )
+        library = self.install_plugin_library(
+            enabled_names=[plugin_name],
+            mounted_names={plugin_name},
+            base_directories={plugin_name: base_directory},
+            versions={plugin_name: "9.9.9"},
+        )
+
+        descriptors, errors = self.toolpacks.discover_tool_packs(
+            self.sdk.SDK_API_VERSION
+        )
+
+        self.assertEqual(descriptors, [])
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["module"], f"plugin:{plugin_name}")
+        self.assertIn("[plugin_version_mismatch]", errors[0]["error"])
+        self.assertNotIn("1.2.3", errors[0]["error"])
+        self.assertNotIn("9.9.9", errors[0]["error"])
+        self.assertEqual(library.version_calls, [plugin_name])
+
+    def test_mounted_plugin_name_mismatch_rejects_descriptor_spoof(self):
+        descriptor_name = "DescriptorPlugin"
+        mounted_name = "MountedAlias"
+        manifest = self.manifest(
+            pack_id="com.example.name-mismatch",
+            python_package="name_mismatch_tools",
+            command_namespace="namemismatch",
+        )
+        base_directory = self.create_plugin(
+            descriptor_name,
+            manifest=manifest,
+            python_package="name_mismatch_tools",
+            plugin_version="1.2.3",
+        )
+        library = self.install_plugin_library(
+            enabled_names=[mounted_name],
+            mounted_names={mounted_name},
+            base_directories={mounted_name: base_directory},
+            versions={mounted_name: "1.2.3"},
+        )
+
+        descriptors, errors = self.toolpacks.discover_tool_packs(
+            self.sdk.SDK_API_VERSION
+        )
+
+        self.assertEqual(descriptors, [])
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["module"], f"plugin:{mounted_name}")
+        self.assertIn("[plugin_name_mismatch]", errors[0]["error"])
+        self.assertNotIn(descriptor_name, errors[0]["error"])
+        self.assertNotIn(mounted_name, errors[0]["error"])
+        self.assertEqual(library.version_calls, [])
 
     def test_manifest_symlink_escape_is_rejected_without_leaking_the_target_path(self):
         plugin_name = "EscapingManifestPlugin"

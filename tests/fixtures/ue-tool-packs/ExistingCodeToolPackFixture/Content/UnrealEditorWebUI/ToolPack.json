@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "com.openai.fixture.existing-code",
+  "requiredCoreApi": 1,
+  "pythonPackage": "ue_webui_existing_code_fixture",
+  "commandNamespace": "fixture.existing_code"
+}

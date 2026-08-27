@@ -1,0 +1,23 @@
+{
+  "FileVersion": 3,
+  "Version": 17,
+  "VersionName": "2.4.1",
+  "FriendlyName": "Existing Code Tool Pack Fixture",
+  "Description": "Existing code plugin with an Unreal Editor WebUI Tool Pack payload.",
+  "Category": "Testing",
+  "CanContainContent": true,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "ExistingCodeToolPackFixture",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "UnrealEditorWebUI",
+      "Enabled": true
+    }
+  ]
+}

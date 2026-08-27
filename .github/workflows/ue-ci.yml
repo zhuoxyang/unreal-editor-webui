@@ -77,6 +77,7 @@ jobs:
           node --test tests/package-plugin-registry-guard.test.mjs
           node --test tests/create-tool-pack.test.mjs
           node --test tests/add-tool-pack.test.mjs
+          node --test tests/validate-tool-pack.test.mjs
 
       - name: Validate frontend dependency sources
         run: node scripts/validate-npm-lock-registry.mjs frontend/package-lock.json
