@@ -58,6 +58,16 @@ function installBridge(
       icon: 'timer',
       order: 20,
     },
+    {
+      metadataVersion: 1,
+      name: 'system.toolPacks',
+      description: 'Inspect Tool Pack deployment status',
+      permission: 'read',
+      schema: { type: 'object', properties: {} },
+      category: 'System',
+      icon: 'package',
+      order: 30,
+    },
   ]
   window.ue = {
     editorwebui: {
@@ -65,6 +75,14 @@ function installBridge(
         const request = JSON.parse(requestJson) as { command?: string }
         if (request.command === 'system.commands') {
           return bridgeResponse({ metadataVersion: 1, commands, loadErrors })
+        }
+        if (request.command === 'system.toolPacks') {
+          return bridgeResponse({
+            statusVersion: 1,
+            coreApiVersion: 1,
+            packs: [],
+            truncatedCount: 0,
+          })
         }
         return bridgeResponse({})
       }),
@@ -281,7 +299,7 @@ describe('health and support report', () => {
     const report = JSON.parse(preview.value) as Record<string, unknown>
 
     expect(report).toMatchObject({
-      reportVersion: 1,
+      reportVersion: 2,
       product: 'unreal-editor-webui',
       health: {
         overallStatus: 'degraded',
@@ -297,8 +315,18 @@ describe('health and support report', () => {
       },
       bridge: { lifecycle: 'ready', diagnosticCode: null },
       project: { persistence: 'enabled' },
-      registry: { status: 'ready', availableCount: 2, loadErrorCount: 1 },
+      registry: { status: 'ready', availableCount: 3, loadErrorCount: 1 },
       catalog: { status: 'ready', source: 'project', schemaVersion: 1, diagnosticCode: null },
+      toolPacks: {
+        status: 'ready',
+        diagnosticCode: null,
+        statusVersion: 1,
+        coreApiVersion: 1,
+        loadedCount: 0,
+        rejectedCount: 0,
+        truncatedCount: 0,
+        reasonCodes: [],
+      },
       tasks: { completed: 1, total: 1 },
     })
     for (const secret of [
@@ -365,5 +393,126 @@ describe('health and support report', () => {
     expect(getProjectContext).not.toHaveBeenCalled()
     expect(getToolCatalog).not.toHaveBeenCalled()
     expect(executeCommand).not.toHaveBeenCalled()
+  })
+
+  it('degrades aggregate health with a fixed reason when a Tool Pack is rejected', async () => {
+    installBridge([], {
+      getwebuihealth: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        bridgeProtocolVersion: 1,
+        pluginVersion: '0.1.1',
+        engineVersion: '5.8.0',
+        documentScope: 'packaged',
+        pythonRuntime: 'available',
+        privilegedConfirmation: 'per_call',
+        taskSessionIsolation: 'document',
+      })),
+      getprojectcontext: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        projectName: 'Tool Pack Host',
+        storageNamespace: 'tool-pack-host',
+      })),
+      gettoolcatalog: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        source: 'project',
+        catalog: customToolCatalog(),
+        diagnosticCode: null,
+      })),
+    })
+    const defaultExecute = window.ue!.editorwebui!.executecommand
+    window.ue!.editorwebui!.executecommand = vi.fn(async (requestJson: string) => {
+      const request = JSON.parse(requestJson) as { command?: string }
+      if (request.command === 'system.toolPacks') {
+        return bridgeResponse({
+          statusVersion: 1,
+          coreApiVersion: 1,
+          packs: [{
+            provider: 'studio.legacy',
+            packId: 'studio.legacy',
+            pluginName: 'StudioLegacy',
+            pluginVersion: '0.9.0',
+            requiredCoreApi: 2,
+            state: 'rejected',
+            commandCount: 0,
+            commands: [],
+          }],
+          truncatedCount: 0,
+        })
+      }
+      return defaultExecute(requestJson)
+    })
+
+    const { container } = render(<App />)
+    await waitFor(() => expect(container.querySelector('[data-health-overall-status]')).toHaveAttribute(
+      'data-health-overall-status',
+      'degraded',
+    ))
+    fireEvent.click(container.querySelector('[data-health-panel-toggle]') as HTMLButtonElement)
+    expect(screen.getByText('One or more Tool Packs were rejected.')).toBeInTheDocument()
+
+    fireEvent.click(container.querySelector('[data-support-report-generate]') as HTMLButtonElement)
+    const preview = container.querySelector('textarea[data-support-report-preview]') as HTMLTextAreaElement
+    expect(JSON.parse(preview.value)).toMatchObject({
+      health: {
+        overallStatus: 'degraded',
+        reasonCodes: ['health_tool_packs_rejected'],
+      },
+      toolPacks: {
+        status: 'ready',
+        loadedCount: 0,
+        rejectedCount: 1,
+        truncatedCount: 0,
+        reasonCodes: ['tool_pack_core_api_mismatch'],
+      },
+    })
+  })
+
+  it('keeps the rack usable and exports only fixed aggregates when Tool Pack status is malformed', async () => {
+    const secret = 'C:/Users/private/tool-pack.py?token=do-not-export'
+    installBridge([])
+    const defaultExecute = window.ue!.editorwebui!.executecommand
+    window.ue!.editorwebui!.executecommand = vi.fn(async (requestJson: string) => {
+      const request = JSON.parse(requestJson) as { command?: string }
+      if (request.command === 'system.toolPacks') {
+        return bridgeResponse({
+          statusVersion: 1,
+          coreApiVersion: 1,
+          packs: [],
+          truncatedCount: 0,
+          privatePath: secret,
+        })
+      }
+      return defaultExecute(requestJson)
+    })
+
+    const { container } = render(<App />)
+    expect((await screen.findAllByText('asset.scan')).length).toBeGreaterThan(0)
+    fireEvent.click(container.querySelector('[data-health-panel-toggle]') as HTMLButtonElement)
+    await waitFor(() => expect(container.querySelector('[data-tool-pack-status]')).toHaveAttribute(
+      'data-tool-pack-status',
+      'malformed',
+    ))
+    expect(screen.getByText('The Tool Pack status response does not satisfy schema v1.')).toHaveAttribute(
+      'role',
+      'alert',
+    )
+    expect(container.textContent).not.toContain(secret)
+
+    fireEvent.click(container.querySelector('[data-support-report-generate]') as HTMLButtonElement)
+    const preview = container.querySelector('textarea[data-support-report-preview]') as HTMLTextAreaElement
+    expect(JSON.parse(preview.value)).toMatchObject({
+      reportVersion: 2,
+      toolPacks: {
+        status: 'malformed',
+        diagnosticCode: 'tool_pack_response_invalid',
+        statusVersion: null,
+        coreApiVersion: null,
+        loadedCount: 0,
+        rejectedCount: 0,
+        truncatedCount: 0,
+        reasonCodes: [],
+      },
+    })
+    expect(preview.value).not.toContain(secret)
   })
 })

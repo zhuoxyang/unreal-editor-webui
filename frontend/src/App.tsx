@@ -11,6 +11,7 @@ import { useEditorBridge } from './bridge'
 import { useCommandPayloads } from './hooks/useCommandPayloads'
 import { useCommandRunner } from './hooks/useCommandRunner'
 import { useCommands } from './hooks/useCommands'
+import { toolPackStatusReasonCodes, useToolPackStatus } from './hooks/useToolPackStatus'
 import { useRecentExecutions } from './hooks/useRecentExecutions'
 import { useProjectContext } from './hooks/useProjectContext'
 import { useTasks } from './hooks/useTasks'
@@ -58,6 +59,19 @@ function App() {
   } = useToolCatalog({ bridgeReady, callBridgeQuiet, log })
   const { commands, commandsError, commandsLoadErrors, commandsStatus, retryCommands } = useCommands({
     bridgeReady,
+    callBridgeQuiet,
+    log,
+  })
+  const {
+    canRetryToolPackStatus,
+    retryToolPackStatus,
+    toolPackStatus,
+    toolPackStatusDiagnosticCode,
+    toolPackStatusLoadStatus,
+  } = useToolPackStatus({
+    bridgeReady,
+    commandsStatus,
+    commandAvailable: commands.some((command) => command.name === 'system.toolPacks'),
     callBridgeQuiet,
     log,
   })
@@ -138,6 +152,14 @@ function App() {
     catalogSource,
     catalogSchemaVersion: catalog.schemaVersion,
     catalogDiagnosticCode,
+    toolPackStatus: toolPackStatusLoadStatus,
+    toolPackDiagnosticCode: toolPackStatusDiagnosticCode,
+    toolPackStatusVersion: toolPackStatus?.statusVersion ?? null,
+    toolPackCoreApiVersion: toolPackStatus?.coreApiVersion ?? null,
+    toolPackLoadedCount: toolPackStatus?.packs.filter((pack) => pack.state === 'loaded').length ?? 0,
+    toolPackRejectedCount: toolPackStatus?.packs.filter((pack) => pack.state === 'rejected').length ?? 0,
+    toolPackTruncatedCount: toolPackStatus?.truncatedCount ?? 0,
+    toolPackReasonCodes: toolPackStatus ? toolPackStatusReasonCodes(toolPackStatus) : [],
     queuedTaskCount: taskCounts.queued,
     runningTaskCount: taskCounts.running,
     completedTaskCount: taskCounts.completed,
@@ -226,6 +248,11 @@ function App() {
             healthStatus={healthStatus}
             onRetryHealth={retryHealth}
             supportReportInput={supportReportInput}
+            toolPackStatus={toolPackStatus}
+            toolPackStatusLoadStatus={toolPackStatusLoadStatus}
+            toolPackStatusDiagnosticCode={toolPackStatusDiagnosticCode}
+            canRetryToolPackStatus={canRetryToolPackStatus}
+            onRetryToolPackStatus={retryToolPackStatus}
           />
         )}
       />

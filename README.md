@@ -281,14 +281,22 @@ The workspace header includes a health status control. It checks the optional
 `getwebuihealth()` bridge method and reports only categorical runtime state: public plugin and
 `major.minor.patch` engine versions, packaged or loopback document scope, Python availability,
 per-call privileged confirmation, document-session task isolation, project persistence, catalog
-fallback, and command discovery counts.
+fallback, command discovery counts, and a strictly decoded Tool Pack deployment view. The Tool
+Pack view lists the bounded public v1 provider status and gives static restart guidance because
+packs are discovered only during registry initialization.
 
-The generated schema-v1 support report is built from an explicit frontend allowlist and is capped
+The generated schema-v2 support report is built from an explicit frontend allowlist and is capped
 at 4 KiB UTF-8. Its `health.overallStatus` and ordered `health.reasonCodes` are derived from the
 same decoded snapshot shown by the panel. It never copies settings, URLs, paths, project names or
 namespaces, catalog or command contents, module errors, task ids, payloads, responses, logs, raw
-bridge errors, host identity, or credentials. The report is not uploaded or persisted. If CEF
+bridge errors, Tool Pack/provider/plugin/command identities, host identity, or credentials. Its
+`toolPacks` member contains only lifecycle/diagnostic codes, schema/core API versions, aggregate
+loaded/rejected/truncated counts, and fixed coarse reason codes. The report is not uploaded or persisted. If CEF
 cannot grant clipboard access, the read-only preview is selected for manual copying instead.
+Tool Pack loading contributes a fixed checking reason to aggregate health. An unavailable,
+unsupported, malformed, or failed status check, any rejected pack, or truncated status history
+contributes a fixed degraded reason; bridge-unavailable and other higher-priority health states
+keep their existing precedence.
 
 ## Python Commands And Tool Packs
 

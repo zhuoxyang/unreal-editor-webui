@@ -1,5 +1,10 @@
 import type { CommandsLoadStatus } from './hooks/useCommands'
 import type {
+  ToolPackStatusDiagnosticCode,
+  ToolPackStatusLoadStatus,
+  ToolPackStatusReasonCode,
+} from './hooks/useToolPackStatus'
+import type {
   ToolCatalogDiagnosticCode,
   ToolCatalogLoadStatus,
   ToolCatalogSource,
@@ -7,7 +12,7 @@ import type {
 import type { WebUIHealthDiagnosticCode, WebUIHealthStatus } from './hooks/useWebUIHealth'
 import type { WebUIDocumentScope, WebUIPythonRuntime } from './types/bridge'
 
-export const SUPPORT_REPORT_VERSION = 1 as const
+export const SUPPORT_REPORT_VERSION = 2 as const
 export const MAX_SUPPORT_REPORT_BYTES = 4 * 1024
 
 const MAX_SUPPORT_COUNT = 1_000_000
@@ -52,6 +57,29 @@ const CATALOG_DIAGNOSTIC_CODES = new Set<ToolCatalogDiagnosticCode>([
   'catalog_transport_invalid',
   'catalog_load_failed',
 ])
+const TOOL_PACK_STATUSES = new Set<ToolPackStatusLoadStatus>([
+  'unavailable',
+  'loading',
+  'ready',
+  'unsupported',
+  'malformed',
+  'error',
+])
+const TOOL_PACK_DIAGNOSTIC_CODES = new Set<ToolPackStatusDiagnosticCode>([
+  'tool_pack_bridge_unavailable',
+  'tool_pack_registry_unavailable',
+  'tool_pack_command_unavailable',
+  'tool_pack_schema_unsupported',
+  'tool_pack_response_invalid',
+  'tool_pack_request_failed',
+])
+const TOOL_PACK_REASON_CODE_ORDER: ToolPackStatusReasonCode[] = [
+  'tool_pack_core_api_mismatch',
+  'tool_pack_discovery_rejected',
+  'tool_pack_load_rejected',
+  'tool_pack_status_truncated',
+]
+const TOOL_PACK_REASON_CODES = new Set<ToolPackStatusReasonCode>(TOOL_PACK_REASON_CODE_ORDER)
 
 export type ProjectPersistenceStatus = 'loading' | 'enabled' | 'disabled'
 
@@ -77,6 +105,10 @@ export type SupportHealthReasonCode =
   | 'health_registry_modules_rejected'
   | 'health_catalog_loading'
   | 'health_catalog_fallback'
+  | 'health_tool_packs_loading'
+  | 'health_tool_packs_unavailable'
+  | 'health_tool_packs_rejected'
+  | 'health_tool_packs_truncated'
 
 export type SupportReportInput = {
   protocolVersion: 1 | null
@@ -97,6 +129,14 @@ export type SupportReportInput = {
   catalogSource: ToolCatalogSource
   catalogSchemaVersion: 1
   catalogDiagnosticCode: ToolCatalogDiagnosticCode | null
+  toolPackStatus: ToolPackStatusLoadStatus
+  toolPackDiagnosticCode: ToolPackStatusDiagnosticCode | null
+  toolPackStatusVersion: 1 | null
+  toolPackCoreApiVersion: number | null
+  toolPackLoadedCount: number
+  toolPackRejectedCount: number
+  toolPackTruncatedCount: number
+  toolPackReasonCodes: ToolPackStatusReasonCode[]
   queuedTaskCount: number
   runningTaskCount: number
   completedTaskCount: number
@@ -105,8 +145,8 @@ export type SupportReportInput = {
   timedOutTaskCount: number
 }
 
-export type SupportReportV1 = {
-  reportVersion: 1
+export type SupportReportV2 = {
+  reportVersion: 2
   product: 'unreal-editor-webui'
   health: {
     overallStatus: SupportHealthOverallStatus
@@ -140,6 +180,16 @@ export type SupportReportV1 = {
     schemaVersion: 1
     diagnosticCode: ToolCatalogDiagnosticCode | null
   }
+  toolPacks: {
+    status: ToolPackStatusLoadStatus
+    diagnosticCode: ToolPackStatusDiagnosticCode | null
+    statusVersion: 1 | null
+    coreApiVersion: number | null
+    loadedCount: number
+    rejectedCount: number
+    truncatedCount: number
+    reasonCodes: ToolPackStatusReasonCode[]
+  }
   tasks: {
     queued: number
     running: number
@@ -151,14 +201,15 @@ export type SupportReportV1 = {
   }
 }
 
-export type SupportHealthSummary = SupportReportV1['health']
+export type SupportHealthSummary = SupportReportV2['health']
 
 function deriveSupportHealth(
-  native: SupportReportV1['native'],
-  bridge: SupportReportV1['bridge'],
-  project: SupportReportV1['project'],
-  registry: SupportReportV1['registry'],
-  catalog: SupportReportV1['catalog'],
+  native: SupportReportV2['native'],
+  bridge: SupportReportV2['bridge'],
+  project: SupportReportV2['project'],
+  registry: SupportReportV2['registry'],
+  catalog: SupportReportV2['catalog'],
+  toolPacks: SupportReportV2['toolPacks'],
 ): SupportHealthSummary {
   const reasonCodes: SupportHealthReasonCode[] = []
   if (bridge.lifecycle === 'unavailable') reasonCodes.push('health_bridge_unavailable')
@@ -190,6 +241,18 @@ function deriveSupportHealth(
     if (registry.loadErrorCount > 0) reasonCodes.push('health_registry_modules_rejected')
     if (catalog.status === 'loading') reasonCodes.push('health_catalog_loading')
     if (catalog.status === 'fallback') reasonCodes.push('health_catalog_fallback')
+    if (toolPacks.status === 'loading') {
+      reasonCodes.push('health_tool_packs_loading')
+    } else if (
+      toolPacks.status !== 'ready'
+      || toolPacks.statusVersion !== 1
+      || toolPacks.coreApiVersion === null
+    ) {
+      reasonCodes.push('health_tool_packs_unavailable')
+    } else {
+      if (toolPacks.rejectedCount > 0) reasonCodes.push('health_tool_packs_rejected')
+      if (toolPacks.truncatedCount > 0) reasonCodes.push('health_tool_packs_truncated')
+    }
   }
 
   let overallStatus: SupportHealthOverallStatus = 'healthy'
@@ -203,6 +266,7 @@ function deriveSupportHealth(
     code !== 'health_project_persistence_loading'
     && code !== 'health_registry_loading'
     && code !== 'health_catalog_loading'
+    && code !== 'health_tool_packs_loading'
   ))) overallStatus = 'degraded'
   else if (reasonCodes.length > 0) overallStatus = 'checking'
 
@@ -260,7 +324,51 @@ function safeCatalogDiagnostic(
   return value && CATALOG_DIAGNOSTIC_CODES.has(value) ? value : 'catalog_load_failed'
 }
 
-export function buildSupportReport(input: SupportReportInput): SupportReportV1 {
+function safeToolPackStatus(value: ToolPackStatusLoadStatus): ToolPackStatusLoadStatus {
+  return TOOL_PACK_STATUSES.has(value) ? value : 'error'
+}
+
+function safeToolPackDiagnostic(
+  status: ToolPackStatusLoadStatus,
+  value: ToolPackStatusDiagnosticCode | null,
+): ToolPackStatusDiagnosticCode | null {
+  if (status === 'ready' || status === 'loading') return null
+  if (status === 'unavailable') return 'tool_pack_bridge_unavailable'
+  if (status === 'malformed') return 'tool_pack_response_invalid'
+  if (status === 'unsupported') {
+    return value === 'tool_pack_schema_unsupported' || value === 'tool_pack_command_unavailable'
+      ? value
+      : 'tool_pack_command_unavailable'
+  }
+  return value && TOOL_PACK_DIAGNOSTIC_CODES.has(value)
+    && (value === 'tool_pack_registry_unavailable' || value === 'tool_pack_request_failed')
+    ? value
+    : 'tool_pack_request_failed'
+}
+
+function safeToolPackCoreApiVersion(value: number | null): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, MAX_SUPPORT_COUNT)
+    : null
+}
+
+function safeToolPackReasonCodes(
+  values: ToolPackStatusReasonCode[],
+  rejectedCount: number,
+  truncatedCount: number,
+): ToolPackStatusReasonCode[] {
+  if (!Array.isArray(values)) return []
+  const present = new Set<ToolPackStatusReasonCode>()
+  for (const value of values) {
+    if (TOOL_PACK_REASON_CODES.has(value)) present.add(value)
+  }
+  return TOOL_PACK_REASON_CODE_ORDER.filter((code) => (
+    present.has(code)
+    && (code === 'tool_pack_status_truncated' ? truncatedCount > 0 : rejectedCount > 0)
+  ))
+}
+
+export function buildSupportReport(input: SupportReportInput): SupportReportV2 {
   const bridgeLifecycle = safeHealthStatus(input.bridgeLifecycle)
   const includeNativeHealth = bridgeLifecycle === 'ready'
   const documentScope = includeNativeHealth && input.documentScope && DOCUMENT_SCOPES.has(input.documentScope)
@@ -275,6 +383,7 @@ export function buildSupportReport(input: SupportReportInput): SupportReportV1 {
   const registryStatus = REGISTRY_STATUSES.has(input.registryStatus) ? input.registryStatus : 'error'
   const catalogStatus = CATALOG_STATUSES.has(input.catalogStatus) ? input.catalogStatus : 'fallback'
   const catalogSource = CATALOG_SOURCES.has(input.catalogSource) ? input.catalogSource : 'starter'
+  const toolPackStatus = safeToolPackStatus(input.toolPackStatus)
   const queued = safeCount(input.queuedTaskCount)
   const running = safeCount(input.runningTaskCount)
   const completed = safeCount(input.completedTaskCount)
@@ -282,7 +391,7 @@ export function buildSupportReport(input: SupportReportInput): SupportReportV1 {
   const cancelled = safeCount(input.cancelledTaskCount)
   const timedOut = safeCount(input.timedOutTaskCount)
 
-  const native: SupportReportV1['native'] = {
+  const native: SupportReportV2['native'] = {
     protocolVersion: includeNativeHealth && input.protocolVersion === 1 ? 1 : null,
     bridgeProtocolVersion: includeNativeHealth && input.bridgeProtocolVersion === 1 ? 1 : null,
     pluginVersion: includeNativeHealth ? safePluginVersion(input.pluginVersion) : null,
@@ -292,25 +401,45 @@ export function buildSupportReport(input: SupportReportInput): SupportReportV1 {
     privilegedConfirmation: includeNativeHealth && input.privilegedConfirmation === 'per_call' ? 'per_call' : null,
     taskSessionIsolation: includeNativeHealth && input.taskSessionIsolation === 'document' ? 'document' : null,
   }
-  const bridge: SupportReportV1['bridge'] = {
+  const bridge: SupportReportV2['bridge'] = {
     lifecycle: bridgeLifecycle,
     diagnosticCode: safeHealthDiagnostic(bridgeLifecycle, input.bridgeDiagnosticCode),
   }
-  const project: SupportReportV1['project'] = {
+  const project: SupportReportV2['project'] = {
     persistence: projectPersistence,
   }
-  const registry: SupportReportV1['registry'] = {
+  const registry: SupportReportV2['registry'] = {
     status: registryStatus,
     availableCount: safeCount(input.registryAvailableCount),
     loadErrorCount: safeCount(input.registryLoadErrorCount),
   }
-  const catalog: SupportReportV1['catalog'] = {
+  const catalog: SupportReportV2['catalog'] = {
     status: catalogStatus,
     source: catalogSource,
     schemaVersion: 1,
     diagnosticCode: safeCatalogDiagnostic(catalogStatus, input.catalogDiagnosticCode),
   }
-  const tasks: SupportReportV1['tasks'] = {
+  const includeToolPackStatus = toolPackStatus === 'ready'
+  const toolPackLoadedCount = includeToolPackStatus ? safeCount(input.toolPackLoadedCount) : 0
+  const toolPackRejectedCount = includeToolPackStatus ? safeCount(input.toolPackRejectedCount) : 0
+  const toolPackTruncatedCount = includeToolPackStatus ? safeCount(input.toolPackTruncatedCount) : 0
+  const toolPacks: SupportReportV2['toolPacks'] = {
+    status: toolPackStatus,
+    diagnosticCode: safeToolPackDiagnostic(toolPackStatus, input.toolPackDiagnosticCode),
+    statusVersion: includeToolPackStatus && input.toolPackStatusVersion === 1 ? 1 : null,
+    coreApiVersion: includeToolPackStatus ? safeToolPackCoreApiVersion(input.toolPackCoreApiVersion) : null,
+    loadedCount: toolPackLoadedCount,
+    rejectedCount: toolPackRejectedCount,
+    truncatedCount: toolPackTruncatedCount,
+    reasonCodes: includeToolPackStatus
+      ? safeToolPackReasonCodes(
+          input.toolPackReasonCodes,
+          toolPackRejectedCount,
+          toolPackTruncatedCount,
+        )
+      : [],
+  }
+  const tasks: SupportReportV2['tasks'] = {
     queued,
     running,
     completed,
@@ -323,12 +452,13 @@ export function buildSupportReport(input: SupportReportInput): SupportReportV1 {
   return {
     reportVersion: SUPPORT_REPORT_VERSION,
     product: 'unreal-editor-webui',
-    health: deriveSupportHealth(native, bridge, project, registry, catalog),
+    health: deriveSupportHealth(native, bridge, project, registry, catalog, toolPacks),
     native,
     bridge,
     project,
     registry,
     catalog,
+    toolPacks,
     tasks,
   }
 }

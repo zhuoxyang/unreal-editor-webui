@@ -13,6 +13,7 @@ namespace
 {
     constexpr double BrowserTestTimeoutSeconds = 60.0;
     constexpr double BrowserInjectionIntervalSeconds = 0.5;
+    constexpr int32 MaxExpectedToolPackCount = 384;
     const FName WebUITabName(TEXT("UnrealEditorWebUI"));
 
     bool IsValidCatalogMarker(const FString& Marker)
@@ -33,6 +34,32 @@ namespace
         return true;
     }
 
+    bool TryParseExpectedToolPackCount(const FString& Value, int32& OutCount)
+    {
+        if (Value.IsEmpty() || (Value.Len() > 1 && Value[0] == TEXT('0')))
+        {
+            return false;
+        }
+
+        int32 ParsedCount = 0;
+        for (const TCHAR Character : Value)
+        {
+            if (Character < TEXT('0') || Character > TEXT('9'))
+            {
+                return false;
+            }
+            const int32 Digit = Character - TEXT('0');
+            if (ParsedCount > (MaxExpectedToolPackCount - Digit) / 10)
+            {
+                return false;
+            }
+            ParsedCount = ParsedCount * 10 + Digit;
+        }
+
+        OutCount = ParsedCount;
+        return true;
+    }
+
     bool IsKnownBrowserFailureReason(const FString& Reason)
     {
         return Reason == TEXT("browser_assertion")
@@ -45,6 +72,7 @@ namespace
             || Reason == TEXT("project_health")
             || Reason == TEXT("registry_health")
             || Reason == TEXT("catalog_health")
+            || Reason == TEXT("tool_pack_health")
             || Reason == TEXT("task_counts")
             || Reason == TEXT("completed_task_count")
             || Reason == TEXT("initial_task_count")
@@ -61,6 +89,7 @@ namespace
             || Phase == TEXT("health-toggle")
             || Phase == TEXT("health-panel")
             || Phase == TEXT("health-status")
+            || Phase == TEXT("tool-pack-status")
             || Phase == TEXT("support-report-controls")
             || Phase == TEXT("support-report-refresh")
             || Phase == TEXT("support-report-generate")
@@ -74,12 +103,16 @@ namespace
             || Phase == TEXT("settling");
     }
 
-    FString BuildBrowserTestScript(const FString& Nonce, const FString& CatalogMarker)
+    FString BuildBrowserTestScript(
+        const FString& Nonce,
+        const FString& CatalogMarker,
+        const int32 ExpectedToolPackCount)
     {
         return FString::Printf(
             TEXT("(function(){")
             TEXT("var nonce='%s';")
             TEXT("var catalogMarker='%s';")
+            TEXT("var expectedToolPackCount=%d;")
             TEXT("var passTitle='UEWEBUI_E2E_PASS';")
             TEXT("var failTitle='UEWEBUI_E2E_FAIL:';")
             TEXT("var waitTitle='UEWEBUI_E2E_WAIT:';")
@@ -94,7 +127,7 @@ namespace
             TEXT("function fail(value){var reason=String(value&&value.message?value.message:value||'browser_assertion');")
             TEXT("var allowed=['browser_assertion','report_schema','support_report_redaction','report_identity',")
             TEXT("'overall_health','native_health','bridge_health','project_health','registry_health',")
-            TEXT("'catalog_health','task_counts','completed_task_count','initial_task_count',")
+            TEXT("'catalog_health','tool_pack_health','task_counts','completed_task_count','initial_task_count',")
             TEXT("'task_not_completed','missing_pong','nonce_mismatch','start_failed','unexpected_packaged_page'];")
             TEXT("document.title=failTitle+(allowed.indexOf(reason)!==-1?reason:'browser_assertion');}")
             TEXT("function record(value){return !!value&&typeof value==='object'&&!Array.isArray(value);}")
@@ -116,8 +149,8 @@ namespace
             TEXT("&&/^(?:0|[1-9][0-9]*)[.](?:0|[1-9][0-9]*)[.](?:0|[1-9][0-9]*)$/.test(value);}")
             TEXT("function validateSupportReport(text,afterTask){")
             TEXT("var report=JSON.parse(text);")
-            TEXT("exactKeys(report,['reportVersion','product','health','native','bridge','project','registry','catalog','tasks'],'report');")
-            TEXT("if(report.reportVersion!==1||report.product!=='unreal-editor-webui'){throw new Error('report_identity');}")
+            TEXT("exactKeys(report,['reportVersion','product','health','native','bridge','project','registry','catalog','toolPacks','tasks'],'report');")
+            TEXT("if(report.reportVersion!==2||report.product!=='unreal-editor-webui'){throw new Error('report_identity');}")
             TEXT("exactKeys(report.health,['overallStatus','reasonCodes'],'health');")
             TEXT("if(report.health.overallStatus!=='healthy'||!Array.isArray(report.health.reasonCodes)")
             TEXT("||report.health.reasonCodes.length!==0){throw new Error('overall_health');}")
@@ -139,6 +172,13 @@ namespace
             TEXT("exactKeys(report.catalog,['status','source','schemaVersion','diagnosticCode'],'catalog');")
             TEXT("if(report.catalog.status!=='ready'||report.catalog.source!=='project'")
             TEXT("||report.catalog.schemaVersion!==1||report.catalog.diagnosticCode!==null){throw new Error('catalog_health');}")
+            TEXT("exactKeys(report.toolPacks,['status','diagnosticCode','statusVersion','coreApiVersion',")
+            TEXT("'loadedCount','rejectedCount','truncatedCount','reasonCodes'],'toolPacks');")
+            TEXT("if(report.toolPacks.status!=='ready'||report.toolPacks.diagnosticCode!==null")
+            TEXT("||report.toolPacks.statusVersion!==1||report.toolPacks.coreApiVersion!==1")
+            TEXT("||report.toolPacks.loadedCount!==expectedToolPackCount||report.toolPacks.rejectedCount!==0")
+            TEXT("||report.toolPacks.truncatedCount!==0||!Array.isArray(report.toolPacks.reasonCodes)")
+            TEXT("||report.toolPacks.reasonCodes.length!==0){throw new Error('tool_pack_health');}")
             TEXT("exactKeys(report.tasks,['queued','running','completed','failed','cancelled','timedOut','total'],'tasks');")
             TEXT("var taskKeys=['queued','running','completed','failed','cancelled','timedOut'];")
             TEXT("if(!taskKeys.every(function(key){return nonNegativeInteger(report.tasks[key]);})")
@@ -170,6 +210,8 @@ namespace
             TEXT("return panel;")
             TEXT("}")
             TEXT("function supportReportText(panel,afterTask){")
+            TEXT("var toolPacks=panel.querySelector('[data-tool-pack-status=\"ready\"]');")
+            TEXT("if(!toolPacks){phase('tool-pack-status');return null;}")
             TEXT("var generate=panel.querySelector('[data-support-report-generate]');")
             TEXT("if(!generate){phase('support-report-controls');return null;}")
             TEXT("var requestKey=afterTask?'postTaskReportRequested':'initialReportRequested';")
@@ -261,7 +303,8 @@ namespace
             TEXT("void start();")
             TEXT("})();"),
             *Nonce,
-            *CatalogMarker);
+            *CatalogMarker,
+            ExpectedToolPackCount);
     }
 
     class FUnrealEditorWebUIBrowserRoundTripCommand final : public IAutomationLatentCommand
@@ -269,10 +312,12 @@ namespace
     public:
         FUnrealEditorWebUIBrowserRoundTripCommand(
             FAutomationTestBase* InTest,
-            const FString& InCatalogMarker)
+            const FString& InCatalogMarker,
+            const int32 InExpectedToolPackCount)
             : Test(InTest)
             , Nonce(FGuid::NewGuid().ToString(EGuidFormats::Digits))
             , CatalogMarker(InCatalogMarker)
+            , ExpectedToolPackCount(InExpectedToolPackCount)
             , StartedAt(FPlatformTime::Seconds())
             , LastInjectionAt(0.0)
         {
@@ -315,7 +360,7 @@ namespace
             const FString WaitPrefix = TEXT("UEWEBUI_E2E_WAIT:");
             if (Title == PassTitle)
             {
-                Test->AddInfo(TEXT("Packaged React page, healthy native/project/catalog/registry product state, allowlisted support-report DOM, CEF JavaScript binding, system.ping task, aggregate-only refreshed task counts, DOM event log, and TaskCard round trip passed."));
+                Test->AddInfo(TEXT("Packaged React page, healthy native/project/catalog/registry/Tool Pack product state, allowlisted support-report DOM, CEF JavaScript binding, system.ping task, aggregate-only refreshed task counts, DOM event log, and TaskCard round trip passed."));
                 Tab->RequestCloseTab();
                 return true;
             }
@@ -348,7 +393,10 @@ namespace
 
             if (Now - LastInjectionAt >= BrowserInjectionIntervalSeconds)
             {
-                BrowserWidget->ExecuteJavascript(BuildBrowserTestScript(Nonce, CatalogMarker));
+                BrowserWidget->ExecuteJavascript(BuildBrowserTestScript(
+                    Nonce,
+                    CatalogMarker,
+                    ExpectedToolPackCount));
                 LastInjectionAt = Now;
             }
 
@@ -359,6 +407,7 @@ namespace
         FAutomationTestBase* Test;
         FString Nonce;
         FString CatalogMarker;
+        int32 ExpectedToolPackCount;
         double StartedAt;
         double LastInjectionAt;
         TSharedPtr<SDockTab> Tab;
@@ -381,7 +430,20 @@ bool FUnrealEditorWebUIBrowserBindingAndTaskEventTest::RunTest(const FString& Pa
         return false;
     }
 
-    ADD_LATENT_AUTOMATION_COMMAND(FUnrealEditorWebUIBrowserRoundTripCommand(this, CatalogMarker));
+    const FString ExpectedToolPackCountValue = FPlatformMisc::GetEnvironmentVariable(
+        TEXT("UE_WEBUI_EXPECTED_TOOL_PACK_COUNT"));
+    int32 ExpectedToolPackCount = 0;
+    if (!TryParseExpectedToolPackCount(ExpectedToolPackCountValue, ExpectedToolPackCount))
+    {
+        AddError(TEXT(
+            "UE_WEBUI_EXPECTED_TOOL_PACK_COUNT must be a canonical integer from 0 through 384."));
+        return false;
+    }
+
+    ADD_LATENT_AUTOMATION_COMMAND(FUnrealEditorWebUIBrowserRoundTripCommand(
+        this,
+        CatalogMarker,
+        ExpectedToolPackCount));
     return true;
 }
 
