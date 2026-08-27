@@ -107,6 +107,9 @@ jobs:
           python -m compileall -q
           Python
           tests
+          scripts/package-tool-pack.py
+          scripts/tool-pack-doctor.py
+          scripts/tool_pack_distribution.py
           scripts/validate-tool-pack.py
           scripts/validate-packaged-bridge-smoke.py
           scripts/validate-settings-smoke.py
@@ -130,6 +133,11 @@ jobs:
           node-version-file: ".nvmrc"
           package-manager-cache: false
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
       - name: Validate Node.js version
         run: node scripts/validate-node-version.mjs
 
@@ -145,6 +153,10 @@ jobs:
           node --test tests/add-tool-pack.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test tests/validate-tool-pack.test.mjs
+
+      - name: Test Windows Tool Pack distribution contracts
+        shell: powershell
+        run: python -m unittest tests.test_tool_pack_distribution -v
 
       - name: Test Windows UE build-environment contracts
         shell: powershell
