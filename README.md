@@ -128,6 +128,20 @@ commands; Python command registration and native permission checks remain author
 To add separately distributed commands without modifying this repository, install one or more
 [third-party Tool Packs](docs/tool-packs.md) alongside the core plugin.
 
+### Rez External Plugin Roots
+
+Studios that already use Rez can package the shared precompiled core once and resolve independent
+Tool Pack packages without copying any plugin into `<Project>/Plugins`. The checked-in recipes cover
+the exact UE 5.4.4, 5.5.4, and 5.8.0 Windows x64 variants, append their own plugin roots to
+`UE_ADDITIONAL_PLUGIN_PATHS`, and require fixed local archive and final-tree hashes. Production
+launches must use the installed `uewebui-rez-launch` preflight wrapper; launching the editor directly
+bypasses duplicate-core, wrong-variant, and payload-integrity protection.
+
+See [Rez packaging](docs/rez-packaging.md) for the recipes, central payload lock, aggregate pins,
+external-only project descriptor, build/resolve commands, two-process E2E, and current validation
+boundary. The recipes are staged at `0.2.0` only to match the current descriptor; issue #117 must
+atomically move the descriptor and every core pin to `0.3.0` for the first published Tool Pack build.
+
 ## Frontend Development
 
 The React app lives in `frontend/`.
@@ -210,6 +224,7 @@ See `docs/tool-packs.md` for the stable third-party Python SDK, manifest, offlin
 scaffolder, and multi-pack installation model.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
 See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums, SBOMs, and release boundaries.
+See `docs/rez-packaging.md` for offline Rez recipes, external plugin-root activation, and payload locks.
 
 The protected workflow's temporary host removes packaged plugin `Source` and `Intermediate` before
 tests and rejects recompilation markers. This is a binary-only simulation on a build machine, not

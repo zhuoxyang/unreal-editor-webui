@@ -87,7 +87,10 @@ test('protected UE Node setup does not depend on the remote npm cache', () => {
   assert.equal(STEPS.some((step) => step.name === 'Expose and validate Git cache tools'), false)
 
   assert.equal(hostedNodeSetup.with.cache, 'npm')
-  assert.equal(hostedNodeSetup.with['cache-dependency-path'], 'frontend/package-lock.json')
+  assert.equal(
+    hostedNodeSetup.with['cache-dependency-path'],
+    'package-lock.json\nfrontend/package-lock.json\n',
+  )
 })
 
 test('hosted checks validate the build-environment evidence tooling before the UE job', () => {
