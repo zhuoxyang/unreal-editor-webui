@@ -110,7 +110,8 @@ missing-module, or incompatible-module markers.
 This proves that the packaged binary can load without the plugin's build inputs on that build host.
 It does not prove a clean consumer machine without Visual Studio or Node.js, because those tools
 remain installed on the same runner. Independent no-compiler/no-Node VM acceptance and real
-off-diagonal negative installs remain issue #117 and must not be inferred from this simulation.
+off-diagonal negative installs remain mandatory release evidence and must not be inferred from this
+simulation.
 
 ## Evidence And Promotion
 
@@ -122,8 +123,10 @@ package artifact id/name/digest.
 The three package artifacts and three BuildEnvironment artifacts are required together. Release
 assembly digest-verifies all six, validates all three environments before extracting any package,
 checks package descriptor/module/DLL/source identity, creates three native ZIPs and SHA-256
-sidecars, and writes schema 3 provenance binding the final archive hashes. A missing, duplicate,
-expired, malformed, cross-version, or mismatched subject fails closed. One bounded allowlisted
+sidecars, writes schema 3 project provenance binding the final archive hashes, and requests
+GitHub-signed SLSA build provenance whose subjects are exactly those three ZIPs. The attestation
+step runs after the project provenance and fails before candidate upload if signing fails. A
+missing, duplicate, expired, malformed, cross-version, or mismatched subject fails closed. One bounded allowlisted
 diagnostics JSON is uploaded last for each variant and never consumed by release assembly. Raw UE,
 UAT, UBT, host, and browser logs remain on the runner.
 

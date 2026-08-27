@@ -4,7 +4,7 @@ description = "Independent content-only Asset Tools Tool Pack example."
 authors = ["zhuoxyang"]
 
 requires = [
-    "unreal_editor_webui==0.2.0",
+    "unreal_editor_webui==0.3.0",
 ]
 
 build_command = 'rez-python "{root}/build.py"'

@@ -182,8 +182,8 @@ test('keeps repository metadata and workflows on the validated contract', () => 
     'utf8',
   )
 
-  assert.equal(currentDescriptor.Version, 3)
-  assert.equal(currentDescriptor.VersionName, '0.2.0')
+  assert.equal(currentDescriptor.Version, 4)
+  assert.equal(currentDescriptor.VersionName, '0.3.0')
   validatePluginDescriptor(currentDescriptor)
   assert.match(ciWorkflow, /node scripts\/validate-plugin-version\.mjs/u)
   assert.match(

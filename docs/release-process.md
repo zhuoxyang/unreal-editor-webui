@@ -73,11 +73,23 @@ One short-lived `release-candidate-v...` Actions artifact contains:
 - `UnrealEditorWebUI-v...-UE58-Win64.zip` and its `.sha256` sidecar.
 - `build-environment-UE54-Win64.json`, `build-environment-UE55-Win64.json`, and
   `build-environment-UE58-Win64.json`.
-- A CycloneDX npm SBOM and normalized locked dependency inventory from the exact frontend lock.
+- A CycloneDX frontend npm build-dependency SBOM and normalized locked dependency inventory from
+  the exact `frontend/package-lock.json`. This metadata does not cover the plugin C++ source,
+  precompiled DLLs, Unreal Engine, CEF, Python runtime, or the complete ZIP contents, so it must not
+  be presented as a complete UE plugin/runtime SBOM.
 - Schema 3 `provenance.json`, binding the three job/artifact pairs, canonical build environments,
   and final release archive filenames and SHA-256 hashes to one commit and run attempt.
+- GitHub/Sigstore SLSA build provenance signed for exactly the three final native ZIP subjects. The
+  attestation is stored by GitHub rather than copied into the candidate artifact, and candidate
+  upload fails if signing fails.
 - Each native ZIP contains the exact repository `LICENSE`; no separate top-level license file is
   uploaded by the candidate bundle.
+
+The schema 3 `provenance.json` is project-defined evidence joining the upstream UE build run to
+release assembly. The GitHub attestation independently signs each final ZIP digest and identifies
+the assembly workflow. Neither substitutes for the clean-consumer tests below, and the signed
+provenance does not by itself prove a complete dependency inventory or the correctness of the
+upstream UE compilation.
 
 The candidate artifact is review material, not a published release. Publishing or copying these
 files to a permanent distribution channel is a separate authorized action.
@@ -95,7 +107,20 @@ For the unchanged tagged commit:
    diagnostic artifacts are never release inputs.
 5. Dispatch the candidate workflow with the existing tag and exact trusted UE run id, or let the
    tag push resolve an eligible run automatically.
-6. Verify the candidate ZIP hashes and review `provenance.json` before any separate publication.
+6. Verify the candidate ZIP hashes, review `provenance.json`, and verify each ZIP's GitHub
+   attestation before any separate publication.
+
+For example, after downloading the candidate created by the tag-push run and substituting its
+40-character tag commit:
+
+```powershell
+gh attestation verify .\UnrealEditorWebUI-v0.3.0-UE55-Win64.zip --repo zhuoxyang/unreal-editor-webui --signer-workflow zhuoxyang/unreal-editor-webui/.github/workflows/release-candidate.yml --source-ref refs/tags/v0.3.0 --source-digest <tag-commit-sha>
+```
+
+Repeat the command for `UE54-Win64` and `UE58-Win64`. This verifies signed subject identity and
+workflow provenance; the adjacent `.sha256` file remains the simple offline byte-integrity check.
+For a manually dispatched review candidate, replace `--source-ref` with the exact ref that triggered
+that workflow run. Only the tag-push candidate proceeds through the immutable publication sequence.
 
 The frontend is compiled for the oldest maintained embedded Chromium runtime (`chrome90`) so the
 same source bundle can load in UE 5.4/5.5 CEF 90 and UE 5.8 CEF 128. Runtime evidence records and
@@ -110,10 +135,35 @@ binary-only simulation on the build host.
 
 It is not proof of installation on a clean machine without Visual Studio or Node.js, because the
 same host still has those tools installed. True no-compiler/no-Node consumer acceptance and real
-off-diagonal negative installs require independent clean VMs and remain tracked by issue #117.
+off-diagonal negative installs require independent clean VMs before publication.
 Runner provisioning and real exact-version executions are also external infrastructure work; no
 commit may be described as release-validated until all three protected GUI jobs have actually
 passed for that exact commit.
+
+## Immutable Publication
+
+Only after the exact final `main` commit passes the protected UE matrix may a maintainer create
+`v0.3.0`. Never move, delete, or reuse a release tag after candidate generation; a required code or
+binary change advances to a new patch version. Publication then follows this closed sequence:
+
+1. Push the tag for the already validated commit and let the candidate workflow consume the exact
+   trusted UE run.
+2. Download the short-lived candidate bundle and verify all three SHA-256 sidecars, project
+   provenance, build environments, and signed attestations.
+3. On independent clean Windows VMs without Visual Studio, Node.js, or repository build tooling,
+   install and launch each matching UE variant without installing any compiler, Node, or runtime
+   package. In every matching VM, verify `system.ping`, confirm `system.toolPacks` reports both
+   representative packs as loaded, and execute `fixture.asset.echo` plus `fixture.level.echo`.
+   Also verify that each archive is rejected by both non-matching UE minor versions.
+4. Publish only the three ZIPs, their three `.sha256` files, the three build-environment documents,
+   the frontend npm dependency metadata, and schema 3 project provenance as the immutable GitHub
+   Release assets.
+5. Release notes must state the exact UE 5.4.4/5.5.4/5.8.0 compatibility matrix, per-version ZIP
+   selection, Tool Pack trust allowlisting and restart requirement, direct project-plugin setup,
+   and the optional Rez external-plugin-root workflow.
+6. Re-download every public asset, compare its byte hash with the reviewed candidate, re-run the
+   three attestation checks, and confirm the tag, descriptor `VersionName`, provenance commit, and
+   public release all agree.
 
 ## GUI Evidence Boundary
 

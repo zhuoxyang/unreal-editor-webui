@@ -10,11 +10,9 @@ the three exact native identities in `scripts/ue-release-variants.json`:
 | `unreal_engine==5.5.4` | `UE55-Win64` | `37670630` |
 | `unreal_engine==5.8.0` | `UE58-Win64` | `55116800` |
 
-The variants are not interchangeable. The core recipe is currently `0.2.0` so it matches the
-checked-in plugin descriptor while this feature is being reviewed. The release tracked by issue
-#117 must atomically change the descriptor, core recipe, both Tool Pack core requirements, and all
-aggregate core pins to `0.3.0`. A `0.2.0` Rez build from this branch is not the promised v0.3.0
-binary release.
+The variants are not interchangeable. The core recipe is `0.3.0`, matching the plugin descriptor,
+the three version-specific release archives, both Tool Pack core requirements, and every aggregate
+core pin. Do not combine a v0.3.0 recipe with a core archive from another version.
 
 ## Packages
 
@@ -24,7 +22,7 @@ binary release.
   `rez/packages/unreal_editor_webui_level_tools` are independent content-only example Tool Packs.
   They demonstrate separate versions, manifests, archives, receipts, and rollback.
 - `rez/packages/unreal_editor_webui_project` is an optional aggregate request. Each of its three
-  variants pins one exact engine, core `0.2.0`, and both Tool Packs `1.0.0`.
+  variants pins one exact engine, core `0.3.0`, and both Tool Packs `1.0.0`.
 
 Each package appends its own `<root>/Plugins` directory to `UE_ADDITIONAL_PLUGIN_PATHS`; it never
 replaces paths contributed by other packages. The core also exposes `UNREAL_EDITOR_WEBUI_ROOT`,
@@ -42,9 +40,9 @@ $Payloads = "D:\reviewed\unreal-editor-webui-payloads"
 $Lock = "D:\reviewed\unreal-editor-webui-payload-lock.json"
 
 python scripts\rez-package.py create-lock `
-  --core "ue54=$Payloads\UnrealEditorWebUI-v0.2.0-UE54-Win64.zip" `
-  --core "ue55=$Payloads\UnrealEditorWebUI-v0.2.0-UE55-Win64.zip" `
-  --core "ue58=$Payloads\UnrealEditorWebUI-v0.2.0-UE58-Win64.zip" `
+  --core "ue54=$Payloads\UnrealEditorWebUI-v0.3.0-UE54-Win64.zip" `
+  --core "ue55=$Payloads\UnrealEditorWebUI-v0.3.0-UE55-Win64.zip" `
+  --core "ue58=$Payloads\UnrealEditorWebUI-v0.3.0-UE58-Win64.zip" `
   --tool-pack "unreal_editor_webui_asset_tools=$Payloads\AssetToolsFixture-v1.0.0.zip" `
   --tool-pack "unreal_editor_webui_level_tools=$Payloads\LevelToolsFixture-v1.0.0.zip" `
   --output $Lock
@@ -99,9 +97,9 @@ rez-test unreal_editor_webui_project==1.0.0 core-payload asset-tools-payload lev
 rez-test unreal_editor_webui_project==1.0.0 core-payload asset-tools-payload level-tools-payload --extra-packages unreal_engine==5.5.4 --stop-on-fail
 rez-test unreal_editor_webui_project==1.0.0 core-payload asset-tools-payload level-tools-payload --extra-packages unreal_engine==5.8.0 --stop-on-fail
 
-rez-test unreal_editor_webui==0.2.0 payload --extra-packages unreal_engine==5.4.4 --stop-on-fail
-rez-test unreal_editor_webui==0.2.0 payload --extra-packages unreal_engine==5.5.4 --stop-on-fail
-rez-test unreal_editor_webui==0.2.0 payload --extra-packages unreal_engine==5.8.0 --stop-on-fail
+rez-test unreal_editor_webui==0.3.0 payload --extra-packages unreal_engine==5.4.4 --stop-on-fail
+rez-test unreal_editor_webui==0.3.0 payload --extra-packages unreal_engine==5.5.4 --stop-on-fail
+rez-test unreal_editor_webui==0.3.0 payload --extra-packages unreal_engine==5.8.0 --stop-on-fail
 ```
 
 The recipe build commands use `rez-python`; they do not depend on a separately configured system
@@ -155,8 +153,8 @@ Deterministic no-Rez tests do not by themselves prove `rez-build`, `rez-test`, o
 behavior. The protected workflow stages payloads directly through the same lock/install/preflight
 code and is an activation smoke, not a Rez resolver test. Real Rez commands require separate audit
 evidence. Neither class of test proves the licensed UE matrix until the protected jobs run on the
-exact commit. Keep issue #115 open until that evidence exists; issue #117 still owns independent
-clean no-compiler/no-Node consumer VMs and publication acceptance.
+exact commit. Release acceptance additionally requires independent clean no-compiler/no-Node
+consumer VMs and the published-asset checks in the release process.
 
 The workflow intentionally has two serial three-variant waves: native BuildPlugin production, then
 external-path activation after all three artifacts exist. An ephemeral-runner rollout therefore

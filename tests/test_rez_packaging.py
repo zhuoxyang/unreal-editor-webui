@@ -59,8 +59,8 @@ def _core_plugin(root: Path, variant: dict[str, object]) -> Path:
         plugin / "UnrealEditorWebUI.uplugin",
         {
             "FileVersion": 3,
-            "Version": 3,
-            "VersionName": "0.2.0",
+            "Version": 4,
+            "VersionName": "0.3.0",
             "Installed": True,
             "EngineVersion": association + ".0",
             "Modules": [
@@ -152,7 +152,7 @@ class RezPackagingTests(unittest.TestCase):
         for variant in self.variants:
             source = self.root / "core-source" / variant["id"]
             plugin = _core_plugin(source, variant)
-            archive = self.payloads / f"UnrealEditorWebUI-v0.2.0-{variant['releaseVariant']}.zip"
+            archive = self.payloads / f"UnrealEditorWebUI-v0.3.0-{variant['releaseVariant']}.zip"
             rez_payload.create_deterministic_archive(plugin, archive)
             self.core_archives[variant["id"]] = archive
         self.pack_archives: dict[str, Path] = {}
@@ -224,6 +224,7 @@ class RezPackagingTests(unittest.TestCase):
         self.assertIn('env.UNREAL_EDITOR_WEBUI_ROOT = "{root}/Plugins/UnrealEditorWebUI"', core_text)
         core_namespace: dict[str, object] = {}
         exec(core_text, core_namespace)
+        self.assertEqual(core_namespace["version"], rez_payload.CORE_VERSION)
         self.assertEqual(
             core_namespace["variants"],
             [
@@ -249,7 +250,7 @@ class RezPackagingTests(unittest.TestCase):
                 pack_namespace,
             )
             self.assertEqual(
-                pack_namespace["requires"], ["unreal_editor_webui==0.2.0"]
+                pack_namespace["requires"], ["unreal_editor_webui==0.3.0"]
             )
             self.assertEqual(
                 pack_namespace["tests"],
@@ -268,7 +269,7 @@ class RezPackagingTests(unittest.TestCase):
                     "platform-windows",
                     "arch-AMD64",
                     f"unreal_engine=={engine_version}",
-                    "unreal_editor_webui==0.2.0",
+                    "unreal_editor_webui==0.3.0",
                     "unreal_editor_webui_asset_tools==1.0.0",
                     "unreal_editor_webui_level_tools==1.0.0",
                 ]
@@ -285,7 +286,7 @@ class RezPackagingTests(unittest.TestCase):
             },
         )
         for pin in (
-            '"unreal_editor_webui==0.2.0"',
+            '"unreal_editor_webui==0.3.0"',
             '"unreal_editor_webui_asset_tools==1.0.0"',
             '"unreal_editor_webui_level_tools==1.0.0"',
         ):
@@ -310,7 +311,7 @@ class RezPackagingTests(unittest.TestCase):
             "unreal_engine==5.4.4",
             "unreal_engine==5.5.4",
             "unreal_engine==5.8.0",
-            "rez-test unreal_editor_webui==0.2.0",
+            "rez-test unreal_editor_webui==0.3.0",
             "rez-env unreal_editor_webui_project==1.0.0 unreal_engine==5.5.4",
         ):
             self.assertIn(exact_request, rez_docs)
@@ -318,13 +319,24 @@ class RezPackagingTests(unittest.TestCase):
             "unreal_engine-5.4.4",
             "unreal_engine-5.5.4",
             "unreal_engine-5.8.0",
-            "rez-test unreal_editor_webui-0.2.0",
+            "rez-test unreal_editor_webui-0.3.0",
             "rez-env unreal_editor_webui_project-1.0.0",
         ):
             self.assertNotIn(non_exact_request, rez_docs)
         self.assertEqual(recipe_sources.count('build_command = \'rez-python "{root}/build.py"\''), 3)
-        # #117 must update this version and all aggregate/Tool Pack pins atomically.
-        self.assertEqual(json.loads((REPOSITORY_ROOT / "UnrealEditorWebUI.uplugin").read_text())["VersionName"], rez_payload.CORE_VERSION)
+        self.assertEqual(
+            json.loads(
+                (REPOSITORY_ROOT / "UnrealEditorWebUI.uplugin").read_text()
+            )["VersionName"],
+            rez_payload.CORE_VERSION,
+        )
+        ue_workflow = (
+            REPOSITORY_ROOT / ".github/workflows/ue-ci.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f'UnrealEditorWebUI-v{rez_payload.CORE_VERSION}-$ReleaseVariant.zip',
+            ue_workflow,
+        )
 
     def test_recipe_commands_append_each_independent_plugins_root(self) -> None:
         env = _Env()

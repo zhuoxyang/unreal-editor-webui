@@ -462,9 +462,8 @@ and restart Unreal after every policy or pack change.
 
 ## Compatibility
 
-The maintained Tool Pack discovery path is available in the current post-v0.2.0 source, is covered
-by the closed UE 5.4/5.5/5.8 Windows matrix, and uses SDK API 1. The first prebuilt release expected
-to include it is v0.3.0. It uses
+The v0.3.0 source and prebuilt archives include the maintained Tool Pack discovery path, covered by
+the closed UE 5.4/5.5/5.8 Windows matrix and stable SDK API 1. It uses
 Unreal's enabled/mounted plugin API and the standard `<Plugin>/Content/Python` module path.
 `requiredCoreApi` protects the Python extension contract; the Tool Pack plugin's `VersionName`
 remains the pack's independently managed release version and must be a safe 1-64 character value

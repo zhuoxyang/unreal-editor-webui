@@ -128,7 +128,7 @@ Runner prerequisites:
 
 Each job tests a package in a source-stripped temporary host and rejects plugin rebuild markers.
 That same-machine binary-only simulation is not a clean no-compiler/no-Node consumer result;
-independent VM acceptance remains issue #117.
+independent VM acceptance remains a mandatory release gate.
 
 Public pull requests use only the required GitHub-hosted checks. The trusted licensed UE runner is reserved for a trusted push to `main` or an explicitly approved manual run through the protected `ue-self-hosted` environment; do not execute unreviewed pull-request code on it. The documented default provisions six clean profile-local registrations and launches two sequential waves of three ephemeral one-job runners.
 
