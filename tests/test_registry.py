@@ -562,6 +562,11 @@ class RegistryTests(unittest.TestCase):
             {
                 "statusVersion": self.registry.TOOL_PACK_STATUS_VERSION,
                 "coreApiVersion": self.registry.SDK_API_VERSION,
+                "policy": {
+                    "enforced": False,
+                    "state": "disabled",
+                    "reasonCodes": [],
+                },
                 "packs": [],
                 "truncatedCount": 0,
             },

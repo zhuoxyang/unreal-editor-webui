@@ -10,7 +10,9 @@ import {
   UnsupportedToolPackStatusVersionError,
 } from '../bridge-decoders'
 import type { CommandsLoadStatus } from './useCommands'
-import type { ToolPackRejectedStatusV1, ToolPackStatusV1 } from '../types/bridge'
+import type { ToolPackStatus } from '../types/bridge'
+
+type ToolPackRejectedStatus = Extract<ToolPackStatus['packs'][number], { state: 'rejected' }>
 
 export type ToolPackStatusLoadStatus =
   | 'unavailable'
@@ -49,7 +51,7 @@ type ToolPackResolution = {
   attempt: number
   generation: object
   caller: BridgeCaller
-  status: ToolPackStatusV1 | null
+  status: ToolPackStatus | null
   loadStatus: Extract<ToolPackStatusLoadStatus, 'ready' | 'unsupported' | 'malformed' | 'error'>
   diagnosticCode: ToolPackStatusDiagnosticCode | null
 }
@@ -65,17 +67,20 @@ export function toolPackStatusDiagnosticMessage(code: ToolPackStatusDiagnosticCo
     case 'tool_pack_schema_unsupported':
       return 'This Web UI does not support the Tool Pack status schema returned by the core plugin.'
     case 'tool_pack_response_invalid':
-      return 'The Tool Pack status response does not satisfy schema v1.'
+      return 'The Tool Pack status response does not satisfy schema v1 or v2.'
     case 'tool_pack_request_failed':
       return 'The Tool Pack status check failed. Try again.'
   }
 }
 
 export function toolPackRejectionReasonCode(
-  pack: ToolPackRejectedStatusV1,
+  pack: ToolPackRejectedStatus,
   coreApiVersion: number,
 ): ToolPackRejectionReasonCode {
-  if (pack.requiredCoreApi !== null && pack.requiredCoreApi !== coreApiVersion) {
+  if (
+    ('reasonCodes' in pack && pack.reasonCodes.includes('trusted_core_api_mismatch'))
+    || (pack.requiredCoreApi !== null && pack.requiredCoreApi !== coreApiVersion)
+  ) {
     return 'tool_pack_core_api_mismatch'
   }
   if (pack.packId === null) {
@@ -84,12 +89,15 @@ export function toolPackRejectionReasonCode(
   return 'tool_pack_load_rejected'
 }
 
-export function toolPackStatusReasonCodes(status: ToolPackStatusV1): ToolPackStatusReasonCode[] {
+export function toolPackStatusReasonCodes(status: ToolPackStatus): ToolPackStatusReasonCode[] {
   const present = new Set<ToolPackStatusReasonCode>()
   for (const pack of status.packs) {
     if (pack.state === 'rejected') {
       present.add(toolPackRejectionReasonCode(pack, status.coreApiVersion))
     }
+  }
+  if (status.statusVersion === 2 && status.policy.state === 'rejected') {
+    present.add('tool_pack_load_rejected')
   }
   if (status.truncatedCount > 0) present.add('tool_pack_status_truncated')
   const order: ToolPackStatusReasonCode[] = [

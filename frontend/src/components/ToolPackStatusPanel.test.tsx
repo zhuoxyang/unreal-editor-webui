@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ToolPackStatusV1 } from '../types/bridge'
+import type { ToolPackStatusV1, ToolPackStatusV2 } from '../types/bridge'
 import { ToolPackStatusPanel } from './ToolPackStatusPanel'
 
 const STATUS: ToolPackStatusV1 = {
@@ -83,6 +83,30 @@ describe('ToolPackStatusPanel', () => {
     expect(screen.getByText(/Checking Tool Pack deployment status/)).toBeInTheDocument()
   })
 
+  it('surfaces a v2 rejected project policy even without a rejected pack record', () => {
+    const status: ToolPackStatusV2 = {
+      statusVersion: 2,
+      coreApiVersion: 1,
+      policy: {
+        enforced: true,
+        state: 'rejected',
+        reasonCodes: ['trusted_pack_missing'],
+      },
+      packs: [],
+      truncatedCount: 0,
+    }
+    render(<ToolPackStatusPanel
+      canRetry={false}
+      diagnosticCode={null}
+      loadStatus="ready"
+      onRetry={vi.fn()}
+      status={status}
+    />)
+
+    expect(screen.getByText(/0 loaded · 0 rejected/)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('requires a Tool Pack that is not installed')
+  })
+
   it('uses fixed diagnostics and exposes retry only when permitted', () => {
     const onRetry = vi.fn()
     const secret = 'C:/Users/private/tool-pack.py?token=secret'
@@ -94,7 +118,7 @@ describe('ToolPackStatusPanel', () => {
       status={null}
     />)
 
-    expect(screen.getByRole('alert')).toHaveTextContent('does not satisfy schema v1')
+    expect(screen.getByRole('alert')).toHaveTextContent('does not satisfy schema v1 or v2')
     expect(container.textContent).not.toContain(secret)
     fireEvent.click(screen.getByRole('button', { name: 'Check Tool Packs again' }))
     expect(onRetry).toHaveBeenCalledOnce()

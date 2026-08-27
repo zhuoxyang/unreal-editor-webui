@@ -9,8 +9,14 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
+from unreal_editor_webui_toolpack_integrity import (
+    ToolPackIntegrityError,
+    compute_bounded_directory_sha256,
+)
 
-TOOL_PACK_SCHEMA_VERSION = 1
+
+TOOL_PACK_SCHEMA_VERSION = 2
+SUPPORTED_TOOL_PACK_SCHEMA_VERSIONS = frozenset({1, 2})
 MAX_DESCRIPTOR_BYTES = 1024 * 1024
 MAX_DESCRIPTOR_DEPTH = 64
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -20,19 +26,23 @@ MAX_TREE_DEPTH = 64
 MAX_IDENTIFIER_LENGTH = 128
 MAX_PACKAGE_LENGTH = 256
 MAX_COMMAND_NAME_LENGTH = 256
+MAX_ENTRY_MODULE_COUNT = 32
+MAX_CORE_API_VERSION = 2_147_483_647
 MANIFEST_RELATIVE_PATH = Path("Content") / "UnrealEditorWebUI" / "ToolPack.json"
 PYTHON_ROOT_RELATIVE_PATH = Path("Content") / "Python"
-MANIFEST_KEYS = {
+MANIFEST_V1_KEYS = {
     "schemaVersion",
     "id",
     "requiredCoreApi",
     "pythonPackage",
     "commandNamespace",
 }
+MANIFEST_V2_KEYS = MANIFEST_V1_KEYS | {"dependencyPolicy", "entryModules"}
 PACK_ID_PATTERN = re.compile(
     r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+\Z"
 )
 PYTHON_PACKAGE_PATTERN = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*\Z")
+ENTRY_MODULE_PATTERN = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\Z")
 COMMAND_NAMESPACE_PATTERN = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*\Z")
 COMMAND_NAME_PATTERN = re.compile(
     r"[a-z][A-Za-z0-9_]*(?:\.[a-z][A-Za-z0-9_]*)+\Z"
@@ -42,6 +52,17 @@ PLUGIN_VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}\Z")
 SAFE_LABEL_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 CORE_PLUGIN_NAME = "UnrealEditorWebUI"
 RESERVED_COMMAND_NAMESPACES = frozenset({"asset", "demo", "editor", "system"})
+SUPPORTED_PURE_PYTHON_DEPENDENCY_POLICIES = frozenset({"none", "vendored"})
+SUPPORTED_NATIVE_DEPENDENCY_POLICIES = frozenset({"none", "outOfProcess"})
+STARTUP_HOOK_NAME = "init_unreal.py"
+SHA256_PATTERN = re.compile(r"sha256:[0-9a-f]{64}\Z")
+
+
+@dataclass(frozen=True)
+class ToolPackDependencyPolicy:
+    pure_python: str
+    pure_python_tree_sha256: str | None
+    native: str
 
 
 @dataclass(frozen=True)
@@ -53,6 +74,9 @@ class ToolPackDescriptor:
     python_package: str
     command_namespace: str
     python_root: Path
+    schema_version: int = 1
+    entry_modules: tuple[str, ...] = ()
+    dependency_policy: ToolPackDependencyPolicy | None = None
 
 
 @dataclass(frozen=True)
@@ -101,10 +125,15 @@ def _safe_label(value: Any, fallback: str = "unknown") -> str:
     return text or fallback
 
 
-def _diagnostic(module: str, error: str) -> dict[str, str]:
+def _diagnostic(
+    module: str,
+    error: str,
+    reason_code: str = "validation_failed",
+) -> dict[str, str]:
     return {
         "module": module[: MAX_IDENTIFIER_LENGTH + 16],
         "error": error[:512],
+        "reasonCode": reason_code[:64],
     }
 
 
@@ -300,7 +329,7 @@ def _read_strict_json(
         return value
     except _ValidationFailure:
         raise
-    except (json.JSONDecodeError, RecursionError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise _ValidationFailure(
             invalid_code,
             f"{label} must use strict UTF-8 JSON.",
@@ -359,6 +388,235 @@ def _namespace_overlaps(left: str, right: str) -> bool:
         or left_key.startswith(right_key + ".")
         or right_key.startswith(left_key + ".")
     )
+
+
+def _matching_children(parent: Path, name: str) -> list[Path]:
+    try:
+        return sorted(
+            (entry for entry in parent.iterdir() if entry.name.casefold() == name.casefold()),
+            key=lambda entry: (entry.name.casefold(), entry.name),
+        )
+    except OSError as exc:
+        raise _ValidationFailure(
+            "entry_module_missing",
+            "Tool Pack entry module path could not be inspected.",
+        ) from exc
+
+
+def _require_exact_child(parent: Path, name: str, *, directory: bool) -> Path:
+    matches = _matching_children(parent, name)
+    if len(matches) != 1 or matches[0].name != name:
+        raise _ValidationFailure(
+            "entry_module_ambiguous" if len(matches) > 1 else "entry_module_missing",
+            "Tool Pack entry module must resolve to one exact internal Python module.",
+        )
+    child = matches[0]
+    if (directory and not child.is_dir()) or (not directory and not child.is_file()):
+        raise _ValidationFailure(
+            "entry_module_missing",
+            "Tool Pack entry module must resolve to one exact internal Python module.",
+        )
+    return child
+
+
+def _resolve_entry_module(package_directory: Path, entry_module: str) -> None:
+    parts = entry_module.split(".")
+    current = package_directory
+    for segment in parts[:-1]:
+        current = _require_exact_child(current, segment, directory=True)
+        _require_exact_child(current, "__init__.py", directory=False)
+
+    final = parts[-1]
+    module_matches = _matching_children(current, f"{final}.py")
+    package_matches = _matching_children(current, final)
+    exact_module = [path for path in module_matches if path.name == f"{final}.py" and path.is_file()]
+    exact_package = [path for path in package_matches if path.name == final and path.is_dir()]
+    if len(module_matches) > 1 or len(package_matches) > 1:
+        raise _ValidationFailure(
+            "entry_module_ambiguous",
+            "Tool Pack entry module path is ambiguous on a portable filesystem.",
+        )
+    if module_matches and not exact_module or package_matches and not exact_package:
+        raise _ValidationFailure(
+            "entry_module_missing",
+            "Tool Pack entry module path must use exact portable casing.",
+        )
+    if bool(exact_module) == bool(exact_package):
+        raise _ValidationFailure(
+            "entry_module_ambiguous" if exact_module else "entry_module_missing",
+            "Tool Pack entry module must resolve to exactly one module file or package.",
+        )
+    if exact_package:
+        _require_exact_child(exact_package[0], "__init__.py", directory=False)
+
+
+def _validate_entry_modules(
+    manifest: dict[str, Any],
+    package_directory: Path,
+) -> tuple[str, ...]:
+    value = manifest.get("entryModules")
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) > MAX_ENTRY_MODULE_COUNT
+        or any(not isinstance(item, str) for item in value)
+    ):
+        raise _ValidationFailure(
+            "entry_modules_invalid",
+            f'Tool Pack manifest field "entryModules" must contain 1-{MAX_ENTRY_MODULE_COUNT} strings.',
+        )
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if (
+            not item
+            or len(item) > MAX_PACKAGE_LENGTH
+            or ENTRY_MODULE_PATTERN.fullmatch(item) is None
+            or item == "__init__"
+            or item.endswith(".__init__")
+        ):
+            raise _ValidationFailure(
+                "entry_module_invalid",
+                "Tool Pack entryModules must use bounded relative dotted module names.",
+            )
+        key = item.casefold()
+        if key in seen:
+            raise _ValidationFailure(
+                "entry_module_duplicate",
+                "Tool Pack entryModules must not contain portable duplicates.",
+            )
+        seen.add(key)
+        _resolve_entry_module(package_directory, item)
+        normalized.append(item)
+    return tuple(sorted(normalized))
+
+
+def _validate_dependency_policy(
+    manifest: dict[str, Any],
+    package_directory: Path,
+) -> ToolPackDependencyPolicy:
+    value = manifest.get("dependencyPolicy")
+    if not isinstance(value, dict) or set(value) != {"native", "purePython"}:
+        raise _ValidationFailure(
+            "dependency_policy_invalid",
+            'Tool Pack manifest field "dependencyPolicy" must use the closed schema v2 contract.',
+        )
+    pure_python_value = value.get("purePython")
+    native_value = value.get("native")
+    if (
+        not isinstance(pure_python_value, dict)
+        or set(pure_python_value) != {"mode", "treeSha256"}
+        or not isinstance(native_value, dict)
+        or set(native_value) != {"mode"}
+    ):
+        raise _ValidationFailure(
+            "dependency_policy_invalid",
+            "Tool Pack dependencyPolicy contains an unsupported closed entry.",
+        )
+    pure_python = pure_python_value.get("mode")
+    pure_python_tree_sha256 = pure_python_value.get("treeSha256")
+    native = native_value.get("mode")
+    if (
+        not isinstance(pure_python, str)
+        or pure_python not in SUPPORTED_PURE_PYTHON_DEPENDENCY_POLICIES
+        or not isinstance(native, str)
+        or native not in SUPPORTED_NATIVE_DEPENDENCY_POLICIES
+        or (
+            pure_python == "none"
+            and pure_python_tree_sha256 is not None
+        )
+        or (
+            pure_python == "vendored"
+            and (
+                not isinstance(pure_python_tree_sha256, str)
+                or SHA256_PATTERN.fullmatch(pure_python_tree_sha256) is None
+            )
+        )
+    ):
+        raise _ValidationFailure(
+            "dependency_policy_invalid",
+            "Tool Pack dependencyPolicy contains an unsupported mode or hash contract.",
+        )
+    if pure_python == "vendored":
+        vendor_directory = package_directory / "_vendor"
+        if not vendor_directory.is_dir() or not (vendor_directory / "__init__.py").is_file():
+            raise _ValidationFailure(
+                "vendored_dependencies_missing",
+                "Vendored pure-Python dependencies require an internal _vendor package.",
+            )
+        try:
+            actual_tree_sha256 = compute_bounded_directory_sha256(vendor_directory)
+        except ToolPackIntegrityError as exc:
+            raise _ValidationFailure(exc.reason_code, exc.message) from exc
+        if actual_tree_sha256 != pure_python_tree_sha256:
+            raise _ValidationFailure(
+                "dependency_hash_mismatch",
+                "Vendored pure-Python dependencies do not match dependencyPolicy.treeSha256.",
+            )
+    else:
+        try:
+            undeclared_vendor_entries = [
+                entry
+                for entry in package_directory.iterdir()
+                if entry.name.casefold() == "_vendor"
+            ]
+        except OSError as exc:
+            raise _ValidationFailure(
+                "dependency_policy_invalid",
+                "Tool Pack dependency payload could not be inspected.",
+            ) from exc
+        if undeclared_vendor_entries:
+            raise _ValidationFailure(
+                "unlocked_vendored_dependencies",
+                "dependencyPolicy purePython none must not contain an unlocked _vendor payload.",
+            )
+
+    pending = [package_directory]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError as exc:
+            raise _ValidationFailure(
+                "dependency_policy_invalid",
+                "Tool Pack dependency payload could not be inspected.",
+            ) from exc
+        for entry in entries:
+            if entry.is_dir():
+                pending.append(entry)
+            elif entry.is_file() and entry.suffix.casefold() in {".pyd", ".so", ".dylib"}:
+                raise _ValidationFailure(
+                    "in_process_native_dependency_unsupported",
+                    "In-process Python native dependencies are unsupported by schema v2.",
+                )
+    return ToolPackDependencyPolicy(
+        pure_python=pure_python,
+        pure_python_tree_sha256=(
+            pure_python_tree_sha256
+            if isinstance(pure_python_tree_sha256, str)
+            else None
+        ),
+        native=native,
+    )
+
+
+def _reject_startup_hook(python_root: Path) -> None:
+    try:
+        matches = [
+            entry
+            for entry in python_root.iterdir()
+            if entry.name.casefold() == STARTUP_HOOK_NAME.casefold()
+        ]
+    except OSError as exc:
+        raise _ValidationFailure(
+            "python_root_missing",
+            "Tool Pack Content/Python directory could not be inspected.",
+        ) from exc
+    if matches:
+        raise _ValidationFailure(
+            "startup_hook_forbidden",
+            "Tool Packs must not contain Content/Python/init_unreal.py startup hooks.",
+        )
 
 
 def _validate_tool_pack_directory(
@@ -537,21 +795,23 @@ def _validate_tool_pack_directory(
                 "manifest_invalid",
                 "Tool Pack manifest must be a JSON object.",
             )
-        if set(manifest) != MANIFEST_KEYS:
-            raise _ValidationFailure(
-                "manifest_fields_invalid",
-                "Tool Pack manifest must contain exactly the schema v1 fields.",
-            )
-
         schema_version = manifest.get("schemaVersion")
         if (
             isinstance(schema_version, bool)
             or not isinstance(schema_version, int)
-            or schema_version != TOOL_PACK_SCHEMA_VERSION
+            or schema_version not in SUPPORTED_TOOL_PACK_SCHEMA_VERSIONS
         ):
             raise _ValidationFailure(
                 "schema_version_unsupported",
-                "Tool Pack manifest requires schemaVersion 1.",
+                "Tool Pack manifest requires supported schemaVersion 1 or 2.",
+            )
+        expected_manifest_keys = (
+            MANIFEST_V1_KEYS if schema_version == 1 else MANIFEST_V2_KEYS
+        )
+        if set(manifest) != expected_manifest_keys:
+            raise _ValidationFailure(
+                "manifest_fields_invalid",
+                f"Tool Pack manifest must contain exactly the schema v{schema_version} fields.",
             )
 
         required_core_api = manifest.get("requiredCoreApi")
@@ -560,10 +820,10 @@ def _validate_tool_pack_directory(
                 "core_api_invalid",
                 'Tool Pack manifest field "requiredCoreApi" must be a positive integer.',
             )
-        if required_core_api <= 0:
+        if required_core_api <= 0 or required_core_api > MAX_CORE_API_VERSION:
             raise _ValidationFailure(
                 "core_api_invalid",
-                'Tool Pack manifest field "requiredCoreApi" must be a positive integer.',
+                'Tool Pack manifest field "requiredCoreApi" must be a bounded positive integer.',
             )
         if required_core_api != core_api_version:
             raise _ValidationFailure(
@@ -620,6 +880,7 @@ def _validate_tool_pack_directory(
                 "Tool Pack Content/Python directory is missing.",
             )
         python_root = _resolve_child(plugin_directory, python_root_candidate)
+        _reject_startup_hook(python_root)
         package_directory = python_root
         for segment in python_package.split("."):
             package_candidate = package_directory / segment
@@ -637,6 +898,15 @@ def _validate_tool_pack_directory(
                 )
             _resolve_child(package_directory, init_path)
 
+        entry_modules: tuple[str, ...] = ()
+        dependency_policy: ToolPackDependencyPolicy | None = None
+        if schema_version == 2:
+            entry_modules = _validate_entry_modules(manifest, package_directory)
+            dependency_policy = _validate_dependency_policy(
+                manifest,
+                package_directory,
+            )
+
         descriptor = ToolPackDescriptor(
             plugin_name=plugin_name,
             plugin_version=version_value,
@@ -645,6 +915,9 @@ def _validate_tool_pack_directory(
             python_package=python_package,
             command_namespace=command_namespace,
             python_root=python_root,
+            schema_version=schema_version,
+            entry_modules=entry_modules,
+            dependency_policy=dependency_policy,
         )
         return ToolPackDirectoryValidation(
             state="valid",
@@ -846,6 +1119,7 @@ def discover_tool_packs(
             _diagnostic(
                 "plugin:discovery",
                 "Enabled Unreal plugins could not be queried; Tool Packs were not loaded.",
+                "validation_failed",
             )
         ]
 
@@ -870,6 +1144,7 @@ def discover_tool_packs(
             _diagnostic(
                 "plugin:discovery",
                 "Enabled Unreal plugins could not be enumerated; Tool Packs were not loaded.",
+                "validation_failed",
             )
         ]
 
@@ -894,6 +1169,7 @@ def discover_tool_packs(
                         _diagnostic(
                             f"plugin:{safe_plugin_name}",
                             f"[{issue.reason_code}] {issue.message}",
+                            issue.reason_code,
                         )
                     )
                 continue
@@ -905,6 +1181,7 @@ def discover_tool_packs(
                             "[plugin_name_mismatch] Mounted plugin name does not match "
                             "the validated descriptor."
                         ),
+                        "validation_failed",
                     )
                 )
                 continue
@@ -917,6 +1194,7 @@ def discover_tool_packs(
                             "[plugin_version_mismatch] Mounted plugin VersionName does not "
                             "match the validated descriptor."
                         ),
+                        "validation_failed",
                     )
                 )
                 continue
@@ -931,6 +1209,7 @@ def discover_tool_packs(
                 _diagnostic(
                     f"plugin:{safe_plugin_name}",
                     "Tool Pack discovery failed unexpectedly; see the Unreal Log.",
+                    "validation_failed",
                 )
             )
             try:
@@ -955,6 +1234,7 @@ def discover_tool_packs(
             _diagnostic(
                 f"plugin:{_safe_label(issue.plugin_name)}",
                 f"[{issue.reason_code}] {issue.message}",
+                issue.reason_code,
             )
             for issue in conflict_issues
         )
@@ -964,7 +1244,13 @@ def discover_tool_packs(
 
 __all__ = [
     "COMMAND_NAME_PATTERN",
+    "ENTRY_MODULE_PATTERN",
+    "MAX_ENTRY_MODULE_COUNT",
     "MAX_COMMAND_NAME_LENGTH",
+    "MAX_CORE_API_VERSION",
+    "RESERVED_COMMAND_NAMESPACES",
+    "SUPPORTED_TOOL_PACK_SCHEMA_VERSIONS",
+    "ToolPackDependencyPolicy",
     "ToolPackDescriptor",
     "ToolPackDirectoryValidation",
     "ToolPackValidationIssue",

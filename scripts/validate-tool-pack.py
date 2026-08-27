@@ -21,7 +21,7 @@ from unreal_editor_webui_toolpacks import (  # noqa: E402
 
 
 def _pack_document(descriptor: ToolPackDescriptor) -> dict[str, Any]:
-    return {
+    document = {
         "commandNamespace": descriptor.command_namespace,
         "packId": descriptor.pack_id,
         "pluginName": descriptor.plugin_name,
@@ -29,6 +29,19 @@ def _pack_document(descriptor: ToolPackDescriptor) -> dict[str, Any]:
         "pythonPackage": descriptor.python_package,
         "requiredCoreApi": descriptor.required_core_api,
     }
+    # Validator JSON schema v1 records must remain byte/field compatible for
+    # manifest-v1 packs. Only v2 candidates expose the v2-only contract.
+    if descriptor.schema_version == 2 and descriptor.dependency_policy is not None:
+        document["entryModules"] = list(descriptor.entry_modules)
+        document["toolPackSchemaVersion"] = descriptor.schema_version
+        document["dependencyPolicy"] = {
+            "native": {"mode": descriptor.dependency_policy.native},
+            "purePython": {
+                "mode": descriptor.dependency_policy.pure_python,
+                "treeSha256": descriptor.dependency_policy.pure_python_tree_sha256,
+            },
+        }
+    return document
 
 
 def _issue_document(issue: ToolPackValidationIssue) -> dict[str, str]:

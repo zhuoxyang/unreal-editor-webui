@@ -131,7 +131,7 @@ export type SupportReportInput = {
   catalogDiagnosticCode: ToolCatalogDiagnosticCode | null
   toolPackStatus: ToolPackStatusLoadStatus
   toolPackDiagnosticCode: ToolPackStatusDiagnosticCode | null
-  toolPackStatusVersion: 1 | null
+  toolPackStatusVersion: 1 | 2 | null
   toolPackCoreApiVersion: number | null
   toolPackLoadedCount: number
   toolPackRejectedCount: number
@@ -183,7 +183,7 @@ export type SupportReportV2 = {
   toolPacks: {
     status: ToolPackStatusLoadStatus
     diagnosticCode: ToolPackStatusDiagnosticCode | null
-    statusVersion: 1 | null
+    statusVersion: 1 | 2 | null
     coreApiVersion: number | null
     loadedCount: number
     rejectedCount: number
@@ -245,12 +245,15 @@ function deriveSupportHealth(
       reasonCodes.push('health_tool_packs_loading')
     } else if (
       toolPacks.status !== 'ready'
-      || toolPacks.statusVersion !== 1
+      || (toolPacks.statusVersion !== 1 && toolPacks.statusVersion !== 2)
       || toolPacks.coreApiVersion === null
     ) {
       reasonCodes.push('health_tool_packs_unavailable')
     } else {
-      if (toolPacks.rejectedCount > 0) reasonCodes.push('health_tool_packs_rejected')
+      if (
+        toolPacks.rejectedCount > 0
+        || toolPacks.reasonCodes.some((code) => code !== 'tool_pack_status_truncated')
+      ) reasonCodes.push('health_tool_packs_rejected')
       if (toolPacks.truncatedCount > 0) reasonCodes.push('health_tool_packs_truncated')
     }
   }
@@ -354,7 +357,6 @@ function safeToolPackCoreApiVersion(value: number | null): number | null {
 
 function safeToolPackReasonCodes(
   values: ToolPackStatusReasonCode[],
-  rejectedCount: number,
   truncatedCount: number,
 ): ToolPackStatusReasonCode[] {
   if (!Array.isArray(values)) return []
@@ -364,7 +366,7 @@ function safeToolPackReasonCodes(
   }
   return TOOL_PACK_REASON_CODE_ORDER.filter((code) => (
     present.has(code)
-    && (code === 'tool_pack_status_truncated' ? truncatedCount > 0 : rejectedCount > 0)
+    && (code !== 'tool_pack_status_truncated' || truncatedCount > 0)
   ))
 }
 
@@ -426,7 +428,10 @@ export function buildSupportReport(input: SupportReportInput): SupportReportV2 {
   const toolPacks: SupportReportV2['toolPacks'] = {
     status: toolPackStatus,
     diagnosticCode: safeToolPackDiagnostic(toolPackStatus, input.toolPackDiagnosticCode),
-    statusVersion: includeToolPackStatus && input.toolPackStatusVersion === 1 ? 1 : null,
+    statusVersion: includeToolPackStatus
+      && (input.toolPackStatusVersion === 1 || input.toolPackStatusVersion === 2)
+      ? input.toolPackStatusVersion
+      : null,
     coreApiVersion: includeToolPackStatus ? safeToolPackCoreApiVersion(input.toolPackCoreApiVersion) : null,
     loadedCount: toolPackLoadedCount,
     rejectedCount: toolPackRejectedCount,
@@ -434,7 +439,6 @@ export function buildSupportReport(input: SupportReportInput): SupportReportV2 {
     reasonCodes: includeToolPackStatus
       ? safeToolPackReasonCodes(
           input.toolPackReasonCodes,
-          toolPackRejectedCount,
           toolPackTruncatedCount,
         )
       : [],

@@ -38,6 +38,13 @@ from unreal_editor_webui_toolpacks import (  # noqa: E402
     validate_tool_pack_directories,
     validate_tool_pack_directory,
 )
+from unreal_editor_webui_toolpack_integrity import (  # noqa: E402
+    ToolPackIntegrityError,
+    ToolPackPolicy,
+    load_project_tool_pack_policy,
+    payload_tree_sha256,
+    snapshot_tool_pack_payload,
+)
 
 
 DISTRIBUTION_SCHEMA_VERSION = 1
@@ -289,6 +296,15 @@ def _canonical_json_bytes(value: Any) -> bytes:
     ).encode("utf-8")
 
 
+def _json_exact_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without Python's bool/int equality coercion."""
+
+    try:
+        return _canonical_json_bytes(left) == _canonical_json_bytes(right)
+    except (RecursionError, TypeError, UnicodeError, ValueError):
+        return False
+
+
 def _is_reparse_stat(path_stat: os.stat_result) -> bool:
     if stat.S_ISLNK(path_stat.st_mode):
         return True
@@ -391,7 +407,7 @@ def _strict_json_bytes(raw: bytes, label: str, max_bytes: int) -> Any:
         return value
     except DistributionError:
         raise
-    except (json.JSONDecodeError, RecursionError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise DistributionError(
             "json_invalid",
             "%s must use strict UTF-8 JSON." % label,
@@ -608,142 +624,37 @@ def _hash_regular_file(path: Path, path_stat: os.stat_result) -> Tuple[int, str]
 
 
 def _snapshot_plugin(plugin_directory: Path) -> Tuple[FileRecord, ...]:
+    # The packaged runtime, packager, and doctor must hash exactly the same
+    # canonical payload. Keep the path policy and snapshot implementation in
+    # the shipped standard-library-only integrity module.
     try:
-        root_stat = plugin_directory.lstat()
-    except OSError as exc:
-        raise DistributionError(
-            "plugin_directory_unreadable",
-            "Plugin directory could not be inspected.",
-        ) from exc
-    if _is_reparse_stat(root_stat) or not stat.S_ISDIR(root_stat.st_mode):
-        raise DistributionError(
-            "plugin_directory_invalid",
-            "Plugin directory must be a real directory, not a reparse point.",
+        shared_records = snapshot_tool_pack_payload(
+            plugin_directory,
+            max_files=MAX_FILES,
+            max_tree_depth=MAX_TREE_DEPTH,
+            max_scan_entries=MAX_SCAN_ENTRIES,
+            max_single_file_bytes=MAX_SINGLE_FILE_BYTES,
+            max_total_file_bytes=MAX_TOTAL_FILE_BYTES,
         )
-
-    pending: List[Tuple[Path, str, int]] = [(plugin_directory, "", 0)]
-    records: List[FileRecord] = []
-    path_kinds: Dict[str, Tuple[str, str]] = {}
-    total_bytes = 0
-    scan_entry_count = 0
-    reserved_key = _portable_path_key(DISTRIBUTION_RELATIVE_PATH.as_posix())
-
-    while pending:
-        directory, relative_directory, depth = pending.pop()
-        try:
-            entries = _bounded_scandir(
-                directory,
-                MAX_SCAN_ENTRIES - scan_entry_count,
-            )
-            scan_entry_count += len(entries)
-            entries.sort(key=lambda item: item.name.encode("utf-8"))
-        except (OSError, UnicodeError) as exc:
-            raise DistributionError(
-                "plugin_directory_unreadable",
-                "Plugin directory could not be enumerated safely.",
-            ) from exc
-        for entry in entries:
-            relative_path = (
-                "%s/%s" % (relative_directory, entry.name)
-                if relative_directory
-                else entry.name
-            )
-            _validate_relative_path(relative_path)
-            _validate_packaging_path_policy(relative_path)
-            try:
-                entry_stat = entry.stat(follow_symlinks=False)
-            except OSError as exc:
-                raise DistributionError(
-                    "payload_file_unreadable",
-                    "A Tool Pack payload entry could not be inspected.",
-                ) from exc
-            if _is_reparse_stat(entry_stat):
-                raise DistributionError(
-                    "payload_reparse_point",
-                    "Tool Pack payloads must not contain reparse points or symbolic links.",
-                )
-            if (
-                "/" not in relative_path
-                and relative_path in _ALLOWED_ROOT_DIRECTORIES
-                and not stat.S_ISDIR(entry_stat.st_mode)
-            ):
-                raise DistributionError(
-                    "payload_root_entry_invalid",
-                    "A Tool Pack root directory name is occupied by a file.",
-                )
-
-            path_key = _portable_path_key(relative_path)
-            entry_kind = "directory" if stat.S_ISDIR(entry_stat.st_mode) else "file"
-            prior = path_kinds.get(path_key)
-            if prior is not None and prior != (relative_path, entry_kind):
-                raise DistributionError(
-                    "payload_path_collision",
-                    "Tool Pack payload paths collide on a portable filesystem.",
-                )
-            path_kinds[path_key] = (relative_path, entry_kind)
-
-            if stat.S_ISDIR(entry_stat.st_mode):
-                child_depth = depth + 1
-                if child_depth > MAX_TREE_DEPTH:
-                    raise DistributionError(
-                        "scan_limit_exceeded",
-                        "Tool Pack payload exceeds the bounded scan limits.",
-                    )
-                pending.append((Path(entry.path), relative_path, child_depth))
-                continue
-            if not stat.S_ISREG(entry_stat.st_mode):
-                raise DistributionError(
-                    "payload_special_file",
-                    "Tool Pack payloads may contain only regular files and directories.",
-                )
-            if path_key == reserved_key:
-                if relative_path != DISTRIBUTION_RELATIVE_PATH.as_posix():
-                    raise DistributionError(
-                        "payload_path_collision",
-                        "Tool Pack payload conflicts with reserved distribution metadata.",
-                    )
-                continue
-            if len(records) >= MAX_FILES:
-                raise DistributionError(
-                    "scan_limit_exceeded",
-                    "Tool Pack payload exceeds the bounded file-count limit.",
-                )
-            if entry_stat.st_size > MAX_SINGLE_FILE_BYTES:
-                raise DistributionError(
-                    "scan_limit_exceeded",
-                    "Tool Pack payload contains a file above the size limit.",
-                )
-            total_bytes += entry_stat.st_size
-            if total_bytes > MAX_TOTAL_FILE_BYTES:
-                raise DistributionError(
-                    "scan_limit_exceeded",
-                    "Tool Pack payload exceeds the bounded total-size limit.",
-                )
-            size, file_sha256 = _hash_regular_file(Path(entry.path), entry_stat)
-            records.append(
-                FileRecord(
-                    relative_path=relative_path,
-                    absolute_path=Path(entry.path),
-                    size=size,
-                    sha256=file_sha256,
-                    snapshot_stat=entry_stat,
-                )
-            )
-
-    records.sort(key=lambda item: item.relative_path.encode("utf-8"))
-    return tuple(records)
+    except ToolPackIntegrityError as exc:
+        raise DistributionError(exc.reason_code, exc.message) from exc
+    return tuple(
+        FileRecord(
+            relative_path=record.relative_path,
+            absolute_path=record.absolute_path,
+            size=record.size,
+            sha256=record.sha256,
+            snapshot_stat=record.snapshot_stat,
+        )
+        for record in shared_records
+    )
 
 
 def _tree_sha256(records: Sequence[FileRecord]) -> str:
-    digest = hashlib.sha256()
-    for record in records:
-        digest.update(record.relative_path.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(str(record.size).encode("ascii"))
-        digest.update(b"\0")
-        digest.update(record.sha256.encode("ascii"))
-        digest.update(b"\n")
-    return "sha256:" + digest.hexdigest()
+    return payload_tree_sha256(
+        (record.relative_path, record.size, record.sha256)
+        for record in records
+    )
 
 
 def _read_plugin_descriptor(plugin_directory: Path, plugin_name: str) -> Dict[str, Any]:
@@ -1029,6 +940,35 @@ def _content_only_variant(
     }
 
 
+def _distribution_tool_pack_identity(
+    descriptor: ToolPackDescriptor,
+) -> Dict[str, Any]:
+    identity: Dict[str, Any] = {
+        "commandNamespace": descriptor.command_namespace,
+        "id": descriptor.pack_id,
+        "pythonPackage": descriptor.python_package,
+        "requiredCoreApi": descriptor.required_core_api,
+        "schemaVersion": descriptor.schema_version,
+    }
+    if descriptor.schema_version == 2:
+        dependency_policy = descriptor.dependency_policy
+        if dependency_policy is None:
+            raise DistributionError(
+                "distribution_manifest_invalid",
+                "Validated schema v2 Tool Pack is missing dependency policy metadata.",
+                plugin_name=descriptor.plugin_name,
+            )
+        identity["dependencyPolicy"] = {
+            "native": {"mode": dependency_policy.native},
+            "purePython": {
+                "mode": dependency_policy.pure_python,
+                "treeSha256": dependency_policy.pure_python_tree_sha256,
+            },
+        }
+        identity["entryModules"] = list(descriptor.entry_modules)
+    return identity
+
+
 def _distribution_manifest(
     descriptor: ToolPackDescriptor,
     records: Sequence[FileRecord],
@@ -1051,13 +991,7 @@ def _distribution_manifest(
             "name": "unreal-editor-webui-tool-packager",
         },
         "schemaVersion": DISTRIBUTION_SCHEMA_VERSION,
-        "toolPack": {
-            "commandNamespace": descriptor.command_namespace,
-            "id": descriptor.pack_id,
-            "pythonPackage": descriptor.python_package,
-            "requiredCoreApi": descriptor.required_core_api,
-            "schemaVersion": 1,
-        },
+        "toolPack": _distribution_tool_pack_identity(descriptor),
         "unrealVariant": dict(unreal_variant),
     }
 
@@ -1818,7 +1752,15 @@ def _distribution_document(
             "Packaged Tool Pack distribution manifest is invalid.",
             plugin_name=descriptor.plugin_name,
         ) from exc
-    if manifest_bytes != _canonical_json_bytes(document):
+    try:
+        canonical_manifest_bytes = _canonical_json_bytes(document)
+    except (RecursionError, TypeError, UnicodeError, ValueError) as exc:
+        raise DistributionError(
+            "distribution_manifest_invalid",
+            "Packaged Tool Pack distribution manifest is invalid.",
+            plugin_name=descriptor.plugin_name,
+        ) from exc
+    if manifest_bytes != canonical_manifest_bytes:
         raise DistributionError(
             "distribution_manifest_invalid",
             "Packaged Tool Pack distribution manifest must use canonical JSON bytes.",
@@ -1840,23 +1782,26 @@ def _distribution_document(
             plugin_name=descriptor.plugin_name,
         )
     if (
-        document.get("schemaVersion") != DISTRIBUTION_SCHEMA_VERSION
+        not _json_exact_equal(
+            document.get("schemaVersion"),
+            DISTRIBUTION_SCHEMA_VERSION,
+        )
         or document.get("format") != DISTRIBUTION_FORMAT
-        or document.get("plugin")
-        != {"name": descriptor.plugin_name, "version": descriptor.plugin_version}
-        or document.get("toolPack")
-        != {
-            "commandNamespace": descriptor.command_namespace,
-            "id": descriptor.pack_id,
-            "pythonPackage": descriptor.python_package,
-            "requiredCoreApi": descriptor.required_core_api,
-            "schemaVersion": 1,
-        }
-        or document.get("producer")
-        != {
-            "contractVersion": 1,
-            "name": "unreal-editor-webui-tool-packager",
-        }
+        or not _json_exact_equal(
+            document.get("plugin"),
+            {"name": descriptor.plugin_name, "version": descriptor.plugin_version},
+        )
+        or not _json_exact_equal(
+            document.get("toolPack"),
+            _distribution_tool_pack_identity(descriptor),
+        )
+        or not _json_exact_equal(
+            document.get("producer"),
+            {
+                "contractVersion": 1,
+                "name": "unreal-editor-webui-tool-packager",
+            },
+        )
     ):
         raise DistributionError(
             "distribution_manifest_invalid",
@@ -1877,7 +1822,7 @@ def _distribution_document(
             plugin_descriptor,
             descriptor.plugin_name,
         )
-    if document.get("unrealVariant") != expected_variant:
+    if not _json_exact_equal(document.get("unrealVariant"), expected_variant):
         raise DistributionError(
             "ue_variant_metadata_mismatch",
             "Distribution UE variant metadata does not match the installed plugin.",
@@ -1893,7 +1838,7 @@ def _distribution_document(
             plugin_name=descriptor.plugin_name,
         )
     expected_documents = [record.public_document() for record in records]
-    if files != expected_documents:
+    if not _json_exact_equal(files, expected_documents):
         actual_paths = {record.relative_path for record in records}
         declared_paths = {
             item.get("path")
@@ -1919,7 +1864,7 @@ def _distribution_document(
         "totalBytes": sum(record.size for record in records),
         "treeSha256": _tree_sha256(records),
     }
-    if payload != expected_payload:
+    if not _json_exact_equal(payload, expected_payload):
         raise DistributionError(
             "payload_tree_digest_mismatch",
             "Installed Tool Pack tree digest does not match its payload.",
@@ -1937,7 +1882,10 @@ def _read_trust_lock(trust_file_value: Optional[str]) -> Optional[Dict[str, str]
             "trust_lock_invalid",
             "Tool Pack trust lock uses an unsupported schema.",
         )
-    if value.get("schemaVersion") != 1 or not isinstance(value.get("packs"), list):
+    if (
+        not _json_exact_equal(value.get("schemaVersion"), 1)
+        or not isinstance(value.get("packs"), list)
+    ):
         raise DistributionError(
             "trust_lock_invalid",
             "Tool Pack trust lock uses an unsupported schema.",
@@ -1990,6 +1938,20 @@ def doctor_installation(
     project_file, project_root = _resolve_project(project_value)
     engine = _load_engine_identity(Path(engine_root_value))
     trust_anchors = _read_trust_lock(trust_file_value)
+    project_policy: Optional[ToolPackPolicy] = None
+    project_policy_error: Optional[str] = None
+    try:
+        project_policy = load_project_tool_pack_policy(project_root)
+    except ToolPackIntegrityError as exc:
+        project_policy_error = exc.reason_code
+        issues.append(
+            DoctorIssue(
+                reason_code=exc.reason_code,
+                message=exc.message,
+                plugin_name="project-policy",
+                scope="project",
+            )
+        )
     try:
         if _project_core_disabled(project_file):
             issues.append(
@@ -2181,7 +2143,7 @@ def doctor_installation(
 
     pack_records: List[DoctorPack] = []
     any_integrity_failure = False
-    any_authenticity_failure = False
+    any_authenticity_failure = project_policy_error is not None
     anchored_pack_count = 0
     for directory_result in validation_report.directory_results:
         descriptor = directory_result.descriptor
@@ -2222,13 +2184,15 @@ def doctor_installation(
         authenticity_status = "unverified"
         state = "healthy"
         try:
-            _document, manifest_bytes, _records, _variant = _distribution_document(
+            document, manifest_bytes, _records, _variant = _distribution_document(
                 location.directory,
                 descriptor,
                 engine,
             )
             manifest_sha256 = _sha256_bytes(manifest_bytes)
+            has_authenticity_anchor = False
             if trust_anchors is not None:
+                has_authenticity_anchor = True
                 expected_digest = trust_anchors.get(descriptor.pack_id)
                 if expected_digest is None:
                     raise DistributionError(
@@ -2242,11 +2206,56 @@ def doctor_installation(
                         "Installed distribution manifest does not match the trust lock.",
                         plugin_name=descriptor.plugin_name,
                     )
+            if project_policy_error is not None:
+                raise DistributionError(
+                    "trust_policy_invalid",
+                    "Tool Pack project policy is invalid.",
+                    plugin_name=descriptor.plugin_name,
+                )
+            if project_policy is not None:
+                has_authenticity_anchor = True
+                policy_entry = project_policy.by_pack_id.get(descriptor.pack_id)
+                if policy_entry is None:
+                    raise DistributionError(
+                        "trust_anchor_missing",
+                        "Project policy does not contain this installed Tool Pack.",
+                        plugin_name=descriptor.plugin_name,
+                    )
+                if policy_entry.plugin_version != descriptor.plugin_version:
+                    raise DistributionError(
+                        "trusted_plugin_version_mismatch",
+                        "Installed Tool Pack version does not match the project policy.",
+                        plugin_name=descriptor.plugin_name,
+                    )
+                if policy_entry.required_core_api != descriptor.required_core_api:
+                    raise DistributionError(
+                        "trusted_core_api_mismatch",
+                        "Installed Tool Pack API does not match the project policy.",
+                        plugin_name=descriptor.plugin_name,
+                    )
+                payload = document.get("payload")
+                actual_payload_sha256 = (
+                    payload.get("treeSha256") if isinstance(payload, dict) else None
+                )
+                if policy_entry.payload_sha256 != actual_payload_sha256:
+                    raise DistributionError(
+                        "trusted_payload_mismatch",
+                        "Installed Tool Pack payload does not match the project policy.",
+                        plugin_name=descriptor.plugin_name,
+                    )
+            if has_authenticity_anchor:
                 authenticity_status = "verified"
                 anchored_pack_count += 1
         except DistributionError as exc:
             state = "rejected"
-            if exc.reason_code in ("trust_anchor_missing", "trusted_manifest_mismatch"):
+            if exc.reason_code in (
+                "trust_anchor_missing",
+                "trust_policy_invalid",
+                "trusted_core_api_mismatch",
+                "trusted_manifest_mismatch",
+                "trusted_payload_mismatch",
+                "trusted_plugin_version_mismatch",
+            ):
                 authenticity_status = "failed"
                 any_authenticity_failure = True
             else:
@@ -2291,6 +2300,21 @@ def doctor_installation(
             )
             any_authenticity_failure = True
 
+    if project_policy is not None:
+        installed_ids = {
+            pack.pack_id for pack in pack_records if pack.pack_id is not None
+        }
+        if set(project_policy.by_pack_id) - installed_ids:
+            issues.append(
+                DoctorIssue(
+                    reason_code="trusted_pack_missing",
+                    message="Project policy names a Tool Pack that is not installed.",
+                    plugin_name="project-policy",
+                    scope="project",
+                )
+            )
+            any_authenticity_failure = True
+
     bounded_issues, truncated_count = _bounded_issues(issues)
     has_error = any(issue.severity == "error" for issue in bounded_issues)
     overall_status = "unhealthy" if has_error else "healthy"
@@ -2300,7 +2324,12 @@ def doctor_installation(
         integrity_status = "failed"
     else:
         integrity_status = "self_consistent"
-    if trust_anchors is None:
+    authenticity_enforced = (
+        trust_anchors is not None
+        or project_policy is not None
+        or project_policy_error is not None
+    )
+    if not authenticity_enforced:
         authenticity_status = "unverified"
     elif any_authenticity_failure:
         authenticity_status = "failed"

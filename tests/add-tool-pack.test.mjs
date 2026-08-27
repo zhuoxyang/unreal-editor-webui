@@ -132,14 +132,21 @@ function assertGeneratedPayload(pluginDirectory, expected = {}) {
     join(pluginDirectory, 'Content', 'UnrealEditorWebUI', 'ToolPack.json'),
   )
   assert.deepEqual(manifest, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: expected.id ?? DEFAULT_ID,
     requiredCoreApi: 1,
     pythonPackage: expected.pythonPackage ?? DEFAULT_PACKAGE,
     commandNamespace: expected.commandNamespace ?? DEFAULT_NAMESPACE,
+    entryModules: ['commands'],
+    dependencyPolicy: {
+      purePython: { mode: 'none', treeSha256: null },
+      native: { mode: 'none' },
+    },
   })
   assert.deepEqual(Object.keys(manifest).sort(), [
     'commandNamespace',
+    'dependencyPolicy',
+    'entryModules',
     'id',
     'pythonPackage',
     'requiredCoreApi',

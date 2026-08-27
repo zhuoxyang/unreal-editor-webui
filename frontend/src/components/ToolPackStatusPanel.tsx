@@ -4,20 +4,69 @@ import {
   type ToolPackStatusDiagnosticCode,
   type ToolPackStatusLoadStatus,
 } from '../hooks/useToolPackStatus'
-import type { ToolPackStatusV1 } from '../types/bridge'
+import type { ToolPackBackendReasonCode, ToolPackStatus } from '../types/bridge'
 
 type ToolPackStatusPanelProps = {
-  status: ToolPackStatusV1 | null
+  status: ToolPackStatus | null
   loadStatus: ToolPackStatusLoadStatus
   diagnosticCode: ToolPackStatusDiagnosticCode | null
   canRetry: boolean
   onRetry: () => void
 }
 
+function v2ReasonMessage(reasonCode: ToolPackBackendReasonCode) {
+  switch (reasonCode) {
+    case 'trust_policy_invalid':
+      return 'Rejected because the project Tool Pack policy is invalid.'
+    case 'trust_anchor_missing':
+      return 'Rejected because this Tool Pack is not approved by the project policy.'
+    case 'trusted_payload_mismatch':
+      return 'Rejected because the installed payload does not match the approved hash.'
+    case 'trusted_payload_unverifiable':
+      return 'Rejected because the installed payload could not be verified safely.'
+    case 'trusted_plugin_version_mismatch':
+      return 'Rejected because the installed plugin version is not approved.'
+    case 'trusted_core_api_mismatch':
+      return 'Rejected because the approved core API does not match this Tool Pack.'
+    case 'trusted_pack_missing':
+      return 'The project policy requires a Tool Pack that is not installed.'
+    case 'dependency_hash_mismatch':
+    case 'unlocked_vendored_dependencies':
+    case 'vendored_dependencies_missing':
+      return 'Rejected because its vendored Python dependency lock is invalid.'
+    case 'dependency_policy_invalid':
+    case 'in_process_native_dependency_unsupported':
+      return 'Rejected because its dependency policy is unsupported.'
+    case 'startup_hook_forbidden':
+      return 'Rejected because Tool Packs may not provide an Unreal Python startup hook.'
+    case 'undeclared_registration_origin':
+      return 'Rejected because a command was registered outside a declared entry module.'
+    case 'entry_module_ambiguous':
+    case 'entry_module_duplicate':
+    case 'entry_module_invalid':
+    case 'entry_module_missing':
+    case 'entry_modules_invalid':
+      return 'Rejected because its declared entry modules are invalid.'
+    case 'command_namespace_conflict':
+    case 'pack_id_conflict':
+    case 'plugin_name_conflict':
+    case 'python_package_conflict':
+    case 'tool_pack_conflict':
+      return 'Rejected because its identity or command namespace conflicts with another Tool Pack.'
+    case 'command_registration_rejected':
+    case 'entry_import_failed':
+    case 'validation_failed':
+      return 'Rejected while the Tool Pack was validated or loaded.'
+  }
+}
+
 function rejectionMessage(
-  pack: Extract<ToolPackStatusV1['packs'][number], { state: 'rejected' }>,
+  pack: Extract<ToolPackStatus['packs'][number], { state: 'rejected' }>,
   coreApiVersion: number,
 ) {
+  if ('reasonCodes' in pack && pack.reasonCodes.length > 0) {
+    return v2ReasonMessage(pack.reasonCodes[0])
+  }
   switch (toolPackRejectionReasonCode(pack, coreApiVersion)) {
     case 'tool_pack_core_api_mismatch':
       return 'Rejected because the Tool Pack requires a different core API version.'
@@ -53,6 +102,13 @@ export function ToolPackStatusPanel({
           <p role="status">
             {loadedCount} loaded · {rejectedCount} rejected · core API v{status.coreApiVersion}
           </p>
+          {status.statusVersion === 2 && status.policy.state === 'rejected' ? (
+            <p className="inline-warning" role="alert">
+              {status.policy.reasonCodes[0]
+                ? v2ReasonMessage(status.policy.reasonCodes[0])
+                : 'The project Tool Pack policy was rejected.'}
+            </p>
+          ) : null}
           {status.packs.length === 0 ? <p>No third-party Tool Packs discovered.</p> : (
             <ul className="tool-pack-status-list">
               {status.packs.map((pack, index) => (

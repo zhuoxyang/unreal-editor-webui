@@ -136,6 +136,7 @@ jobs:
           assert (root / "Source/UnrealEditorWebUI/Private/Tests/UnrealEditorWebUIBrowserTests.cpp").is_file(), "GUI CEF automation test missing"
           assert (root / "Python/unreal_editor_webui_bridge_entry.py").is_file(), "Python bridge entry missing"
           assert (root / "Python/unreal_editor_webui_registry.py").is_file(), "Python registry missing"
+          assert (root / "Python/unreal_editor_webui_toolpack_integrity.py").is_file(), "Tool Pack integrity module missing"
 
       - name: Validate packaging scripts
         shell: bash
@@ -363,6 +364,7 @@ jobs:
             $ToolPackSourceDirs = @(
               (Join-Path $PWD "tests/fixtures/ue-tool-packs/AssetToolsFixture")
               (Join-Path $PWD "tests/fixtures/ue-tool-packs/LevelToolsFixture")
+              (Join-Path $PWD "examples/tool-packs/ExampleAssetTools")
             )
           }
           $ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress

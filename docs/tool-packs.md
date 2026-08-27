@@ -138,7 +138,7 @@ ordering, and plugin identities only—never absolute input paths. Valid pack re
 strict `.uplugin` `VersionName` as `pluginVersion` for downstream artifact naming.
 
 The validator checks exactly one strict root `.uplugin`, a safe `VersionName`,
-`CanContainContent`, one exact enabled core dependency, the closed schema-v1 manifest, core API 1,
+`CanContainContent`, one exact enabled core dependency, the closed schema-v1 or schema-v2 manifest, core API 1,
 package and `__init__.py` files, path containment, and reparse points. It also reserves current core
 command namespaces (`asset`, `demo`, `editor`, and `system`) and rejects every side of pack ID,
 top-level Python package, plugin-name, or dot-boundary namespace conflicts. Directory scans are
@@ -159,7 +159,40 @@ The manifest location is fixed:
 <ToolPack>/Content/UnrealEditorWebUI/ToolPack.json
 ```
 
-Schema v1 is a closed object with exactly these fields:
+New scaffolds use schema v2. It is a closed object with exactly these fields:
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "com.studio.asset-tools",
+  "requiredCoreApi": 1,
+  "pythonPackage": "ue_webui_toolpack_studio_asset_tools",
+  "commandNamespace": "studio.assets",
+  "entryModules": ["commands"],
+  "dependencyPolicy": {
+    "purePython": { "mode": "none", "treeSha256": null },
+    "native": { "mode": "none" }
+  }
+}
+```
+
+`entryModules` contains 1–32 relative dotted module names below `pythonPackage`. Names are
+bounded, portable, unique, cannot name `__init__`, and must resolve to exactly one `.py` module or
+package. The core actively imports only these entries. An entry may explicitly import ordinary
+helpers or vendored modules, but an undeclared helper or parent package `__init__.py` cannot
+register commands; doing so rejects and rolls back the complete pack. A package explicitly named
+as an entry registers from its own `__init__.py`. Python necessarily executes parent package
+initializers while importing an entry, so keep undeclared initializers side-effect free.
+
+`dependencyPolicy` is also closed. `purePython.mode: "none"` requires no `_vendor` package.
+`purePython.mode: "vendored"` requires `<pythonPackage>/_vendor/__init__.py` and a
+`treeSha256` computed by the same bounded canonical scanner used by the packager, doctor, and
+runtime. A missing or changed file rejects the pack. In-process `.pyd`, `.so`, and `.dylib`
+dependencies are unsupported. Native tools must use `native.mode: "outOfProcess"` and perform
+their own UE/Python/platform compatibility checks across the process boundary. Runtime `pip`
+installation is unsupported.
+
+Schema v1 remains accepted byte-for-byte with exactly these fields:
 
 ```json
 {
@@ -187,6 +220,12 @@ Schema v1 is a closed object with exactly these fields:
 Unknown keys, duplicate JSON keys, unsupported versions, malformed identifiers, oversized or
 deep manifests, escaped paths, and missing packages reject that pack. The manifest cannot add a
 Python search path or name an arbitrary file.
+
+Schema v1 keeps its historical recursive package import behavior. Migrate by moving command
+registration into explicit modules, setting `entryModules`, declaring the dependency policy, and
+changing only `schemaVersion` plus the two v2 fields. As a deliberate security exception for both
+versions, `Content/Python/init_unreal.py` is rejected; existing v1 manifest bytes and fields remain
+unchanged.
 
 ## Register Commands Through The SDK
 
@@ -221,10 +260,11 @@ def validate(payload: dict[str, Any]) -> dict[str, Any]:
     return {"valid": True}
 ```
 
-Place `.py` modules or packages containing `__init__.py` below the declared package. The core
-builds an exact canonical-file allowlist, imports the package, and walks those submodules in
-deterministic order. Keep module top levels limited to imports and command registration; perform
-editor or filesystem work inside handlers.
+Place `.py` modules or packages containing `__init__.py` below the declared package. For v2 the
+core builds an exact canonical-file allowlist and actively imports only sorted declared entries;
+explicit imports from an entry remain inside that allowlist. V1 continues to import the package
+and walk all submodules in deterministic order. Keep module top levels limited to imports and
+command registration; perform editor or filesystem work inside handlers.
 
 Do not import the package from `init_unreal.py` or another startup hook. SDK registration is open
 only while the core is explicitly loading built-ins or that Tool Pack; registration outside that
@@ -239,6 +279,46 @@ the complete pack atomically.
 The command schema, permissions, task execution metadata, and response envelopes are the same as
 built-in commands. See [the integration guide](integration-guide.md#discover-commands)
 for the schema-v1 contract.
+
+## Opt In To A Project Trust Policy
+
+Policy enforcement is disabled when this fixed file is absent:
+
+```text
+<Project>/Config/UnrealEditorWebUI/ToolPackPolicy.json
+```
+
+To enable it, commit a closed policy object to the project:
+
+```json
+{
+  "format": "unreal-editor-webui-tool-pack-policy",
+  "schemaVersion": 1,
+  "packs": [
+    {
+      "packId": "com.studio.asset-tools",
+      "pluginVersion": "1.2.0",
+      "requiredCoreApi": 1,
+      "payloadSha256": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  ]
+}
+```
+
+Use the canonical distribution manifest `payload.treeSha256` emitted by
+`scripts/package-tool-pack.py`; do not invent or hash a ZIP manually. Once the file exists, an
+invalid/duplicate/oversized/unknown policy field, an unlisted installed pack, version/API drift,
+or payload-tree drift rejects the affected import before Tool Pack Python runs. A policy entry for
+a pack that is not installed rejects the aggregate policy state. Policy reason codes are fixed,
+bounded, and path-free.
+
+The policy gates only the core's Tool Pack Python import and command registration. Unreal may
+load an enabled plugin's native module before the core reaches this gate, and engine/plugin startup
+ordering can execute other plugin-owned mechanisms first. Tool Packs themselves are forbidden
+from shipping `Content/Python/init_unreal.py`, but the policy is not a general Unreal plugin
+sandbox or code-signing system. Hash validation and import are separate filesystem operations;
+avoid modifying an installed pack concurrently. Policy or payload changes require a full Unreal
+Editor restart, and side effects already performed by an import cannot be rolled back.
 
 ## Install And Verify Multiple Packs
 
@@ -255,8 +335,9 @@ Install the core once, then copy any number of Tool Pack directories alongside i
 plugins can declare `UnrealEditorWebUI` as their shared dependency in exactly the same way; do not
 place a private copy of the core inside each business plugin.
 
-Enable all three plugins and restart Unreal Editor. Tool Pack discovery occurs once during core
-registry initialization; v1 does not hot-load, hot-unload, or reload packs.
+Enable all three plugins and restart Unreal Editor. Tool Pack discovery and policy evaluation occur
+once during core registry initialization; neither manifest version hot-loads, hot-unloads, or
+reloads packs.
 
 Open `Window > Unreal Editor WebUI` and search for the new commands. For a direct smoke test, run
 `system.commands` and confirm that:
@@ -265,19 +346,22 @@ Open `Window > Unreal Editor WebUI` and search for the new commands. For a direc
 - `loadErrors` is empty;
 - each pack's generated `<namespace>.ping` command executes successfully.
 
-Then run `system.toolPacks`. Its `statusVersion: 1` response should contain one `loaded` entry per
+Then run `system.toolPacks`. Its `statusVersion: 2` response should contain one `loaded` entry per
 pack, the expected `.uplugin` `pluginVersion` and `requiredCoreApi`, and the number of commands
 owned by that pack. Its sorted `commands` list maps the already-public `system.commands` names to
 their provider. Rejected descriptors and manifest-discovery failures are also listed with
 `state: "rejected"` and an empty `commands` list; a manifest rejected before its descriptor is
 trusted exposes only a sanitized `pluginName`, with `provider`, `packId`, `pluginVersion`, and
-`requiredCoreApi` set to `null`. Safe reasons remain in `system.commands.loadErrors`.
+`requiredCoreApi` set to `null`. Every pack record contains a bounded `reasonCodes` array; loaded
+packs have an empty array. The top-level `policy` object reports `disabled`, `accepted`, or
+`rejected` without paths or raw exceptions. Safe details also remain in
+`system.commands.loadErrors`.
 `truncatedCount` is a saturating cumulative count of status observations omitted across
 publications by the fixed processing and output bounds. Re-observing an omitted status increments
 the count again; the core does not retain an unbounded hidden-provider history.
 
-The workspace header exposes the same response through a strict v1 decoder and a Tool Pack status
-panel. It shows loaded/rejected entries, public command ownership, coarse fixed rejection
+The workspace header accepts the legacy status-v1 response and strictly decodes status v2. The
+Tool Pack panel shows loaded/rejected entries, policy failures, public command ownership, and fixed rejection
 categories, and whether cumulative observations were truncated. The copyable schema-v2 support
 report deliberately reduces this to lifecycle/diagnostic codes, backend/core versions, aggregate
 counts, and fixed reason codes; it never includes pack, provider, plugin, or command identities or
@@ -335,9 +419,14 @@ sanitized identities, never absolute inspected paths. It checks missing/duplicat
 authoritative Tool Pack validation and cross-pack conflicts, canonical distribution metadata,
 payload hashes, and the installed Unreal native variant.
 
+The doctor automatically reads the same fixed project `ToolPackPolicy.json` and validates pack
+id, plugin version, required API, and canonical payload tree. This is the offline view of the
+runtime gate and uses the same standard-library scanner as packaging.
+
 An optional `--trust-file tool-packs.lock.json` maps each `packId` to the expected canonical
 `manifestSha256`. `verified` means only that the installed manifest matches this caller-supplied
-anchor; the lock file must itself come from a trusted release channel.
+anchor; the lock file must itself come from a trusted release channel. This legacy distribution
+lock remains supported and, when supplied alongside the project policy, both anchors must pass.
 
 ## Isolation And Conflict Rules
 
@@ -358,7 +447,7 @@ anchor; the lock file must itself come from a trusted release channel.
   paths, Python package names, the manifest namespace as a separate field, errors, or tracebacks.
 - Core bootstrap commands such as `system.ping`, `system.commands`, and `system.toolPacks` remain
   available even when a third-party pack fails.
-- V1 limits the shared registry to 256 commands, each command's metadata to 256 KiB, the metadata
+- The runtime limits the shared registry to 256 commands, each command's metadata to 256 KiB, the metadata
   catalogue to 3 MiB, each Tool Pack to 256 discovered submodules, and surfaced load diagnostics
   to 128 entries. Command names are capped at 256 characters. Tool Pack status is capped at 384
   entries and reports a saturating cumulative count of omitted status observations. Exceeding a
@@ -366,8 +455,10 @@ anchor; the lock file must itself come from a trusted release channel.
 
 This is registration isolation, not a security sandbox. Tool Pack Python is trusted editor code
 and can call Unreal, Python, OS, network, and filesystem APIs. Registry and module-cache rollback
-cannot undo side effects already performed during import. Review a pack before enabling it, and
-do not put work with side effects at module top level.
+cannot undo side effects already performed during import. Unreal may also load a plugin's native
+module before the core policy gate. Review the complete plugin before enabling it, keep package
+initializers and helpers free of registration/side effects, do not modify payloads during startup,
+and restart Unreal after every policy or pack change.
 
 ## Compatibility
 

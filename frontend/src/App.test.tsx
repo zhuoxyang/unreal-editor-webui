@@ -492,7 +492,7 @@ describe('health and support report', () => {
       'data-tool-pack-status',
       'malformed',
     ))
-    expect(screen.getByText('The Tool Pack status response does not satisfy schema v1.')).toHaveAttribute(
+    expect(screen.getByText('The Tool Pack status response does not satisfy schema v1 or v2.')).toHaveAttribute(
       'role',
       'alert',
     )
@@ -514,5 +514,72 @@ describe('health and support report', () => {
       },
     })
     expect(preview.value).not.toContain(secret)
+  })
+
+  it('exports a policy-only Tool Pack rejection even when no installed pack is rejected', async () => {
+    installBridge([], {
+      getwebuihealth: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        bridgeProtocolVersion: 1,
+        pluginVersion: '0.1.1',
+        engineVersion: '5.8.0',
+        documentScope: 'packaged',
+        pythonRuntime: 'available',
+        privilegedConfirmation: 'per_call',
+        taskSessionIsolation: 'document',
+      })),
+      getprojectcontext: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        projectName: 'Tool Pack Host',
+        storageNamespace: 'tool-pack-host',
+      })),
+      gettoolcatalog: vi.fn(async () => bridgeResponse({
+        protocolVersion: 1,
+        source: 'project',
+        catalog: customToolCatalog(),
+        diagnosticCode: null,
+      })),
+    })
+    const defaultExecute = window.ue!.editorwebui!.executecommand
+    window.ue!.editorwebui!.executecommand = vi.fn(async (requestJson: string) => {
+      const request = JSON.parse(requestJson) as { command?: string }
+      if (request.command === 'system.toolPacks') {
+        return bridgeResponse({
+          statusVersion: 2,
+          coreApiVersion: 1,
+          policy: {
+            enforced: true,
+            state: 'rejected',
+            reasonCodes: ['trusted_pack_missing'],
+          },
+          packs: [],
+          truncatedCount: 0,
+        })
+      }
+      return defaultExecute(requestJson)
+    })
+
+    const { container } = render(<App />)
+    await waitFor(() => expect(container.querySelector('[data-health-overall-status]')).toHaveAttribute(
+      'data-health-overall-status',
+      'degraded',
+    ))
+    fireEvent.click(container.querySelector('[data-health-panel-toggle]') as HTMLButtonElement)
+    fireEvent.click(container.querySelector('[data-support-report-generate]') as HTMLButtonElement)
+    const preview = container.querySelector('textarea[data-support-report-preview]') as HTMLTextAreaElement
+    expect(JSON.parse(preview.value)).toMatchObject({
+      health: {
+        overallStatus: 'degraded',
+        reasonCodes: ['health_tool_packs_rejected'],
+      },
+      toolPacks: {
+        status: 'ready',
+        statusVersion: 2,
+        loadedCount: 0,
+        rejectedCount: 0,
+        reasonCodes: ['tool_pack_load_rejected'],
+      },
+    })
+    expect(preview.value).not.toContain('trusted_pack_missing')
   })
 })

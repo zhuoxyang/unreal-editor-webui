@@ -80,8 +80,9 @@ not deleted from storage. Catalog files are readable by the trusted embedded pag
 tokens, credentials, absolute machine paths, executable code, HTML, SVG, or remote URLs in them.
 
 The rack header's health panel reports whether catalog loading, command discovery, and the
-strictly decoded `system.toolPacks` v1 deployment view are ready. It can show bounded public pack
-identity and command ownership for local diagnosis. Its schema-v2 copyable support report contains
+strictly decoded `system.toolPacks` deployment view are ready. The backend emits status v2 with
+closed policy state and reason codes, while the frontend continues to accept the legacy v1 shape.
+It can show bounded public pack identity and command ownership for local diagnosis. Its schema-v2 copyable support report contains
 only catalog source/status, schema version, fixed diagnostic codes, registry/Tool Pack aggregate
 counts, and fixed reason codes. Catalog ids, labels, descriptions, defaults, command names, pack
 or plugin identities, module names, raw load errors, and decoder exceptions are deliberately

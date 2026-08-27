@@ -12,7 +12,7 @@ import {
   type SupportHealthReasonCode,
   type SupportReportInput,
 } from '../support-report'
-import type { ToolPackStatusV1, WebUIDocumentScope, WebUIHealth } from '../types/bridge'
+import type { ToolPackStatus, WebUIDocumentScope, WebUIHealth } from '../types/bridge'
 import { ToolPackStatusPanel } from './ToolPackStatusPanel'
 
 type BridgeHealthPanelProps = {
@@ -21,7 +21,7 @@ type BridgeHealthPanelProps = {
   canRetryHealth: boolean
   onRetryHealth: () => void
   supportReportInput: SupportReportInput
-  toolPackStatus: ToolPackStatusV1 | null
+  toolPackStatus: ToolPackStatus | null
   toolPackStatusLoadStatus: ToolPackStatusLoadStatus
   toolPackStatusDiagnosticCode: ToolPackStatusDiagnosticCode | null
   canRetryToolPackStatus: boolean

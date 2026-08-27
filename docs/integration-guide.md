@@ -94,8 +94,10 @@ provider, plugin name/version, command name, discovery/load exception, or traceb
 is one of `unavailable`, `loading`, `ready`, `unsupported`, `malformed`, or `error`; diagnostics
 and coarse reasons are selected only from repository-owned fixed codes. Reason codes are ordered
 from `tool_pack_core_api_mismatch`, `tool_pack_discovery_rejected`, and
-`tool_pack_load_rejected` to `tool_pack_status_truncated`. This schema-v2 support-report contract
-does not change the backend `system.toolPacks.statusVersion: 1` response.
+`tool_pack_load_rejected` to `tool_pack_status_truncated`. The backend now emits
+`system.toolPacks.statusVersion: 2`; the frontend still accepts the legacy v1 shape. Backend v2
+reason codes and policy details are reduced to these aggregate support categories, never copied
+with pack identities.
 While native bridge health is ready, `health_tool_packs_loading` is a checking-only reason. An
 unsupported/malformed/failed status request, rejected aggregate count, or truncated aggregate
 count maps to one of the other fixed Tool Pack health reasons and degrades overall health. Bridge
@@ -260,7 +262,7 @@ does not change:
 
 ```js
 const status = await executeCommand("system.toolPacks");
-if (status.statusVersion !== 1) {
+if (status.statusVersion !== 1 && status.statusVersion !== 2) {
   throw new Error(`Unsupported Tool Pack status version: ${status.statusVersion}`);
 }
 for (const pack of status.packs) {
@@ -271,9 +273,11 @@ for (const pack of status.packs) {
 The bounded response contains sanitized provider, version, API, and state fields plus a sorted
 list of owned command names already exposed by `system.commands`. A manifest rejected before its
 descriptor is trusted has only a sanitized plugin label, null descriptor fields, and an empty
-command list. The response deliberately omits paths, Python package names, the manifest namespace
-as a separate field, exception text, and tracebacks. Use the existing `loadErrors` list for safe
-rejection reasons. `truncatedCount` is a saturating cumulative count of status observations
+command list. V2 adds a closed top-level `policy` state and a bounded fixed `reasonCodes` array on
+each pack; loaded packs have no reasons. V1 remains decodable without those fields. The response
+deliberately omits paths, Python package names, the manifest namespace as a separate field,
+exception text, and tracebacks. Use the existing `loadErrors` list for safe detail.
+`truncatedCount` is a saturating cumulative count of status observations
 omitted across publications; repeated omitted observations increment it again without retaining
 an unbounded hidden-provider history.
 

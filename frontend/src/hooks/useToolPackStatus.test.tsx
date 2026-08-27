@@ -1,8 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { BridgeCallError, BridgeProtocolError, type BridgeCaller } from '../bridge'
-import type { ToolPackStatusV1 } from '../types/bridge'
-import { useToolPackStatus } from './useToolPackStatus'
+import type { ToolPackStatusV1, ToolPackStatusV2 } from '../types/bridge'
+import { toolPackStatusReasonCodes, useToolPackStatus } from './useToolPackStatus'
 
 const STATUS: ToolPackStatusV1 = {
   statusVersion: 1,
@@ -79,7 +79,7 @@ describe('useToolPackStatus', () => {
       code: string
     }> = [
       {
-        caller: vi.fn().mockResolvedValue({ ...STATUS, statusVersion: 2, privatePath: secret }) as BridgeCaller,
+        caller: vi.fn().mockResolvedValue({ ...STATUS, statusVersion: 3, privatePath: secret }) as BridgeCaller,
         status: 'unsupported',
         code: 'tool_pack_schema_unsupported',
       },
@@ -118,6 +118,33 @@ describe('useToolPackStatus', () => {
       expect(log.mock.calls.flat().join(' ')).not.toContain(secret)
       view.unmount()
     }
+  })
+
+  it('maps v2 backend reasons into aggregate-only support reason categories', () => {
+    const status: ToolPackStatusV2 = {
+      statusVersion: 2,
+      coreApiVersion: 1,
+      policy: {
+        enforced: true,
+        state: 'rejected',
+        reasonCodes: ['trusted_payload_mismatch'],
+      },
+      packs: [{
+        provider: 'studio.assets',
+        packId: 'studio.assets',
+        pluginName: 'StudioAssets',
+        pluginVersion: '1.0.0',
+        requiredCoreApi: 1,
+        state: 'rejected',
+        commandCount: 0,
+        commands: [],
+        reasonCodes: ['trusted_payload_mismatch'],
+      }],
+      truncatedCount: 0,
+    }
+
+    expect(toolPackStatusReasonCodes(status)).toEqual(['tool_pack_load_rejected'])
+    expect(JSON.stringify(toolPackStatusReasonCodes(status))).not.toContain('studio.assets')
   })
 
   it('retries a transient failure and ignores a stale caller response', async () => {

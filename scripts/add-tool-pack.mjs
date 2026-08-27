@@ -455,11 +455,16 @@ function applyPrepared(prepared) {
     ensureDirectory(prepared.pythonPackageDirectory, createdDirectories)
 
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       id: prepared.id,
       requiredCoreApi: 1,
       pythonPackage: prepared.pythonPackage,
       commandNamespace: prepared.commandNamespace,
+      entryModules: ['commands'],
+      dependencyPolicy: {
+        purePython: { mode: 'none', treeSha256: null },
+        native: { mode: 'none' },
+      },
     }
     writeExclusive(
       prepared.manifestPath,
