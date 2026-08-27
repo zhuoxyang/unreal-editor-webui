@@ -201,7 +201,9 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     '$CatalogMarker = [guid]::NewGuid().ToString("N")',
     '$CatalogMarker -cnotmatch "^[0-9a-f]{32}$"',
     '$CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"',
-    '$ToolPackSourceDirs = @(',
+    '$ToolPackSourceDirs = @()',
+    'if ($env:UE_VERSION -eq "5.8")',
+    '$ToolPackSourceDirs = @(\n',
     'tests/fixtures/ue-tool-packs/AssetToolsFixture',
     'tests/fixtures/ue-tool-packs/LevelToolsFixture',
     '$ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress',
@@ -214,9 +216,52 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     '-ToolPackSourceDirsJson $ToolPackSourceDirsJson',
     '"HOST_PROJECT=$ProjectPath"',
     '"UE_WEBUI_CATALOG_MARKER=$CatalogMarker"',
+    '"UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=$($ToolPackSourceDirs.Count)"',
     '"UE_WEBUI_TOOL_PACK_TEST=1"',
     'Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append',
   ])
+})
+
+test('host exports a validated version-specific Tool Pack count for the GUI contract', () => {
+  const hostRun = stepNamed('Create temporary host project').run
+  const branchStart = hostRun.indexOf('if ($env:UE_VERSION -eq "5.8") {')
+  const branchEnd = hostRun.indexOf('$ToolPackSourceDirsJson = ConvertTo-Json', branchStart)
+  assert.ok(branchStart >= 0 && branchEnd > branchStart)
+  const fixtureBranch = hostRun.slice(branchStart, branchEnd)
+  const fixturePaths = fixtureBranch.match(
+    /tests\/fixtures\/ue-tool-packs\/[A-Za-z0-9_-]+/gu,
+  ) || []
+  assert.equal(fixturePaths.length, 2)
+  assert.equal(new Set(fixturePaths).size, 2)
+
+  const expectedCount = (version) => (version === '5.8' ? fixturePaths.length : 0)
+  assert.equal(expectedCount('5.3'), 0)
+  assert.equal(expectedCount('5.8'), 2)
+  assert.match(hostRun, /\$ToolPackSourceDirs = @\(\)/u)
+  assert.match(
+    hostRun,
+    /"UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=\$\(\$ToolPackSourceDirs\.Count\)"/u,
+  )
+  assert.doesNotMatch(hostRun, /UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=[02]/u)
+
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /GetEnvironmentVariable\(\s*TEXT\("UE_WEBUI_EXPECTED_TOOL_PACK_COUNT"\)\)/u,
+  )
+  assert.match(BROWSER_TEST_SOURCE, /TryParseExpectedToolPackCount/u)
+  assert.match(BROWSER_TEST_SOURCE, /MaxExpectedToolPackCount = 384/u)
+  assertOrdered(BROWSER_TEST_SOURCE, [
+    'Value.IsEmpty() || (Value.Len() > 1 && Value[0] == TEXT(\'0\'))',
+    'Character < TEXT(\'0\') || Character > TEXT(\'9\')',
+    'ParsedCount > (MaxExpectedToolPackCount - Digit) / 10',
+    'OutCount = ParsedCount',
+  ])
+  assert.match(BROWSER_TEST_SOURCE, /var expectedToolPackCount=%d;/u)
+  assert.match(
+    BROWSER_TEST_SOURCE,
+    /report\.toolPacks\.loadedCount!==expectedToolPackCount/u,
+  )
+  assert.doesNotMatch(BROWSER_TEST_SOURCE, /report\.toolPacks\.loadedCount!==[0-9]+/u)
 })
 
 test('custom host catalog evidence reaches native automation and the packaged React DOM', () => {
@@ -276,6 +321,8 @@ test('packaged GUI proves the closed health report through product DOM without l
     "document.querySelector('[data-health-overall-status]')",
     "getAttribute('data-health-overall-status')!=='healthy'",
     'function supportReportText(panel,afterTask){',
+    "panel.querySelector('[data-tool-pack-status=\\\"ready\\\"]')",
+    "phase('tool-pack-status')",
     "panel.querySelector('[data-support-report-generate]')",
     'generate.click()',
     "panel.querySelector('textarea[data-support-report-preview]')",
@@ -300,6 +347,8 @@ test('packaged GUI proves the closed health report through product DOM without l
     /allowed\.indexOf\(reason\)!==-1\?reason:'browser_assertion'/u,
     'browser failures must collapse unknown exception text to a fixed reason code',
   )
+  assert.match(BROWSER_TEST_SOURCE, /Reason == TEXT\("tool_pack_health"\)/u)
+  assert.match(BROWSER_TEST_SOURCE, /Phase == TEXT\("tool-pack-status"\)/u)
   assert.match(BROWSER_TEST_SOURCE, /var passTitle='UEWEBUI_E2E_PASS';/u)
   assert.match(BROWSER_TEST_SOURCE, /var failTitle='UEWEBUI_E2E_FAIL:';/u)
   assert.match(BROWSER_TEST_SOURCE, /var waitTitle='UEWEBUI_E2E_WAIT:';/u)
@@ -329,8 +378,8 @@ test('packaged GUI proves the closed health report through product DOM without l
   assert.ok(validateStart >= 0 && validateEnd > validateStart)
   const validateSource = BROWSER_TEST_SOURCE.slice(validateStart, validateEnd)
   assertOrdered(validateSource, [
-    "exactKeys(report,['reportVersion','product','health','native','bridge','project','registry','catalog','tasks'],'report')",
-    "report.reportVersion!==1||report.product!=='unreal-editor-webui'",
+    "exactKeys(report,['reportVersion','product','health','native','bridge','project','registry','catalog','toolPacks','tasks'],'report')",
+    "report.reportVersion!==2||report.product!=='unreal-editor-webui'",
     "exactKeys(report.health,['overallStatus','reasonCodes'],'health')",
     "report.health.overallStatus!=='healthy'||!Array.isArray(report.health.reasonCodes)",
     "report.health.reasonCodes.length!==0",
@@ -346,6 +395,12 @@ test('packaged GUI proves the closed health report through product DOM without l
     'report.registry.availableCount<1||report.registry.loadErrorCount!==0',
     "report.catalog.status!=='ready'||report.catalog.source!=='project'",
     'report.catalog.schemaVersion!==1||report.catalog.diagnosticCode!==null',
+    "exactKeys(report.toolPacks,['status','diagnosticCode','statusVersion','coreApiVersion'",
+    "report.toolPacks.status!=='ready'||report.toolPacks.diagnosticCode!==null",
+    'report.toolPacks.statusVersion!==1||report.toolPacks.coreApiVersion!==1',
+    'report.toolPacks.loadedCount!==expectedToolPackCount||report.toolPacks.rejectedCount!==0',
+    'report.toolPacks.truncatedCount!==0||!Array.isArray(report.toolPacks.reasonCodes)',
+    'report.toolPacks.reasonCodes.length!==0',
     "exactKeys(report.tasks,['queued','running','completed','failed','cancelled','timedOut','total'],'tasks')",
     "excluded(text,catalogMarker,'catalog_marker')",
     "excluded(text,'HostProject','project_name')",
@@ -387,7 +442,7 @@ test('packaged GUI proves the closed health report through product DOM without l
   ])
   assert.match(
     BROWSER_TEST_SOURCE,
-    /healthy native\/project\/catalog\/registry product state, allowlisted support-report DOM/iu,
+    /healthy native\/project\/catalog\/registry\/Tool Pack product state, allowlisted support-report DOM/iu,
   )
 })
 

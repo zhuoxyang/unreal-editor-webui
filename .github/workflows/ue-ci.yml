@@ -358,14 +358,14 @@ jobs:
           $CatalogMarker = [guid]::NewGuid().ToString("N")
           if ($CatalogMarker -cnotmatch "^[0-9a-f]{32}$") { throw "Generated tool catalog marker is invalid." }
           $CatalogTemplate = Join-Path $PWD "tests/fixtures/tool-catalog/host-project-v1.template.json"
-          $ToolPackSourceDirsJson = "[]"
+          $ToolPackSourceDirs = @()
           if ($env:UE_VERSION -eq "5.8") {
             $ToolPackSourceDirs = @(
               (Join-Path $PWD "tests/fixtures/ue-tool-packs/AssetToolsFixture")
               (Join-Path $PWD "tests/fixtures/ue-tool-packs/LevelToolsFixture")
             )
-            $ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress
           }
+          $ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress
           $ProjectOutput = @(
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1 `
               -ProjectDir $ProjectDir `
@@ -382,6 +382,7 @@ jobs:
           $HostEnvironment = @(
             "HOST_PROJECT=$ProjectPath"
             "UE_WEBUI_CATALOG_MARKER=$CatalogMarker"
+            "UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=$($ToolPackSourceDirs.Count)"
           )
           if ($env:UE_VERSION -eq "5.8") {
             $HostEnvironment += "UE_WEBUI_TOOL_PACK_TEST=1"

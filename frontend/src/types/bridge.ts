@@ -94,6 +94,48 @@ export type WebUIHealth = {
   taskSessionIsolation: 'document'
 }
 
+export type ToolPackLoadedStatusV1 = {
+  provider: string
+  packId: string
+  pluginName: string
+  pluginVersion: string
+  requiredCoreApi: number
+  state: 'loaded'
+  commandCount: number
+  commands: string[]
+}
+
+export type ToolPackRejectedStatusV1 =
+  | {
+      provider: string
+      packId: string
+      pluginName: string
+      pluginVersion: string
+      requiredCoreApi: number
+      state: 'rejected'
+      commandCount: 0
+      commands: []
+    }
+  | {
+      provider: null
+      packId: null
+      pluginName: string
+      pluginVersion: null
+      requiredCoreApi: null
+      state: 'rejected'
+      commandCount: 0
+      commands: []
+    }
+
+export type ToolPackStatusEntryV1 = ToolPackLoadedStatusV1 | ToolPackRejectedStatusV1
+
+export type ToolPackStatusV1 = {
+  statusVersion: 1
+  coreApiVersion: number
+  packs: ToolPackStatusEntryV1[]
+  truncatedCount: number
+}
+
 export type NativeToolCatalogDiagnosticCode =
   | 'catalog_too_large'
   | 'catalog_read_failed'

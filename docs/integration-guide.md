@@ -68,7 +68,7 @@ project context, command metadata, task records, logs, or generic bridge errors 
 to redact them.
 
 The report is a closed object whose exact top-level keys are `reportVersion`, `product`, `health`,
-`native`, `bridge`, `project`, `registry`, `catalog`, and `tasks`; `reportVersion` is `1` and
+`native`, `bridge`, `project`, `registry`, `catalog`, `toolPacks`, and `tasks`; `reportVersion` is `2` and
 `product` is `unreal-editor-webui`.
 `health.overallStatus` is one of `unavailable`, `unsupported`, `checking`, `healthy`, `degraded`,
 `unhealthy`, or `error`. Its ordered `reasonCodes` use only these fixed values:
@@ -80,11 +80,26 @@ The report is a closed object whose exact top-level keys are `reportVersion`, `p
 - `health_registry_loading`, `health_registry_unavailable`, or
   `health_registry_modules_rejected`;
 - `health_catalog_loading` or `health_catalog_fallback`.
+- `health_tool_packs_loading`, `health_tool_packs_unavailable`,
+  `health_tool_packs_rejected`, or `health_tool_packs_truncated`.
 
 The `catalog.diagnosticCode` retains the existing bounded catalog reason when fallback is active.
 The panel maps every reason to repository-owned fixed text; native/parser exception messages never
 enter the report or DOM. A known unhealthy or degraded condition takes precedence over pending
 checks; `checking` is used only when every active reason is a loading state.
+
+`toolPacks` has the exact keys `status`, `diagnosticCode`, `statusVersion`, `coreApiVersion`,
+`loadedCount`, `rejectedCount`, `truncatedCount`, and `reasonCodes`. It contains no pack id,
+provider, plugin name/version, command name, discovery/load exception, or traceback. Its lifecycle
+is one of `unavailable`, `loading`, `ready`, `unsupported`, `malformed`, or `error`; diagnostics
+and coarse reasons are selected only from repository-owned fixed codes. Reason codes are ordered
+from `tool_pack_core_api_mismatch`, `tool_pack_discovery_rejected`, and
+`tool_pack_load_rejected` to `tool_pack_status_truncated`. This schema-v2 support-report contract
+does not change the backend `system.toolPacks.statusVersion: 1` response.
+While native bridge health is ready, `health_tool_packs_loading` is a checking-only reason. An
+unsupported/malformed/failed status request, rejected aggregate count, or truncated aggregate
+count maps to one of the other fixed Tool Pack health reasons and degrades overall health. Bridge
+unavailability and the existing error/unhealthy precedence remain authoritative.
 
 ## Request Envelope
 

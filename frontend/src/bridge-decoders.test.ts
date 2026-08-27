@@ -7,8 +7,10 @@ import {
   decodeTaskListResult,
   decodeTaskResult,
   decodeToolCatalogBridgeResult,
+  decodeToolPackStatus,
   decodeWebUIHealth,
   decodeWebUISettings,
+  UnsupportedToolPackStatusVersionError,
 } from './bridge-decoders'
 
 const command = {
@@ -24,6 +26,46 @@ function commandCatalogue(commands: unknown[], loadErrors: unknown[] = []) {
     metadataVersion: 1,
     commands,
     loadErrors,
+  }
+}
+
+function toolPackStatus() {
+  return {
+    statusVersion: 1,
+    coreApiVersion: 1,
+    packs: [
+      {
+        provider: 'studio.assets',
+        packId: 'studio.assets',
+        pluginName: 'StudioAssets',
+        pluginVersion: '1.2.0',
+        requiredCoreApi: 1,
+        state: 'loaded',
+        commandCount: 2,
+        commands: ['asset.audit', 'asset.scan'],
+      },
+      {
+        provider: 'studio.legacy',
+        packId: 'studio.legacy',
+        pluginName: 'StudioLegacy',
+        pluginVersion: '0.9.0',
+        requiredCoreApi: 2,
+        state: 'rejected',
+        commandCount: 0,
+        commands: [],
+      },
+      {
+        provider: null,
+        packId: null,
+        pluginName: 'BrokenDescriptor',
+        pluginVersion: null,
+        requiredCoreApi: null,
+        state: 'rejected',
+        commandCount: 0,
+        commands: [],
+      },
+    ],
+    truncatedCount: 7,
   }
 }
 
@@ -225,5 +267,57 @@ describe('bridge result decoders', () => {
       catalog: null,
       diagnosticCode: 'catalog_unknown',
     })).toThrow('supported diagnosticCode')
+  })
+
+  it('strictly decodes loaded and rejected Tool Pack status v1 entries', () => {
+    expect(decodeToolPackStatus(toolPackStatus())).toEqual(toolPackStatus())
+    expect(decodeToolPackStatus({
+      statusVersion: 1,
+      coreApiVersion: 1,
+      packs: [],
+      truncatedCount: 0,
+    })).toEqual({ statusVersion: 1, coreApiVersion: 1, packs: [], truncatedCount: 0 })
+  })
+
+  it('separates unsupported Tool Pack status versions from malformed v1 payloads', () => {
+    expect(() => decodeToolPackStatus({ ...toolPackStatus(), statusVersion: 2 })).toThrow(
+      UnsupportedToolPackStatusVersionError,
+    )
+    expect(() => decodeToolPackStatus({ ...toolPackStatus(), statusVersion: 0 })).toThrow(
+      'statusVersion',
+    )
+    expect(() => decodeToolPackStatus({ ...toolPackStatus(), statusVersion: '1' })).toThrow(
+      'statusVersion',
+    )
+  })
+
+  it('rejects non-canonical, inconsistent, unbounded, or open Tool Pack status payloads', () => {
+    const base = toolPackStatus()
+    const loaded = base.packs[0]
+    const rejected = base.packs[1]
+    expect(() => decodeToolPackStatus({ ...base, privatePath: 'C:/Users/private' })).toThrow('unsupported keyword')
+    expect(() => decodeToolPackStatus({ ...base, coreApiVersion: 0 })).toThrow('coreApiVersion')
+    expect(() => decodeToolPackStatus({ ...base, packs: Array(385).fill(loaded) })).toThrow('bounded array')
+    expect(() => decodeToolPackStatus({ ...base, truncatedCount: 2_147_483_648 })).toThrow('truncatedCount')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...loaded, commands: ['asset.scan', 'asset.audit'] }],
+    })).toThrow('sorted order')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...loaded, packId: 'Studio.Invalid' }],
+    })).toThrow('canonical Tool Pack id')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...loaded, requiredCoreApi: 2 }],
+    })).toThrow('invalid loaded Tool Pack status')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...rejected, provider: null }],
+    })).toThrow('must match')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...rejected, commandCount: 1, commands: ['legacy.scan'] }],
+    })).toThrow('owned commands')
   })
 })

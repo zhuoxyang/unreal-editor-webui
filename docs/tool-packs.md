@@ -276,6 +276,18 @@ trusted exposes only a sanitized `pluginName`, with `provider`, `packId`, `plugi
 publications by the fixed processing and output bounds. Re-observing an omitted status increments
 the count again; the core does not retain an unbounded hidden-provider history.
 
+The workspace header exposes the same response through a strict v1 decoder and a Tool Pack status
+panel. It shows loaded/rejected entries, public command ownership, coarse fixed rejection
+categories, and whether cumulative observations were truncated. The copyable schema-v2 support
+report deliberately reduces this to lifecycle/diagnostic codes, backend/core versions, aggregate
+counts, and fixed reason codes; it never includes pack, provider, plugin, or command identities or
+raw exceptions. Installing, enabling, updating, disabling, or removing a pack requires restarting
+Unreal Editor; the panel provides this static guidance and does not claim a backend
+`restartRequired` signal.
+The aggregate health summary reports Tool Pack loading as checking. Status unavailability,
+rejected packs, and omitted status observations use closed degraded reason codes; no rejection
+identity or backend diagnostic text is copied into those reasons.
+
 Each Tool Pack can be versioned and distributed as its own Unreal plugin archive. Because its
 manifest and Python sources live under `Content/`, Unreal `BuildPlugin` includes them without a
 custom root-file filter. Recipients still need one compatible `UnrealEditorWebUI` core plugin;

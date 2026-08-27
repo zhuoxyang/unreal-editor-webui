@@ -91,11 +91,14 @@ Runtime health uses a separate no-argument `getwebuihealth()` method. Native cod
 validated document session into `packaged`, `loopback_http`, `loopback_https`, or `inactive` and
 stores only that category, never the URL or authority. Its closed response contains only public,
 bounded version strings and fixed capability enums. The React support-report builder then selects
-those decoded fields plus persistence/catalog/registry states and aggregate task counts into a new
-closed object. It never receives a settings object, project identity, catalog/command entry, task
-record, log, or raw error to redact after the fact. One shared pure function derives the panel and
+those decoded fields plus persistence/catalog/registry states, strictly decoded Tool Pack
+lifecycle/schema/core-version aggregates, and aggregate task counts into a new closed schema-v2
+object. It never receives a settings object, project identity, catalog/command/Tool Pack entry,
+task record, log, or raw error to redact after the fact. One shared pure function derives the panel and
 report `overallStatus` plus ordered fixed `reasonCodes`, so rendered and copied diagnoses cannot
-drift.
+drift. Tool Pack loading adds a checking reason; unavailable status, rejected counts, and
+truncated counts add only fixed degraded reasons. Existing bridge-unavailable, native-error, and
+inactive-document precedence remains unchanged.
 
 ## Resource Bounds
 

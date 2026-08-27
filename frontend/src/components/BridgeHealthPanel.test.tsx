@@ -34,6 +34,14 @@ const REPORT_INPUT: SupportReportInput = {
   catalogSource: 'project',
   catalogSchemaVersion: 1,
   catalogDiagnosticCode: null,
+  toolPackStatus: 'ready',
+  toolPackDiagnosticCode: null,
+  toolPackStatusVersion: 1,
+  toolPackCoreApiVersion: 1,
+  toolPackLoadedCount: 0,
+  toolPackRejectedCount: 0,
+  toolPackTruncatedCount: 0,
+  toolPackReasonCodes: [],
   queuedTaskCount: 0,
   runningTaskCount: 1,
   completedTaskCount: 2,
@@ -56,6 +64,16 @@ function renderPanel(overrides: Partial<Parameters<typeof BridgeHealthPanel>[0]>
     canRetryHealth: true,
     onRetryHealth: vi.fn(),
     supportReportInput: REPORT_INPUT,
+    toolPackStatus: {
+      statusVersion: 1,
+      coreApiVersion: 1,
+      packs: [],
+      truncatedCount: 0,
+    },
+    toolPackStatusLoadStatus: 'ready',
+    toolPackStatusDiagnosticCode: null,
+    canRetryToolPackStatus: false,
+    onRetryToolPackStatus: vi.fn(),
     ...overrides,
   }
   return { ...render(<BridgeHealthPanel {...props} />), props }
@@ -160,6 +178,39 @@ describe('BridgeHealthPanel', () => {
           catalogDiagnosticCode: 'catalog_missing',
         },
       },
+      {
+        healthStatus: 'ready',
+        health: HEALTH,
+        expected: 'checking',
+        supportReportInput: {
+          ...REPORT_INPUT,
+          toolPackStatus: 'loading',
+          toolPackStatusVersion: null,
+          toolPackCoreApiVersion: null,
+        },
+      },
+      {
+        healthStatus: 'ready',
+        health: HEALTH,
+        expected: 'degraded',
+        supportReportInput: {
+          ...REPORT_INPUT,
+          toolPackStatus: 'malformed',
+          toolPackDiagnosticCode: 'tool_pack_response_invalid',
+          toolPackStatusVersion: null,
+          toolPackCoreApiVersion: null,
+        },
+      },
+      {
+        healthStatus: 'ready',
+        health: HEALTH,
+        expected: 'degraded',
+        supportReportInput: {
+          ...REPORT_INPUT,
+          toolPackRejectedCount: 1,
+          toolPackReasonCodes: ['tool_pack_load_rejected'],
+        },
+      },
     ]
 
     for (const healthCase of cases) {
@@ -177,7 +228,7 @@ describe('BridgeHealthPanel', () => {
     }
   })
 
-  it('exposes the required DOM contracts and generates a bounded v1 report preview', () => {
+  it('exposes the required DOM contracts and generates a bounded v2 report preview', () => {
     const { container } = renderPanel()
     expect(container.querySelector('[data-health-panel-toggle]')).toHaveAttribute('aria-expanded', 'false')
     expect(container.querySelector('[data-health-overall-status]')).toHaveAttribute(
@@ -188,10 +239,20 @@ describe('BridgeHealthPanel', () => {
     const preview = openAndGenerateReport()
     expect(preview).toHaveAttribute('data-support-report-preview')
     expect(JSON.parse(preview.value)).toMatchObject({
-      reportVersion: 1,
+      reportVersion: 2,
       product: 'unreal-editor-webui',
       health: { overallStatus: 'healthy', reasonCodes: [] },
       bridge: { lifecycle: 'ready' },
+      toolPacks: {
+        status: 'ready',
+        diagnosticCode: null,
+        statusVersion: 1,
+        coreApiVersion: 1,
+        loadedCount: 0,
+        rejectedCount: 0,
+        truncatedCount: 0,
+        reasonCodes: [],
+      },
     })
     expect(screen.getByText(/without paths, URLs, logs, or payloads/i)).toBeInTheDocument()
   })
@@ -213,6 +274,21 @@ describe('BridgeHealthPanel', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('does not satisfy protocol v1')
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     expect(onRetryHealth).toHaveBeenCalledOnce()
+  })
+
+  it('renders fixed Tool Pack health reason text without raw deployment diagnostics', () => {
+    const secret = 'C:/Users/private/tool-pack.py?token=secret'
+    renderPanel({
+      supportReportInput: {
+        ...REPORT_INPUT,
+        toolPackRejectedCount: 1,
+        toolPackReasonCodes: ['tool_pack_load_rejected'],
+      },
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bridge degraded' }))
+    expect(screen.getByText('One or more Tool Packs were rejected.')).toHaveAttribute('role', 'status')
+    expect(document.body.textContent).not.toContain(secret)
   })
 
   it('keeps aggregate project, catalog, and registry state visible without a native health method', () => {

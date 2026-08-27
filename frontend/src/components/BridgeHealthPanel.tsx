@@ -1,6 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 import type { WebUIHealthStatus } from '../hooks/useWebUIHealth'
 import { webUIHealthDiagnosticMessage } from '../hooks/useWebUIHealth'
+import type {
+  ToolPackStatusDiagnosticCode,
+  ToolPackStatusLoadStatus,
+} from '../hooks/useToolPackStatus'
 import {
   stringifySupportReport,
   supportHealthSummary,
@@ -8,7 +12,8 @@ import {
   type SupportHealthReasonCode,
   type SupportReportInput,
 } from '../support-report'
-import type { WebUIDocumentScope, WebUIHealth } from '../types/bridge'
+import type { ToolPackStatusV1, WebUIDocumentScope, WebUIHealth } from '../types/bridge'
+import { ToolPackStatusPanel } from './ToolPackStatusPanel'
 
 type BridgeHealthPanelProps = {
   health: WebUIHealth | null
@@ -16,6 +21,11 @@ type BridgeHealthPanelProps = {
   canRetryHealth: boolean
   onRetryHealth: () => void
   supportReportInput: SupportReportInput
+  toolPackStatus: ToolPackStatusV1 | null
+  toolPackStatusLoadStatus: ToolPackStatusLoadStatus
+  toolPackStatusDiagnosticCode: ToolPackStatusDiagnosticCode | null
+  canRetryToolPackStatus: boolean
+  onRetryToolPackStatus: () => void
 }
 
 const OVERALL_LABELS: Record<SupportHealthOverallStatus, string> = {
@@ -72,6 +82,14 @@ function supportHealthReasonMessage(code: SupportHealthReasonCode): string {
       return 'The tool catalog is still being checked.'
     case 'health_catalog_fallback':
       return 'The starter catalog is active because the project catalog is unavailable.'
+    case 'health_tool_packs_loading':
+      return 'Tool Pack deployment status is still being checked.'
+    case 'health_tool_packs_unavailable':
+      return 'Tool Pack deployment status is unavailable.'
+    case 'health_tool_packs_rejected':
+      return 'One or more Tool Packs were rejected.'
+    case 'health_tool_packs_truncated':
+      return 'Some cumulative Tool Pack status observations were omitted by registry bounds.'
   }
 }
 
@@ -81,6 +99,11 @@ export function BridgeHealthPanel({
   canRetryHealth,
   onRetryHealth,
   supportReportInput,
+  toolPackStatus,
+  toolPackStatusLoadStatus,
+  toolPackStatusDiagnosticCode,
+  canRetryToolPackStatus,
+  onRetryToolPackStatus,
 }: BridgeHealthPanelProps) {
   const [open, setOpen] = useState(false)
   const [reportText, setReportText] = useState<string | null>(null)
@@ -182,6 +205,14 @@ export function BridgeHealthPanel({
             </div>
           </dl>
 
+          <ToolPackStatusPanel
+            canRetry={canRetryToolPackStatus}
+            diagnosticCode={toolPackStatusDiagnosticCode}
+            loadStatus={toolPackStatusLoadStatus}
+            onRetry={onRetryToolPackStatus}
+            status={toolPackStatus}
+          />
+
           {canRetryHealth ? (
             <button type="button" disabled={healthStatus === 'loading'} onClick={onRetryHealth}>
               {healthStatus === 'loading' ? 'Checking…' : 'Check again'}
@@ -190,7 +221,10 @@ export function BridgeHealthPanel({
 
           <div className="support-report">
             <h3>Support Report</h3>
-            <p>The report contains bounded status codes and counts, without paths, URLs, logs, or payloads.</p>
+            <p>
+              The report contains bounded status codes and counts, without paths, URLs, logs, or payloads.
+              Tool Pack identities and command names stay out of the report.
+            </p>
             <button data-support-report-generate type="button" onClick={generateReport}>
               Generate support report
             </button>

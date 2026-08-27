@@ -79,11 +79,16 @@ Favorites or tabs whose commands are temporarily unavailable are skipped in the 
 not deleted from storage. Catalog files are readable by the trusted embedded page, so never place
 tokens, credentials, absolute machine paths, executable code, HTML, SVG, or remote URLs in them.
 
-The rack header's health panel reports whether catalog loading and command discovery are ready,
-loading, or using a fallback. Its copyable support report contains only the catalog source/status,
-schema version, fixed diagnostic code, command counts, and shared fixed health reason codes.
-Catalog ids, labels, descriptions, defaults, command names, module names, and decoder errors are
-deliberately outside that report.
+The rack header's health panel reports whether catalog loading, command discovery, and the
+strictly decoded `system.toolPacks` v1 deployment view are ready. It can show bounded public pack
+identity and command ownership for local diagnosis. Its schema-v2 copyable support report contains
+only catalog source/status, schema version, fixed diagnostic codes, registry/Tool Pack aggregate
+counts, and fixed reason codes. Catalog ids, labels, descriptions, defaults, command names, pack
+or plugin identities, module names, raw load errors, and decoder exceptions are deliberately
+outside that report.
+The same aggregate drives closed health reasons: Tool Pack loading is `checking`, while status
+unavailability, rejection, and truncation are `degraded`. These reasons never copy the underlying
+pack identity or exception text, and existing bridge-unavailable/error precedence is unchanged.
 
 ## Prototype Policy
 
