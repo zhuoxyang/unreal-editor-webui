@@ -1,5 +1,5 @@
 name = "unreal_editor_webui"
-version = "0.2.0"
+version = "0.3.0"
 description = "Immutable precompiled UnrealEditorWebUI core for exact Windows UE variants."
 authors = ["zhuoxyang"]
 

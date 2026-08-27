@@ -963,7 +963,7 @@ jobs:
             if (-not (Test-Path -LiteralPath (Join-Path $DownloadedPackage "UnrealEditorWebUI.uplugin") -PathType Leaf)) {
               throw "Downloaded exact core package is missing: $ReleaseVariant"
             }
-            $Archive = Join-Path $Payloads "UnrealEditorWebUI-v0.2.0-$ReleaseVariant.zip"
+            $Archive = Join-Path $Payloads "UnrealEditorWebUI-v0.3.0-$ReleaseVariant.zip"
             & $EmbeddedPython scripts/rez-package.py make-archive --plugin-dir $DownloadedPackage --archive-root-name UnrealEditorWebUI --output $Archive
             if ($LASTEXITCODE -ne 0) { throw "Core archive creation failed for $ReleaseVariant." }
             $CoreArguments += @("--core", "$VariantId=$Archive")

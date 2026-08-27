@@ -47,7 +47,7 @@ fields:
 {
   "protocolVersion": 1,
   "bridgeProtocolVersion": 1,
-  "pluginVersion": "0.2.0",
+  "pluginVersion": "0.3.0",
   "engineVersion": "5.8.0",
   "documentScope": "packaged",
   "pythonRuntime": "available",

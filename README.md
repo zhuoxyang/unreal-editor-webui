@@ -92,9 +92,9 @@ replace those results.
    descriptor enables `WebBrowserWidget` and `PythonScriptPlugin`.
 5. Choose `Window > Unreal Editor WebUI`, run `system.ping`, and confirm that it returns `pong`.
 
-Third-party Tool Packs use SDK API 1, which is supported by the current post-v0.2.0 source.
-The v0.2.0 prebuilt archive does not contain the SDK or Tool Pack loader; the first prebuilt
-release expected to include them is v0.3.0. Until then, use the source installation below.
+The v0.3.0 prebuilt archives include the Tool Pack loader and stable SDK API 1. Install each Tool
+Pack as a separate UE plugin beside the shared core, enable it in the project, update the core's
+opt-in trust allowlist when required, and restart Unreal after every pack or policy change.
 
 ### Build From Source
 
@@ -138,9 +138,9 @@ launches must use the installed `uewebui-rez-launch` preflight wrapper; launchin
 bypasses duplicate-core, wrong-variant, and payload-integrity protection.
 
 See [Rez packaging](docs/rez-packaging.md) for the recipes, central payload lock, aggregate pins,
-external-only project descriptor, build/resolve commands, two-process E2E, and current validation
-boundary. The recipes are staged at `0.2.0` only to match the current descriptor; issue #117 must
-atomically move the descriptor and every core pin to `0.3.0` for the first published Tool Pack build.
+external-only project descriptor, build/resolve commands, two-process E2E, and validation boundary.
+The v0.3.0 core recipe and every aggregate/Tool Pack dependency pin match the published plugin
+descriptor; do not mix a recipe or Tool Pack dependency with a different core version.
 
 ## Frontend Development
 
@@ -223,12 +223,14 @@ See `docs/tool-framework.md` for the project catalog, prototype policy, and UE C
 See `docs/tool-packs.md` for the stable third-party Python SDK, manifest, offline validator,
 scaffolder, and multi-pack installation model.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
-See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums, SBOMs, and release boundaries.
+See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums,
+frontend npm dependency metadata, signed provenance, and release boundaries.
 See `docs/rez-packaging.md` for offline Rez recipes, external plugin-root activation, and payload locks.
 
 The protected workflow's temporary host removes packaged plugin `Source` and `Intermediate` before
 tests and rejects recompilation markers. This is a binary-only simulation on a build machine, not
-a clean no-compiler/no-Node consumer result. Independent clean-VM acceptance remains issue #117.
+a clean no-compiler/no-Node consumer result. A release still requires independent clean-VM positive
+installs and cross-version rejection tests.
 
 ## Architecture And Integration Docs
 

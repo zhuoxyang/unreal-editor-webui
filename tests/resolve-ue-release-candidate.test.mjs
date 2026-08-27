@@ -284,3 +284,52 @@ test('release workflow creates three native archives and provenance for the clos
       releaseWorkflow.indexOf('Write fail-closed three-variant provenance'),
   )
 })
+
+test('release workflow signs only the three final archives before candidate upload', () => {
+  const permissions = releaseWorkflow.match(/permissions:\r?\n(?<body>(?:  [^\r\n]+\r?\n)+)\r?\nconcurrency:/u)
+  assert.ok(permissions?.groups?.body)
+  assert.deepEqual(
+    permissions.groups.body
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .sort(),
+    ['actions: read', 'attestations: write', 'contents: read', 'id-token: write'],
+  )
+
+  const archiveStep = releaseWorkflow.indexOf('Create three candidate archives')
+  const provenanceStep = releaseWorkflow.indexOf('Write fail-closed three-variant provenance')
+  const attestationStep = releaseWorkflow.indexOf('Attest three native release archives')
+  const uploadStep = releaseWorkflow.indexOf('Upload release candidate bundle')
+  assert.ok(
+    archiveStep >= 0 &&
+      provenanceStep > archiveStep &&
+      attestationStep > provenanceStep &&
+      uploadStep > attestationStep,
+  )
+
+  const attestationContract = releaseWorkflow.slice(attestationStep, uploadStep)
+  assert.match(
+    attestationContract,
+    /uses: actions\/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4\.2\.2/u,
+  )
+  const subjectBlock = attestationContract.match(
+    /subject-path: \|\r?\n(?<body>(?:[ \t]+[^\r\n]+\r?\n)+)/u,
+  )
+  assert.ok(subjectBlock?.groups?.body)
+  assert.deepEqual(
+    subjectBlock.groups.body
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) => line.trim()),
+    [
+      '${{ github.workspace }}/release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE54-Win64.zip',
+      '${{ github.workspace }}/release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE55-Win64.zip',
+      '${{ github.workspace }}/release/UnrealEditorWebUI-${{ steps.release.outputs.release_tag }}-UE58-Win64.zip',
+    ],
+  )
+  assert.doesNotMatch(
+    attestationContract,
+    /\.sha256|metadata|npm-cyclonedx|sbom-path|predicate-path|predicate-type|push-to-registry|\*\.zip/u,
+  )
+})
