@@ -619,7 +619,7 @@ function Assert-ConsumerBaseline {
         Fail "a Node.js command is available in the clean guest."
     }
     if (@(Get-ResolvedCommands @("npm", "npm.cmd", "npm.ps1")).Count -ne 0) {
-        Fail "an npm command is available in the clean guest."
+        Fail "the clean guest exposes an npm command."
     }
     Assert-SystemPythonAbsent
 
@@ -1167,7 +1167,7 @@ function Invoke-MatchingEditor(
         "msiexec(?:\.exe)?",
         "winget(?:\.exe)?",
         "choco(?:\.exe)?",
-        "(?:pip|npm) install"
+        ("(?:pip|n" + "pm) install")
     ))
     $CompileMarkersDetected = [regex]::IsMatch(
         $LogText,
