@@ -234,6 +234,7 @@ test('custom host catalog evidence reaches native automation and the packaged Re
     'node --test tests/create-host-project.test.mjs',
     'node --test tests/create-tool-pack.test.mjs',
     'node --test tests/add-tool-pack.test.mjs',
+    'node --test tests/validate-tool-pack.test.mjs',
   ])
   assert.ok(STEPS.indexOf(host) < STEPS.indexOf(automation))
   assert.ok(STEPS.indexOf(automation) < STEPS.indexOf(gui))

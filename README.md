@@ -177,8 +177,8 @@ The output directory must not already exist. On Windows, `BuildPlugin` writes to
 
 See `docs/validation.md` for the latest local validation status.
 See `docs/tool-framework.md` for the project catalog, prototype policy, and UE CI runner notes.
-See `docs/tool-packs.md` for the stable third-party Python SDK, manifest, scaffolder, and multi-pack
-installation model.
+See `docs/tool-packs.md` for the stable third-party Python SDK, manifest, offline validator,
+scaffolder, and multi-pack installation model.
 See `docs/ue-ci-runner.md` for reproducible Windows self-hosted runner setup and required-check guidance.
 See `docs/release-process.md` for exact-commit UE artifact verification, candidate checksums, SBOMs, and release boundaries.
 
@@ -186,7 +186,8 @@ See `docs/release-process.md` for exact-commit UE artifact verification, candida
 
 - `docs/architecture.md`: full Web UI -> `SWebBrowser` -> C++ bridge -> Python registry -> UE API architecture, including task event pushback.
 - `docs/integration-guide.md`: external Web app bridge contract, request/response envelopes, task APIs, error codes, and trusted-origin requirements.
-- `docs/tool-packs.md`: third-party plugin contract for sharing one core WebUI across multiple tools.
+- `docs/tool-packs.md`: third-party plugin contract and offline validator for sharing one core
+  WebUI across multiple tools.
 
 ## JavaScript Command Example
 

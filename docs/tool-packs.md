@@ -33,7 +33,8 @@ powershell -ExecutionPolicy Bypass -File scripts/create-tool-pack.ps1 `
 ```
 
 The output is a complete Unreal plugin directory. The script refuses unsafe identifiers,
-path traversal, reparse-point output roots, and overwrites. A working reference is available at
+path traversal, reparse-point output roots, and overwrites, then runs the same Python validator
+used by runtime discovery before publishing the directory. A working reference is available at
 [`examples/tool-packs/ExampleAssetTools`](../examples/tool-packs/ExampleAssetTools).
 
 The required layout is:
@@ -118,6 +119,37 @@ An existing code-plugin descriptor remains a code plugin:
 The runtime boundary is the manifest and Python package inside an enabled, mounted,
 content-capable plugin. It does not require `NoCode`, remove C++ modules, or copy the shared core
 into the business plugin.
+
+## Validate Packs Offline
+
+Run the authoritative validator before copying, packaging, or enabling a Tool Pack. Repeat
+`--plugin-dir` to check cross-pack identity, top-level Python-package, and namespace conflicts in
+one deterministic pass:
+
+```powershell
+python scripts/validate-tool-pack.py --plugin-dir "D:\StudioPlugins\Plugins\StudioAssetTools" --plugin-dir "D:\StudioPlugins\Plugins\StudioLevelTools" --format human
+
+python scripts/validate-tool-pack.py --plugin-dir "D:\StudioPlugins\Plugins\StudioAssetTools" --plugin-dir "D:\StudioPlugins\Plugins\StudioLevelTools" --format json
+```
+
+Exit code `0` means every input is valid and mutually compatible; exit code `1` means at least one
+pack failed. JSON output uses schema version 1, stable lowercase `reasonCode` values, deterministic
+ordering, and plugin identities only—never absolute input paths. Valid pack records include the
+strict `.uplugin` `VersionName` as `pluginVersion` for downstream artifact naming.
+
+The validator checks exactly one strict root `.uplugin`, a safe `VersionName`,
+`CanContainContent`, one exact enabled core dependency, the closed schema-v1 manifest, core API 1,
+package and `__init__.py` files, path containment, and reparse points. It also reserves current core
+command namespaces (`asset`, `demo`, `editor`, and `system`) and rejects every side of pack ID,
+top-level Python package, plugin-name, or dot-boundary namespace conflicts. Directory scans are
+bounded to 10,000 entries and 64 levels; exceeding either returns `scan_limit_exceeded`.
+
+Dependency diagnostics distinguish `core_dependency_missing`, `core_dependency_duplicate`, and
+`core_dependency_disabled`. Other stable examples include `manifest_json_duplicate`,
+`core_api_incompatible`, `python_package_conflict`, and `command_namespace_conflict`. Human text
+may become clearer over time; automation should branch on `reasonCode`. Runtime discovery also
+uses `plugin_version_mismatch` if Unreal's mounted-plugin API disagrees with the already validated
+descriptor instead of masking either value.
 
 ## Manifest Contract
 
@@ -288,4 +320,5 @@ The maintained Tool Pack discovery path is available in the current post-v0.2.0 
 UE 5.8, and uses SDK API 1. The first prebuilt release expected to include it is v0.3.0. It uses
 Unreal's enabled/mounted plugin API and the standard `<Plugin>/Content/Python` module path.
 `requiredCoreApi` protects the Python extension contract; the Tool Pack plugin's `VersionName`
-remains the pack's independently managed release version.
+remains the pack's independently managed release version and must be a safe 1-64 character value
+using ASCII letters, digits, `.`, `_`, `+`, or `-`.

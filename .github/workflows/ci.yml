@@ -107,6 +107,7 @@ jobs:
           python -m compileall -q
           Python
           tests
+          scripts/validate-tool-pack.py
           scripts/validate-packaged-bridge-smoke.py
           scripts/validate-settings-smoke.py
 
@@ -142,6 +143,8 @@ jobs:
           node --test tests/create-tool-pack.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --test tests/add-tool-pack.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/validate-tool-pack.test.mjs
 
       - name: Test Windows UE build-environment contracts
         shell: powershell
@@ -256,6 +259,7 @@ jobs:
           node --test tests/package-plugin-registry-guard.test.mjs
           node --test tests/create-tool-pack.test.mjs
           node --test tests/add-tool-pack.test.mjs
+          node --test tests/validate-tool-pack.test.mjs
           node --test tests/ue-log-artifact-contract.test.mjs
           node --test tests/ue-path-filter-contract.test.mjs
           node scripts/validate-npm-lock-registry.mjs package-lock.json
