@@ -168,6 +168,10 @@ jobs:
           node --test tests/ue-build-environment.test.mjs
           node --test tests/ue-build-environment-variants.test.mjs
 
+      - name: Test Windows UE runner recovery
+        shell: powershell
+        run: node --test tests/ue-runner-recovery-windows.test.mjs
+
   repository:
     name: Repository checks
     runs-on: ubuntu-latest
@@ -250,6 +254,7 @@ jobs:
             "scripts/invoke-ue-runner-setup.ps1",
             "scripts/start-ue-runner.ps1",
             "scripts/start-ue-runner-fleet.ps1",
+            "scripts/remove-ue-runner-registration.ps1",
             "scripts/remove-ue-runner-wave.ps1",
             "scripts/test-interactive-runner-session.ps1",
             "scripts/write-ue-runner-diagnostics.ps1",

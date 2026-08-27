@@ -113,7 +113,24 @@ Runner roots are fresh and profile-local:
 ```
 
 The roots and runner names are unique by wave and variant. Setup refuses an existing root and never
-uses `--replace`.
+uses `--replace`. Bootstrap identity schema 2 writes a non-secret recovery identity as soon as the
+exact root is created and atomically advances that identity through `provisioning`,
+`registration-attempted`, and `configured`. Listener launch accepts only schema 2 `configured`
+roots; older roots must be removed through their reviewed cleanup flow and reprovisioned.
+
+A failure before registration is attempted triggers automatic cleanup only after the exact root is
+revalidated for profile containment and a full-tree reparse-point scan succeeds. If setup fails
+after registration was attempted, the root is deliberately preserved because GitHub may already
+hold the registration. Remove that exact registration in repository Actions settings (or confirm
+that the ephemeral registration was consumed), then clean only its identity-matched root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\remove-ue-runner-registration.ps1 -Wave build -Variant ue54 -GitHubRegistrationRemoved
+```
+
+Do not delete a half-provisioned root manually or reuse it. The exact cleanup requires the explicit
+GitHub confirmation switch, validates its recovery identity, scans the complete tree before reading
+that identity, and refuses a live listener.
 
 ## Run The Two Waves
 
@@ -176,9 +193,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\remove-ue-runner-w
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\remove-ue-runner-wave.ps1 -Wave rez -GitHubRegistrationsRemoved
 ```
 
-The cleanup script validates all three bootstrap identities, containment under the dedicated
-profile root, absence of reparse points, and absence of live listeners before deletion. It never
-touches an Unreal installation.
+The wave cleanup script accepts only three `configured` bootstrap identities, then validates
+containment under the dedicated profile root, absence of reparse points, and absence of live
+listeners before deleting the complete wave. The single-registration recovery script is only for
+an interrupted setup or an explicitly removed registration. Neither script touches an Unreal
+installation.
 
 Registration tokens are short lived and single-purpose. Discard them after provisioning. If a
 token may have been exposed, revoke/delete the affected runner registrations, rotate the token in

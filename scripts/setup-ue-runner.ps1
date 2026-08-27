@@ -25,6 +25,48 @@ $RunnerSha256 = "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cf
 $NodeVersion = "24.18.1"
 $NodeSha256 = "ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765"
 
+function Assert-NoReparseTree {
+    param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+    $PendingDirectories = New-Object 'System.Collections.Generic.Stack[string]'
+    $PendingDirectories.Push($LiteralPath)
+    while ($PendingDirectories.Count -ne 0) {
+        $CurrentDirectory = $PendingDirectories.Pop()
+        foreach ($Child in @(Get-ChildItem -LiteralPath $CurrentDirectory -Force -ErrorAction Stop)) {
+            if (($Child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Runner setup rollback refuses a tree containing a reparse point."
+            }
+            if ($Child.PSIsContainer) {
+                $PendingDirectories.Push($Child.FullName)
+            }
+        }
+    }
+}
+
+function Write-BootstrapIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Identity
+    )
+
+    $BootstrapPath = Join-Path $RootPath "UEWebUIRunnerBootstrap.json"
+    $TemporaryPath = Join-Path $RootPath ".UEWebUIRunnerBootstrap.tmp"
+    try {
+        $Identity | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $TemporaryPath -Encoding UTF8
+        if (Test-Path -LiteralPath $BootstrapPath -PathType Leaf) {
+            [System.IO.File]::Replace($TemporaryPath, $BootstrapPath, $null)
+        }
+        else {
+            [System.IO.File]::Move($TemporaryPath, $BootstrapPath)
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $TemporaryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $TemporaryPath -Force
+        }
+    }
+}
+
 if (-not $DedicatedRunnerAccount.IsPresent) {
     throw "Runner setup requires an explicit dedicated-standard-account acknowledgement."
 }
@@ -72,12 +114,32 @@ if (-not ($RunnerRootFullPath + '\').StartsWith($ExpectedBasePath, [System.Strin
 if (Test-Path -LiteralPath $RunnerRootFullPath) {
     throw "The one-job runner root already exists. Remove the completed registration through the documented cleanup flow first."
 }
+$RunnerRootCreated = $false
+$RegistrationAttempted = $false
+try {
 New-Item -ItemType Directory -Path $RunnerRootFullPath | Out-Null
+$RunnerRootCreated = $true
 $RunnerRootItem = Get-Item -LiteralPath $RunnerRootFullPath -Force
 if (-not $RunnerRootItem.PSIsContainer -or
     ($RunnerRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw "The one-job runner root must be a real directory."
 }
+
+$BootstrapIdentity = [ordered]@{
+    schemaVersion = 2
+    variant = $Variant
+    wave = $Wave
+    state = "provisioning"
+    ephemeral = $true
+    noDefaultLabels = $true
+    runnerVersion = $RunnerVersion
+    runnerArchiveSha256 = "sha256:$RunnerSha256"
+    nodeVersion = $NodeVersion
+    nodeArchiveSha256 = "sha256:$NodeSha256"
+    dedicatedStandardUser = $true
+    interactiveDesktopValidated = $true
+}
+Write-BootstrapIdentity -RootPath $RunnerRootFullPath -Identity $BootstrapIdentity
 
 $NodeArchiveName = "node-v$NodeVersion-win-x64.zip"
 $NodeArchivePath = Join-Path $RunnerRootFullPath $NodeArchiveName
@@ -288,6 +350,10 @@ try {
         throw "A non-empty short-lived registration token is required."
     }
 
+    $BootstrapIdentity.state = "registration-attempted"
+    Write-BootstrapIdentity -RootPath $RunnerRootFullPath -Identity $BootstrapIdentity
+    $RegistrationAttempted = $true
+
     Push-Location $RunnerRootFullPath
     try {
         $ConfigArguments = @(
@@ -317,20 +383,86 @@ finally {
     }
 }
 
-$BootstrapEvidencePath = Join-Path $RunnerRootFullPath "UEWebUIRunnerBootstrap.json"
-[ordered]@{
-    schemaVersion = 1
-    variant = $Variant
-    wave = $Wave
-    ephemeral = $true
-    noDefaultLabels = $true
-    runnerVersion = $RunnerVersion
-    runnerArchiveSha256 = "sha256:$RunnerSha256"
-    nodeVersion = $NodeVersion
-    nodeArchiveSha256 = "sha256:$NodeSha256"
-    dedicatedStandardUser = $true
-    interactiveDesktopValidated = $true
-} | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $BootstrapEvidencePath -Encoding UTF8
+$BootstrapIdentity.state = "configured"
+Write-BootstrapIdentity -RootPath $RunnerRootFullPath -Identity $BootstrapIdentity
 
 Write-Output "Configured one verified ephemeral GUI listener for $Wave/$Variant."
 Write-Output "Use scripts/start-ue-runner.ps1 from this same interactive dedicated account when the protected environment is ready."
+}
+catch {
+    $SetupError = $_
+    if (-not $RegistrationAttempted) {
+        if ($RunnerRootCreated) {
+            try {
+                foreach ($RollbackAncestor in @($LocalAppDataPath, $ControlledRoot, $RunnerBase)) {
+                    if (-not (Test-Path -LiteralPath $RollbackAncestor -PathType Container)) {
+                        throw "A runner setup rollback ancestor is missing."
+                    }
+                    $RollbackAncestorItem = Get-Item -LiteralPath $RollbackAncestor -Force
+                    if (($RollbackAncestorItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw "Runner setup rollback ancestors must be real non-reparse directories."
+                    }
+                }
+                $RollbackBasePath = [System.IO.Path]::GetFullPath($RunnerBase)
+
+                if (Test-Path -LiteralPath $RunnerRootFullPath) {
+                    $RollbackRootItem = Get-Item -LiteralPath $RunnerRootFullPath -Force
+                    if (-not $RollbackRootItem.PSIsContainer) {
+                        throw "The failed runner setup root is not a directory."
+                    }
+                    if (($RollbackRootItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                        throw "The failed runner setup root is a reparse point."
+                    }
+                    $RollbackRootPath = [System.IO.Path]::GetFullPath($RunnerRootFullPath)
+                    $RollbackRootParent = (Split-Path -Parent $RollbackRootPath).TrimEnd('\')
+                    if (-not [string]::Equals(
+                        $RollbackRootParent,
+                        $RollbackBasePath.TrimEnd('\'),
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    )) {
+                        throw "The failed runner setup root escaped the revalidated runner base."
+                    }
+                    if ((Split-Path -Leaf $RollbackRootPath) -cne "$Wave-$Variant") {
+                        throw "The failed runner setup root has an unexpected leaf name."
+                    }
+                    Assert-NoReparseTree -LiteralPath $RollbackRootPath
+
+                    $RollbackRunnerProcesses = @(
+                        Get-Process -Name "Runner.Listener", "Runner.Worker", "Runner.PluginHost" -ErrorAction SilentlyContinue
+                    )
+                    foreach ($RollbackRunnerProcess in $RollbackRunnerProcesses) {
+                        try {
+                            $RollbackListenerPath = $RollbackRunnerProcess.Path
+                        }
+                        catch {
+                            throw "Could not verify whether a runner process is using the failed setup root."
+                        }
+                        if ([string]::IsNullOrWhiteSpace($RollbackListenerPath)) {
+                            throw "Could not verify whether a runner process is using the failed setup root."
+                        }
+                        if ($RollbackListenerPath.StartsWith($RollbackRootPath.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                            throw "A runner process is still using the failed setup root."
+                        }
+                    }
+
+                    Remove-Item -LiteralPath $RollbackRootPath -Recurse -Force
+                    if (Test-Path -LiteralPath $RunnerRootFullPath) {
+                        throw "The failed runner setup root still exists after rollback."
+                    }
+                }
+            }
+            catch {
+                throw [System.AggregateException]::new(
+                    "Runner setup failed and its pre-registration rollback was unsafe or incomplete.",
+                    [System.Exception[]]@($SetupError.Exception, $_.Exception)
+                )
+            }
+        }
+        throw $SetupError
+    }
+
+    throw [System.InvalidOperationException]::new(
+        "Runner setup failed after GitHub registration was attempted. Remove or confirm consumption of the exact GitHub registration, then run scripts/remove-ue-runner-registration.ps1 for $Wave/$Variant.",
+        $SetupError.Exception
+    )
+}
