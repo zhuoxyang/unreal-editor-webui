@@ -21,6 +21,12 @@ from typing import Any, Callable, Iterator
 import unreal
 
 from unreal_editor_webui_sdk import CommandExecutionError, SDK_API_VERSION
+from unreal_editor_webui_toolpack_integrity import (
+    ToolPackIntegrityError,
+    ToolPackPolicy,
+    compute_tool_pack_payload_sha256,
+    load_project_tool_pack_policy,
+)
 from unreal_editor_webui_toolpacks import (
     COMMAND_NAME_PATTERN,
     MAX_COMMAND_NAME_LENGTH,
@@ -35,7 +41,7 @@ COMMAND_OWNERS: dict[str, str] = {}
 COMMAND_LOAD_ERRORS: list[dict[str, str]] = []
 COOPERATIVE_JOBS: dict[str, "CooperativeJob"] = {}
 METADATA_VERSION = 1
-TOOL_PACK_STATUS_VERSION = 1
+TOOL_PACK_STATUS_VERSION = 2
 SUPPORTED_PERMISSIONS = {"read", "write", "destructive"}
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "integer", "number", "boolean"}
 MAX_COMMAND_SCHEMA_DEPTH = 16
@@ -65,6 +71,37 @@ MAX_TOOL_PACK_STATUS_COUNT = MAX_COMMAND_COUNT + MAX_COMMAND_LOAD_ERRORS
 MAX_TOOL_PACK_DESCRIPTOR_COUNT = MAX_TOOL_PACK_STATUS_COUNT
 MAX_TOOL_PACK_DISCOVERY_ERROR_COUNT = MAX_TOOL_PACK_STATUS_COUNT
 MAX_TOOL_PACK_TRUNCATED_COUNT = 2_147_483_647
+TOOL_PACK_STATUS_REASON_CODES = frozenset(
+    {
+        "command_namespace_conflict",
+        "command_registration_rejected",
+        "dependency_hash_mismatch",
+        "dependency_policy_invalid",
+        "entry_import_failed",
+        "entry_module_ambiguous",
+        "entry_module_duplicate",
+        "entry_module_invalid",
+        "entry_module_missing",
+        "entry_modules_invalid",
+        "in_process_native_dependency_unsupported",
+        "pack_id_conflict",
+        "plugin_name_conflict",
+        "python_package_conflict",
+        "startup_hook_forbidden",
+        "tool_pack_conflict",
+        "trust_anchor_missing",
+        "trust_policy_invalid",
+        "trusted_core_api_mismatch",
+        "trusted_pack_missing",
+        "trusted_payload_mismatch",
+        "trusted_payload_unverifiable",
+        "trusted_plugin_version_mismatch",
+        "undeclared_registration_origin",
+        "unlocked_vendored_dependencies",
+        "validation_failed",
+        "vendored_dependencies_missing",
+    }
+)
 GENERIC_HANDLER_ERROR_MESSAGE = "Command failed unexpectedly; see the Unreal Log."
 COMMAND_METADATA_KEYS = {
     "metadataVersion",
@@ -95,11 +132,13 @@ DEFAULT_PERMISSION_POLICY = {
 class _CommandRegistrationContext:
     owner: str
     command_namespace: str | None = None
+    registration_origins: tuple[tuple[str, str], ...] | None = None
 
 
 class _ToolPackLoadError(ValueError):
-    def __init__(self, public_error: str) -> None:
+    def __init__(self, reason_code: str, public_error: str) -> None:
         super().__init__(public_error)
+        self.reason_code = reason_code
         self.public_error = public_error
 
 
@@ -120,6 +159,9 @@ class _LoadedToolPackFingerprint:
     top_level_python_package: str
     command_namespace: str
     python_root_key: str
+    schema_version: int
+    entry_modules: tuple[str, ...]
+    dependency_policy: tuple[str, str | None, str] | None
 
 
 class _ToolPackImportGuard:
@@ -163,6 +205,11 @@ _LOADED_TOOL_PACK_FINGERPRINTS: dict[str, _LoadedToolPackFingerprint] = {}
 _TOOL_PACK_PYTHON_ROOTS: list[str] = []
 _TOOL_PACK_STATUSES: list[dict[str, Any]] = []
 _TOOL_PACK_STATUS_META = {"truncatedCount": 0}
+_TOOL_PACK_POLICY_STATUS: dict[str, Any] = {
+    "enforced": False,
+    "state": "disabled",
+    "reasonCodes": [],
+}
 
 
 _PUBLIC_TOOL_PACK_ID_PATTERN = re.compile(
@@ -215,10 +262,23 @@ def _public_tool_pack_id(value: Any) -> str | None:
     return normalized
 
 
+def _public_tool_pack_reason_codes(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return []
+    return sorted(
+        {
+            value
+            for value in values
+            if isinstance(value, str) and value in TOOL_PACK_STATUS_REASON_CODES
+        }
+    )[:8]
+
+
 def _tool_pack_status_record(
     descriptor: ToolPackDescriptor,
     state: str,
     commands: list[str] | None = None,
+    reason_codes: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     pack_id = _public_tool_pack_id(descriptor.pack_id)
     required_core_api = descriptor.required_core_api
@@ -242,6 +302,11 @@ def _tool_pack_status_record(
         "state": "loaded" if state == "loaded" else "rejected",
         "commandCount": len(owned_commands),
         "commands": owned_commands,
+        "reasonCodes": (
+            []
+            if state == "loaded"
+            else _public_tool_pack_reason_codes(reason_codes or ["validation_failed"])
+        ),
     }
 
 
@@ -263,6 +328,9 @@ def _tool_pack_discovery_error_status(diagnostic: Any) -> dict[str, Any] | None:
         "state": "rejected",
         "commandCount": 0,
         "commands": [],
+        "reasonCodes": _public_tool_pack_reason_codes(
+            [diagnostic.get("reasonCode", "validation_failed")]
+        ) or ["validation_failed"],
     }
 
 
@@ -331,6 +399,7 @@ def _get_tool_pack_status() -> dict[str, Any]:
     return {
         "statusVersion": TOOL_PACK_STATUS_VERSION,
         "coreApiVersion": SDK_API_VERSION,
+        "policy": copy.deepcopy(_TOOL_PACK_POLICY_STATUS),
         "packs": copy.deepcopy(_TOOL_PACK_STATUSES),
         "truncatedCount": int(_TOOL_PACK_STATUS_META["truncatedCount"]),
     }
@@ -428,6 +497,7 @@ def _validated_request_id(request: dict[str, Any]) -> str | None:
 def _registration_context(
     owner: str,
     command_namespace: str | None = None,
+    registration_origins: tuple[tuple[str, str], ...] | None = None,
 ) -> Iterator[None]:
     global _ACTIVE_REGISTRATION_CONTEXT
 
@@ -435,6 +505,7 @@ def _registration_context(
     _ACTIVE_REGISTRATION_CONTEXT = _CommandRegistrationContext(
         owner=owner,
         command_namespace=command_namespace,
+        registration_origins=registration_origins,
     )
     try:
         yield
@@ -598,6 +669,7 @@ def command(
         and not normalized_name.startswith(f"{registration_context.command_namespace}.")
     ):
         raise _ToolPackLoadError(
+            "command_registration_rejected",
             f'Tool Pack command must use namespace "{registration_context.command_namespace}."; '
             "the package was not loaded."
         )
@@ -668,6 +740,24 @@ def command(
             )
         if not callable(handler):
             raise ValueError(f'Command "{normalized_name}" handler must be callable.')
+        if registration_context.registration_origins is not None:
+            module_name = getattr(handler, "__module__", None)
+            allowed_origins = dict(registration_context.registration_origins)
+            expected_origin = (
+                allowed_origins.get(module_name)
+                if isinstance(module_name, str)
+                else None
+            )
+            try:
+                source_file = inspect.getsourcefile(handler)
+                source_key = _path_key(Path(source_file).resolve(strict=True)) if source_file else ""
+            except (OSError, RuntimeError, TypeError, ValueError):
+                source_key = ""
+            if expected_origin is None or source_key != expected_origin:
+                raise _ToolPackLoadError(
+                    "undeclared_registration_origin",
+                    "Tool Pack command registration must originate from a declared entry module.",
+                )
         if normalized_name in COMMANDS:
             raise ValueError(f'Command "{normalized_name}" is already registered.')
         _validate_command_catalog_capacity(normalized_name, normalized_metadata)
@@ -854,10 +944,19 @@ def load_command_modules(package_name: str = "unreal_editor_webui_commands") -> 
             _append_command_load_error(module_name, str(exc))
 
 
-def _tool_pack_diagnostic(descriptor: ToolPackDescriptor, error: str) -> dict[str, str]:
+def _tool_pack_diagnostic(
+    descriptor: ToolPackDescriptor,
+    error: str,
+    reason_code: str = "validation_failed",
+) -> dict[str, str]:
     return {
         "module": f"toolpack:{descriptor.pack_id}"[:144],
         "error": error[:512],
+        "reasonCode": (
+            reason_code
+            if reason_code in TOOL_PACK_STATUS_REASON_CODES
+            else "validation_failed"
+        ),
     }
 
 
@@ -872,6 +971,7 @@ def _tool_pack_fingerprint(
     descriptor: ToolPackDescriptor,
     python_root: Path | None = None,
 ) -> _LoadedToolPackFingerprint:
+    dependency_policy = descriptor.dependency_policy
     return _LoadedToolPackFingerprint(
         plugin_name=descriptor.plugin_name,
         plugin_version=descriptor.plugin_version,
@@ -881,6 +981,17 @@ def _tool_pack_fingerprint(
         top_level_python_package=descriptor.python_package.split(".", 1)[0].casefold(),
         command_namespace=descriptor.command_namespace,
         python_root_key=_path_key(python_root or descriptor.python_root),
+        schema_version=descriptor.schema_version,
+        entry_modules=tuple(descriptor.entry_modules),
+        dependency_policy=(
+            (
+                dependency_policy.pure_python,
+                dependency_policy.pure_python_tree_sha256,
+                dependency_policy.native,
+            )
+            if dependency_policy is not None
+            else None
+        ),
     )
 
 
@@ -1084,6 +1195,7 @@ def _validate_imported_module_origin(module: Any, expected_origin: Path) -> None
 def _validate_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> tuple[Path, Path]:
     if descriptor.required_core_api != SDK_API_VERSION:
         raise _ToolPackLoadError(
+            "trusted_core_api_mismatch",
             f"Tool Pack requires core API {descriptor.required_core_api}, but this core provides "
             f"API {SDK_API_VERSION}; the package was not loaded."
         )
@@ -1110,6 +1222,7 @@ def _restore_tool_pack_registry(
     python_roots_before: list[str],
     statuses_before: list[dict[str, Any]],
     status_meta_before: dict[str, int],
+    policy_status_before: dict[str, Any],
 ) -> None:
     COMMANDS.clear()
     COMMANDS.update(handlers_before)
@@ -1127,6 +1240,8 @@ def _restore_tool_pack_registry(
     _TOOL_PACK_STATUSES[:] = statuses_before
     _TOOL_PACK_STATUS_META.clear()
     _TOOL_PACK_STATUS_META.update(status_meta_before)
+    _TOOL_PACK_POLICY_STATUS.clear()
+    _TOOL_PACK_POLICY_STATUS.update(policy_status_before)
 
 
 def _remove_failed_tool_pack_modules(
@@ -1178,6 +1293,7 @@ def _existing_commands_were_preserved(
     python_roots_before: list[str],
     statuses_before: list[dict[str, Any]],
     status_meta_before: dict[str, int],
+    policy_status_before: dict[str, Any],
 ) -> bool:
     if COMMAND_LOAD_ERRORS != load_errors_before:
         return False
@@ -1190,6 +1306,8 @@ def _existing_commands_were_preserved(
     if _TOOL_PACK_STATUSES != statuses_before:
         return False
     if _TOOL_PACK_STATUS_META != status_meta_before:
+        return False
+    if _TOOL_PACK_POLICY_STATUS != policy_status_before:
         return False
     for command_name, handler in handlers_before.items():
         if COMMANDS.get(command_name) is not handler:
@@ -1212,6 +1330,7 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
         python_roots_before = list(_TOOL_PACK_PYTHON_ROOTS)
         statuses_before = copy.deepcopy(_TOOL_PACK_STATUSES)
         status_meta_before = dict(_TOOL_PACK_STATUS_META)
+        policy_status_before = copy.deepcopy(_TOOL_PACK_POLICY_STATUS)
         modules_before = dict(sys.modules)
         sys_path_before = list(sys.path)
         meta_path_container_before = sys.meta_path
@@ -1225,6 +1344,7 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
         return _tool_pack_diagnostic(
             descriptor,
             "Tool Pack could not start an isolated load; see the Unreal Log.",
+            "entry_import_failed",
         )
 
     python_root: Path | None = None
@@ -1256,6 +1376,25 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
         )
         import_targets = [*package_chain_targets, *module_targets]
         import_guard = _ToolPackImportGuard(top_level_package, import_targets)
+        targets_to_import = import_targets
+        registration_origins: tuple[tuple[str, str], ...] | None = None
+        if descriptor.schema_version == 2:
+            target_by_name = {target.module_name: target for target in import_targets}
+            entry_targets: list[_ToolPackImportTarget] = []
+            for entry_module in descriptor.entry_modules:
+                full_name = f"{descriptor.python_package}.{entry_module}"
+                import_target = target_by_name.get(full_name)
+                if import_target is None:
+                    raise _ToolPackLoadError(
+                        "entry_module_missing",
+                        "Tool Pack declared entry module is unavailable; the package was not loaded.",
+                    )
+                entry_targets.append(import_target)
+            targets_to_import = sorted(entry_targets, key=lambda item: item.module_name)
+            registration_origins = tuple(
+                (target.module_name, _path_key(target.source_path))
+                for target in targets_to_import
+            )
 
         desired_path, root_text = _prepare_tool_pack_python_path(
             python_root,
@@ -1265,9 +1404,14 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
         meta_path_container_before[:] = [import_guard, *sys_meta_path_before]
         sys.meta_path = meta_path_container_before
         try:
-            with _registration_context(descriptor.pack_id, descriptor.command_namespace):
-                importlib.import_module(descriptor.python_package)
-                for import_target in import_targets:
+            with _registration_context(
+                descriptor.pack_id,
+                descriptor.command_namespace,
+                registration_origins,
+            ):
+                if descriptor.schema_version == 1:
+                    importlib.import_module(descriptor.python_package)
+                for import_target in targets_to_import:
                     # Reassert the scoped guard before each import so ordinary package
                     # side effects cannot accidentally expose the declared prefix to a
                     # preinstalled finder later in the deterministic traversal.
@@ -1294,6 +1438,7 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
             python_roots_before,
             statuses_before,
             status_meta_before,
+            policy_status_before,
         ):
             raise ValueError("Tool Pack modified commands owned by another provider.")
 
@@ -1334,6 +1479,7 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
             python_roots_before,
             statuses_before,
             status_meta_before,
+            policy_status_before,
         )
         sys.path[:] = sys_path_before
         if python_root is not None:
@@ -1350,6 +1496,9 @@ def _load_tool_pack_descriptor(descriptor: ToolPackDescriptor) -> dict[str, str]
             exc.public_error
             if isinstance(exc, _ToolPackLoadError)
             else "Tool Pack Python package failed to load; see the Unreal Log.",
+            exc.reason_code
+            if isinstance(exc, _ToolPackLoadError)
+            else "entry_import_failed",
         )
 
 
@@ -1359,10 +1508,10 @@ def _conflicting_tool_pack_indexes(
     conflicts: set[int] = set()
     errors: list[dict[str, str]] = []
     fields = (
-        ("pack_id", "id", False),
-        ("python_package", "pythonPackage top-level", True),
+        ("pack_id", "id", False, "pack_id_conflict"),
+        ("python_package", "pythonPackage top-level", True, "python_package_conflict"),
     )
-    for attribute, label, top_level_only in fields:
+    for attribute, label, top_level_only, reason_code in fields:
         groups: dict[str, list[int]] = {}
         for index, descriptor in enumerate(descriptors):
             raw_value = str(getattr(descriptor, attribute))
@@ -1379,6 +1528,7 @@ def _conflicting_tool_pack_indexes(
                         descriptor,
                         f'Duplicate Tool Pack {label} "{group_value}"; '
                         "all conflicting Tool Packs were not loaded.",
+                        reason_code,
                     )
                 )
 
@@ -1418,6 +1568,7 @@ def _conflicting_tool_pack_indexes(
             _tool_pack_diagnostic(
                 descriptor,
                 error,
+                "command_namespace_conflict",
             )
         )
     return conflicts, errors
@@ -1466,6 +1617,77 @@ def _loaded_tool_pack_conflict_error(
     return None
 
 
+def _set_tool_pack_policy_status(
+    *,
+    enforced: bool,
+    state: str,
+    reason_codes: list[str] | tuple[str, ...] = (),
+) -> None:
+    _TOOL_PACK_POLICY_STATUS.clear()
+    _TOOL_PACK_POLICY_STATUS.update(
+        {
+            "enforced": bool(enforced),
+            "state": state if state in {"accepted", "disabled", "rejected"} else "rejected",
+            "reasonCodes": _public_tool_pack_reason_codes(reason_codes),
+        }
+    )
+
+
+def _load_runtime_tool_pack_policy() -> tuple[ToolPackPolicy | None, str | None]:
+    try:
+        paths = getattr(unreal, "Paths", None)
+        project_dir = paths.project_dir() if paths is not None else ""
+        if not isinstance(project_dir, str) or not project_dir.strip():
+            raise ToolPackIntegrityError(
+                "trust_policy_invalid",
+                "Project directory is unavailable for Tool Pack policy discovery.",
+            )
+        policy = load_project_tool_pack_policy(project_dir)
+        if policy is None:
+            _set_tool_pack_policy_status(enforced=False, state="disabled")
+        else:
+            _set_tool_pack_policy_status(enforced=True, state="accepted")
+        return policy, None
+    except ToolPackIntegrityError:
+        _set_tool_pack_policy_status(
+            enforced=True,
+            state="rejected",
+            reason_codes=["trust_policy_invalid"],
+        )
+        return None, "trust_policy_invalid"
+    except Exception:
+        _log_exception("Unreal Editor WebUI could not read the Tool Pack project policy.")
+        _set_tool_pack_policy_status(
+            enforced=True,
+            state="rejected",
+            reason_codes=["trust_policy_invalid"],
+        )
+        return None, "trust_policy_invalid"
+
+
+def _tool_pack_policy_rejection(
+    descriptor: ToolPackDescriptor,
+    policy: ToolPackPolicy,
+) -> str | None:
+    entry = policy.by_pack_id.get(descriptor.pack_id)
+    if entry is None:
+        return "trust_anchor_missing"
+    if entry.plugin_version != descriptor.plugin_version:
+        return "trusted_plugin_version_mismatch"
+    if entry.required_core_api != descriptor.required_core_api:
+        return "trusted_core_api_mismatch"
+    try:
+        plugin_directory = Path(descriptor.python_root).resolve(strict=True).parent.parent
+        payload_sha256 = compute_tool_pack_payload_sha256(plugin_directory)
+    except ToolPackIntegrityError:
+        return "trusted_payload_unverifiable"
+    except (OSError, RuntimeError, ValueError):
+        return "trusted_payload_unverifiable"
+    if payload_sha256 != entry.payload_sha256:
+        return "trusted_payload_mismatch"
+    return None
+
+
 def load_tool_packs(
     descriptors: list[ToolPackDescriptor] | None = None,
     discovery_errors: list[dict[str, str]] | None = None,
@@ -1478,6 +1700,8 @@ def load_tool_packs(
             discovery_errors = discovered_errors
         else:
             discovery_errors = [*discovery_errors, *discovered_errors]
+
+    project_policy, policy_error = _load_runtime_tool_pack_policy()
 
     tool_pack_errors: list[dict[str, str]] = []
     status_updates: list[dict[str, Any]] = []
@@ -1507,6 +1731,15 @@ def load_tool_packs(
             descriptors,
             key=_tool_pack_descriptor_sort_key,
         )
+
+    if project_policy is not None:
+        installed_ids = {descriptor.pack_id for descriptor in ordered_descriptors}
+        if any(entry.pack_id not in installed_ids for entry in project_policy.entries):
+            _set_tool_pack_policy_status(
+                enforced=True,
+                state="rejected",
+                reason_codes=["trusted_pack_missing"],
+            )
 
     processed_discovery_errors = 0
     omitted_discovery_errors = 0
@@ -1539,6 +1772,39 @@ def load_tool_packs(
 
     new_descriptors: list[ToolPackDescriptor] = []
     for descriptor in ordered_descriptors:
+        policy_rejection = (
+            policy_error
+            if policy_error is not None
+            else (
+                _tool_pack_policy_rejection(descriptor, project_policy)
+                if project_policy is not None
+                else None
+            )
+        )
+        if policy_rejection is not None:
+            _set_tool_pack_policy_status(
+                enforced=True,
+                state="rejected",
+                reason_codes=[
+                    *_TOOL_PACK_POLICY_STATUS.get("reasonCodes", []),
+                    policy_rejection,
+                ],
+            )
+            tool_pack_errors.append(
+                _tool_pack_diagnostic(
+                    descriptor,
+                    "Tool Pack was rejected by the project trust policy.",
+                    policy_rejection,
+                )
+            )
+            status_updates.append(
+                _tool_pack_status_record(
+                    descriptor,
+                    "rejected",
+                    reason_codes=[policy_rejection],
+                )
+            )
+            continue
         fingerprint = _tool_pack_fingerprint(descriptor)
         loaded_fingerprint = _LOADED_TOOL_PACK_FINGERPRINTS.get(descriptor.pack_id)
         loaded_id_present = descriptor.pack_id in _LOADED_TOOL_PACK_IDS
@@ -1561,19 +1827,34 @@ def load_tool_packs(
                         descriptor,
                         f'Tool Pack id "{descriptor.pack_id}" is already loaded with a '
                         "different descriptor; the new Tool Pack was not loaded.",
+                        "pack_id_conflict",
                     )
                 )
                 status_updates.append(
-                    _tool_pack_status_record(descriptor, "rejected")
+                    _tool_pack_status_record(
+                        descriptor,
+                        "rejected",
+                        reason_codes=["pack_id_conflict"],
+                    )
                 )
             continue
 
         loaded_conflict = _loaded_tool_pack_conflict_error(descriptor, fingerprint)
         if loaded_conflict is not None:
             tool_pack_errors.append(
-                _tool_pack_diagnostic(descriptor, loaded_conflict)
+                _tool_pack_diagnostic(
+                    descriptor,
+                    loaded_conflict,
+                    "tool_pack_conflict",
+                )
             )
-            status_updates.append(_tool_pack_status_record(descriptor, "rejected"))
+            status_updates.append(
+                _tool_pack_status_record(
+                    descriptor,
+                    "rejected",
+                    reason_codes=["tool_pack_conflict"],
+                )
+            )
             continue
         new_descriptors.append(descriptor)
 
@@ -1581,12 +1862,29 @@ def load_tool_packs(
     tool_pack_errors.extend(conflict_errors)
     for index, descriptor in enumerate(new_descriptors):
         if index in conflicting_indexes:
-            status_updates.append(_tool_pack_status_record(descriptor, "rejected"))
+            conflict_reason_codes = [
+                item.get("reasonCode", "tool_pack_conflict")
+                for item in conflict_errors
+                if item.get("module") == f"toolpack:{descriptor.pack_id}"[:144]
+            ]
+            status_updates.append(
+                _tool_pack_status_record(
+                    descriptor,
+                    "rejected",
+                    reason_codes=conflict_reason_codes or ["tool_pack_conflict"],
+                )
+            )
             continue
         error = _load_tool_pack_descriptor(descriptor)
         if error is not None:
             tool_pack_errors.append(error)
-            status_updates.append(_tool_pack_status_record(descriptor, "rejected"))
+            status_updates.append(
+                _tool_pack_status_record(
+                    descriptor,
+                    "rejected",
+                    reason_codes=[error.get("reasonCode", "entry_import_failed")],
+                )
+            )
         else:
             status_updates.append(
                 _tool_pack_status_record(

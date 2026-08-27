@@ -206,6 +206,7 @@ test('BuildPlugin uses an exact commit and one fresh run-attempt package directo
     '$ToolPackSourceDirs = @(\n',
     'tests/fixtures/ue-tool-packs/AssetToolsFixture',
     'tests/fixtures/ue-tool-packs/LevelToolsFixture',
+    'examples/tool-packs/ExampleAssetTools',
     '$ToolPackSourceDirsJson = ConvertTo-Json -InputObject $ToolPackSourceDirs -Compress',
     'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-host-project.ps1',
     '-ProjectDir $ProjectDir',
@@ -229,20 +230,20 @@ test('host exports a validated version-specific Tool Pack count for the GUI cont
   assert.ok(branchStart >= 0 && branchEnd > branchStart)
   const fixtureBranch = hostRun.slice(branchStart, branchEnd)
   const fixturePaths = fixtureBranch.match(
-    /tests\/fixtures\/ue-tool-packs\/[A-Za-z0-9_-]+/gu,
+    /(?:tests\/fixtures\/ue-tool-packs|examples\/tool-packs)\/[A-Za-z0-9_-]+/gu,
   ) || []
-  assert.equal(fixturePaths.length, 2)
-  assert.equal(new Set(fixturePaths).size, 2)
+  assert.equal(fixturePaths.length, 3)
+  assert.equal(new Set(fixturePaths).size, 3)
 
   const expectedCount = (version) => (version === '5.8' ? fixturePaths.length : 0)
   assert.equal(expectedCount('5.3'), 0)
-  assert.equal(expectedCount('5.8'), 2)
+  assert.equal(expectedCount('5.8'), 3)
   assert.match(hostRun, /\$ToolPackSourceDirs = @\(\)/u)
   assert.match(
     hostRun,
     /"UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=\$\(\$ToolPackSourceDirs\.Count\)"/u,
   )
-  assert.doesNotMatch(hostRun, /UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=[02]/u)
+  assert.doesNotMatch(hostRun, /UE_WEBUI_EXPECTED_TOOL_PACK_COUNT=[03]/u)
 
   assert.match(
     BROWSER_TEST_SOURCE,
@@ -397,7 +398,7 @@ test('packaged GUI proves the closed health report through product DOM without l
     'report.catalog.schemaVersion!==1||report.catalog.diagnosticCode!==null',
     "exactKeys(report.toolPacks,['status','diagnosticCode','statusVersion','coreApiVersion'",
     "report.toolPacks.status!=='ready'||report.toolPacks.diagnosticCode!==null",
-    'report.toolPacks.statusVersion!==1||report.toolPacks.coreApiVersion!==1',
+    'report.toolPacks.statusVersion!==2||report.toolPacks.coreApiVersion!==1',
     'report.toolPacks.loadedCount!==expectedToolPackCount||report.toolPacks.rejectedCount!==0',
     'report.toolPacks.truncatedCount!==0||!Array.isArray(report.toolPacks.reasonCodes)',
     'report.toolPacks.reasonCodes.length!==0',

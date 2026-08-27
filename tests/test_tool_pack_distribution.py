@@ -27,6 +27,7 @@ from tool_pack_distribution import (  # noqa: E402
     package_tool_pack,
 )
 import tool_pack_distribution as distribution  # noqa: E402
+import unreal_editor_webui_toolpack_integrity as integrity  # noqa: E402
 
 
 FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "ue-tool-packs"
@@ -87,6 +88,23 @@ def make_packaged_code_plugin(
         {"BuildId": build_id, "Modules": {plugin_name: binary_name}},
     )
     (plugin / "Binaries" / "Win64" / binary_name).write_bytes(b"fixture-dll\0")
+
+
+def make_v2_plugin(plugin: Path) -> Path:
+    manifest_path = plugin / "Content" / "UnrealEditorWebUI" / "ToolPack.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "schemaVersion": 2,
+            "entryModules": ["commands"],
+            "dependencyPolicy": {
+                "purePython": {"mode": "none", "treeSha256": None},
+                "native": {"mode": "none"},
+            },
+        }
+    )
+    write_json(manifest_path, manifest)
+    return plugin
 
 
 def make_core(root: Path, build_id: str = "fixture-build-55") -> Path:
@@ -178,6 +196,67 @@ class ToolPackPackagingTests(unittest.TestCase):
             sha_line.decode("ascii"),
             r"\A[0-9a-f]{64}  AssetToolsFixture-1\.0\.0-ToolPack\.zip\n\Z",
         )
+
+    def test_v2_distribution_identity_and_shared_payload_hash_are_canonical(self) -> None:
+        plugin = make_v2_plugin(
+            copy_fixture("AssetToolsFixture", self.root / "v2-input")
+        )
+
+        result = package_tool_pack(str(plugin), str(self.root / "v2-package"))
+
+        self.assertEqual(
+            result.manifest_document["toolPack"],
+            {
+                "commandNamespace": "fixture.asset",
+                "dependencyPolicy": {
+                    "native": {"mode": "none"},
+                    "purePython": {"mode": "none", "treeSha256": None},
+                },
+                "entryModules": ["commands"],
+                "id": "com.openai.fixture.asset-tools",
+                "pythonPackage": "ue_webui_asset_tools_fixture",
+                "requiredCoreApi": 1,
+                "schemaVersion": 2,
+            },
+        )
+        self.assertEqual(
+            result.manifest_document["payload"]["treeSha256"],
+            integrity.compute_tool_pack_payload_sha256(plugin),
+        )
+        shared_records = integrity.snapshot_tool_pack_payload(plugin)
+        packaged_records = distribution._snapshot_plugin(plugin)
+        self.assertEqual(
+            [record.relative_path for record in packaged_records],
+            [record.relative_path for record in shared_records],
+        )
+        self.assertEqual(
+            distribution._tree_sha256(packaged_records),
+            integrity.payload_tree_sha256(shared_records),
+        )
+
+    def test_shared_scanner_and_packager_reject_the_same_root_path_contract(self) -> None:
+        unknown_root = copy_fixture("AssetToolsFixture", self.root / "unknown-root")
+        (unknown_root / "Unexpected" / "payload.txt").mkdir(parents=True)
+        for scanner in (
+            lambda: integrity.snapshot_tool_pack_payload(unknown_root),
+            lambda: distribution._snapshot_plugin(unknown_root),
+        ):
+            with self.subTest(case="unknown-root", scanner=scanner):
+                with self.assertRaises((integrity.ToolPackIntegrityError, DistributionError)) as caught:
+                    scanner()
+                self.assertEqual(caught.exception.reason_code, "payload_root_entry_invalid")
+
+        occupied = self.root / "occupied-root"
+        occupied.mkdir()
+        (occupied / "Content").write_text("not a directory", encoding="utf-8")
+        for scanner in (
+            lambda: integrity.snapshot_tool_pack_payload(occupied),
+            lambda: distribution._snapshot_plugin(occupied),
+        ):
+            with self.subTest(case="occupied-root", scanner=scanner):
+                with self.assertRaises((integrity.ToolPackIntegrityError, DistributionError)) as caught:
+                    scanner()
+                self.assertEqual(caught.exception.reason_code, "payload_root_entry_invalid")
 
     def test_package_is_fresh_private_and_rejects_private_payload(self) -> None:
         plugin = copy_fixture("AssetToolsFixture", self.root / "input")
@@ -304,6 +383,56 @@ class ToolPackDoctorTests(unittest.TestCase):
         extract_result(result, self.external)
         return result
 
+    def test_distribution_manifest_rejects_boolean_integer_impersonation(self) -> None:
+        plugin = make_v2_plugin(
+            copy_fixture("AssetToolsFixture", self.root / "v2-typed-input")
+        )
+        result = package_tool_pack(
+            str(plugin),
+            str(self.root / "v2-typed-package"),
+        )
+        extract_result(result, self.external)
+        installed = self.external / plugin.name
+        manifest_path = installed / DISTRIBUTION_RELATIVE_PATH
+        original = json.loads(manifest_path.read_text(encoding="utf-8"))
+        mutations = (
+            lambda value: value.__setitem__("schemaVersion", True),
+            lambda value: value["producer"].__setitem__("contractVersion", True),
+            lambda value: value["toolPack"].__setitem__("requiredCoreApi", True),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                document = json.loads(json.dumps(original))
+                mutate(document)
+                manifest_path.write_bytes(distribution._canonical_json_bytes(document))
+                report = doctor_installation(
+                    str(self.project), str(self.engine), [str(self.external)]
+                )
+                self.assertFalse(report.healthy)
+                self.assertIn(
+                    "distribution_manifest_invalid",
+                    [issue.reason_code for issue in report.issues],
+                )
+
+        raw_manifest = distribution._canonical_json_bytes(original).decode("utf-8")
+        raw_manifest = raw_manifest.replace(
+            '"version": "1.0.0"',
+            '"version": "\\ud800"',
+            1,
+        )
+        self.assertIn("\\ud800", raw_manifest)
+        manifest_path.write_bytes(raw_manifest.encode("utf-8"))
+        report = doctor_installation(
+            str(self.project), str(self.engine), [str(self.external)]
+        )
+        self.assertFalse(report.healthy)
+        self.assertIn(
+            "distribution_manifest_invalid",
+            [issue.reason_code for issue in report.issues],
+        )
+
+        manifest_path.write_bytes(distribution._canonical_json_bytes(original))
+
     def test_clean_core_and_two_packs_are_healthy_with_optional_trust(self) -> None:
         asset = self.package_and_install("AssetToolsFixture", "asset")
         level = self.package_and_install("LevelToolsFixture", "level")
@@ -346,6 +475,86 @@ class ToolPackDoctorTests(unittest.TestCase):
         rendered = json.dumps(trusted.public_document(), ensure_ascii=False)
         self.assertNotIn("secret-user", rendered)
         self.assertNotIn(str(self.root), rendered)
+
+        write_json(trust_file, {"schemaVersion": True, "packs": []})
+        with self.assertRaises(DistributionError) as boolean_version:
+            doctor_installation(
+                str(self.project),
+                str(self.engine),
+                [str(self.external)],
+                trust_file_value=str(trust_file),
+            )
+        self.assertEqual(boolean_version.exception.reason_code, "trust_lock_invalid")
+
+    def test_fixed_project_policy_verifies_payload_and_rejects_identity_drift(self) -> None:
+        result = self.package_and_install("AssetToolsFixture", "policy-asset")
+        policy_path = self.project.parent / integrity.POLICY_RELATIVE_PATH
+        policy = {
+            "format": integrity.POLICY_FORMAT,
+            "schemaVersion": integrity.POLICY_SCHEMA_VERSION,
+            "packs": [
+                {
+                    "packId": result.descriptor.pack_id,
+                    "pluginVersion": result.descriptor.plugin_version,
+                    "requiredCoreApi": result.descriptor.required_core_api,
+                    "payloadSha256": result.manifest_document["payload"]["treeSha256"],
+                }
+            ],
+        }
+        write_json(policy_path, policy)
+
+        verified = doctor_installation(
+            str(self.project), str(self.engine), [str(self.external)]
+        )
+        self.assertTrue(verified.healthy, verified.public_document())
+        self.assertEqual(verified.authenticity_status, "verified")
+        self.assertEqual(verified.packs[0].authenticity_status, "verified")
+
+        policy["packs"][0]["pluginVersion"] = "9.9.9"
+        write_json(policy_path, policy)
+        drifted = doctor_installation(
+            str(self.project), str(self.engine), [str(self.external)]
+        )
+        self.assertFalse(drifted.healthy)
+        self.assertEqual(drifted.authenticity_status, "failed")
+        self.assertIn(
+            "trusted_plugin_version_mismatch",
+            [issue.reason_code for issue in drifted.issues],
+        )
+
+        policy_path.write_text(
+            '{"format":"unreal-editor-webui-tool-pack-policy",'
+            '"schemaVersion":1,"packs":[],"unexpected":true}',
+            encoding="utf-8",
+        )
+        invalid = doctor_installation(
+            str(self.project), str(self.engine), [str(self.external)]
+        )
+        self.assertFalse(invalid.healthy)
+        self.assertEqual(invalid.authenticity_status, "failed")
+        self.assertIn(
+            "trust_policy_invalid",
+            [issue.reason_code for issue in invalid.issues],
+        )
+
+        policy_path.write_text(
+            '{"format":"unreal-editor-webui-tool-pack-policy",'
+            '"schemaVersion":1,"packs":[{"packId":"com.example.large-int",'
+            '"pluginVersion":"1.0.0","requiredCoreApi":'
+            + "1" * 5000
+            + ',"payloadSha256":"sha256:'
+            + "a" * 64
+            + '"}]}',
+            encoding="utf-8",
+        )
+        oversized_integer = doctor_installation(
+            str(self.project), str(self.engine), [str(self.external)]
+        )
+        self.assertFalse(oversized_integer.healthy)
+        self.assertIn(
+            "trust_policy_invalid",
+            [issue.reason_code for issue in oversized_integer.issues],
+        )
 
     def test_duplicate_core_pack_conflict_and_disabled_dependency_fail_stably(self) -> None:
         self.package_and_install("AssetToolsFixture", "asset")

@@ -29,7 +29,8 @@ flowchart LR
 - `Source/UnrealEditorWebUI/Private/UnrealEditorWebUIBridge.cpp` implements bridge methods, request preflight, native confirmation for privileged commands, task lifecycle storage, cancellation, timeout handling, settings reads/writes, and the bounded read-only project catalog transport.
 - `Python/unreal_editor_webui_bridge_entry.py` is the C++ to Python entry point. C++ evaluates a short import/dispatch expression with base64 arguments and receives JSON in memory through `ExecPythonCommandEx`.
 - `Python/unreal_editor_webui_sdk` is the stable decorator and structured-error API imported by built-in and third-party commands.
-- `Python/unreal_editor_webui_toolpacks.py` discovers enabled and mounted Unreal plugins with a fixed schema-v1 manifest under `Content/UnrealEditorWebUI/ToolPack.json`.
+- `Python/unreal_editor_webui_toolpacks.py` discovers enabled and mounted Unreal plugins with fixed closed schema-v1/v2 manifests under `Content/UnrealEditorWebUI/ToolPack.json`; v2 validates explicit entries and dependency locks.
+- `Python/unreal_editor_webui_toolpack_integrity.py` is the standard-library-only canonical payload scanner and strict fixed-path project-policy parser shared by runtime, packaging, and the doctor.
 - `Python/unreal_editor_webui_registry.py` registers trusted commands, atomically loads each Tool Pack, exposes `system.commands` plus the bounded `system.toolPacks` provider-status view, applies schema defaults, validates payloads, checks permission policy, and dispatches handlers.
 - `frontend/src/` is the React tool rack. It discovers commands from `system.commands`, strictly decodes either the fixed project catalog or the bundled starter, renders schema-driven forms, persists reconciled project-scoped preferences only after both native contexts resolve, shows task state, and renders structured results.
 

@@ -1,7 +1,19 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "com.example.asset-tools",
   "requiredCoreApi": 1,
   "pythonPackage": "example_asset_tools",
-  "commandNamespace": "example.assets"
+  "commandNamespace": "example.assets",
+  "entryModules": [
+    "commands"
+  ],
+  "dependencyPolicy": {
+    "purePython": {
+      "mode": "none",
+      "treeSha256": null
+    },
+    "native": {
+      "mode": "none"
+    }
+  }
 }

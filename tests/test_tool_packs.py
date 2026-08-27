@@ -148,6 +148,9 @@ class ToolPackContractTests(unittest.TestCase):
         command_namespace: str,
         source: str,
         required_core_api: int | None = None,
+        schema_version: int = 1,
+        entry_sources: dict[str, str] | None = None,
+        dependency_policy=None,
     ):
         python_root = self.temp_root / plugin_name / "Content" / "Python"
         package_parts = python_package.split(".")
@@ -158,6 +161,21 @@ class ToolPackContractTests(unittest.TestCase):
             init_path = package_directory / "__init__.py"
             init_path.write_text(
                 source if index == len(package_parts) - 1 else "",
+                encoding="utf-8",
+            )
+
+        for entry_module, entry_source in (entry_sources or {}).items():
+            entry_parts = entry_module.split(".")
+            entry_parent = package_directory.joinpath(*entry_parts[:-1])
+            entry_parent.mkdir(parents=True, exist_ok=True)
+            for parent_index in range(1, len(entry_parts)):
+                parent_init = package_directory.joinpath(
+                    *entry_parts[:parent_index], "__init__.py"
+                )
+                if not parent_init.exists():
+                    parent_init.write_text("", encoding="utf-8")
+            (entry_parent / f"{entry_parts[-1]}.py").write_text(
+                entry_source,
                 encoding="utf-8",
             )
 
@@ -176,6 +194,9 @@ class ToolPackContractTests(unittest.TestCase):
             python_package=python_package,
             command_namespace=command_namespace,
             python_root=python_root,
+            schema_version=schema_version,
+            entry_modules=tuple(sorted((entry_sources or {}).keys())),
+            dependency_policy=dependency_policy,
         )
 
     def execute(self, command: str, payload: dict[str, object] | None = None):
@@ -188,6 +209,362 @@ class ToolPackContractTests(unittest.TestCase):
         response = self.execute("system.toolPacks")
         self.assertTrue(response["ok"])
         return response["result"]
+
+    def v2_dependency_policy(self):
+        return self.toolpacks.ToolPackDependencyPolicy(
+            pure_python="none",
+            pure_python_tree_sha256=None,
+            native="none",
+        )
+
+    def test_v2_imports_only_entries_and_allows_explicit_helpers_without_registration(self):
+        init_marker = self.temp_root / "init-marker.txt"
+        helper_marker = self.temp_root / "helper-marker.txt"
+        optional_marker = self.temp_root / "optional-marker.txt"
+        descriptor = self.create_pack(
+            plugin_name="ExplicitEntriesPlugin",
+            pack_id="com.example.explicit-entries",
+            python_package="explicit_entries_pack",
+            command_namespace="explicitentries",
+            source=f"from pathlib import Path\nPath({str(init_marker)!r}).write_text('init')\n",
+            schema_version=2,
+            dependency_policy=self.v2_dependency_policy(),
+            entry_sources={
+                "commands": (
+                    "from unreal_editor_webui_sdk import command\n"
+                    "from . import helper\n"
+                    "@command('explicitentries.echo')\n"
+                    "def echo(payload): return {'helper': helper.VALUE}\n"
+                ),
+                "optional": f"from pathlib import Path\nPath({str(optional_marker)!r}).write_text('optional')\n",
+                "helper": f"from pathlib import Path\nPath({str(helper_marker)!r}).write_text('helper')\nVALUE = 7\n",
+            },
+        )
+        descriptor = self.toolpacks.replace(
+            descriptor,
+            entry_modules=("commands",),
+        )
+
+        self.registry.load_tool_packs([descriptor], [])
+
+        self.assertTrue(init_marker.is_file())
+        self.assertTrue(helper_marker.is_file())
+        self.assertFalse(optional_marker.exists())
+        self.assertEqual(
+            self.execute("explicitentries.echo")["result"],
+            {"helper": 7},
+        )
+        self.assertEqual(self.tool_pack_status()["packs"][0]["reasonCodes"], [])
+
+    def test_v2_rejects_registration_from_package_init_atomically(self):
+        descriptor = self.create_pack(
+            plugin_name="InitRegistrationPlugin",
+            pack_id="com.example.init-registration",
+            python_package="init_registration_pack",
+            command_namespace="initregistration",
+            source=(
+                "from unreal_editor_webui_sdk import command\n"
+                "@command('initregistration.hidden')\n"
+                "def hidden(payload): return {}\n"
+            ),
+            schema_version=2,
+            dependency_policy=self.v2_dependency_policy(),
+            entry_sources={
+                "commands": (
+                    "from unreal_editor_webui_sdk import command\n"
+                    "@command('initregistration.entry')\n"
+                    "def entry(payload): return {}\n"
+                )
+            },
+        )
+
+        self.registry.load_tool_packs([descriptor], [])
+
+        self.assertNotIn("initregistration.hidden", self.registry.COMMANDS)
+        self.assertNotIn("initregistration.entry", self.registry.COMMANDS)
+        self.assertEqual(
+            self.tool_pack_status()["packs"][0]["reasonCodes"],
+            ["undeclared_registration_origin"],
+        )
+
+    def test_v2_rejects_helper_registration_even_with_module_name_spoof(self):
+        descriptor = self.create_pack(
+            plugin_name="HelperSpoofPlugin",
+            pack_id="com.example.helper-spoof",
+            python_package="helper_spoof_pack",
+            command_namespace="helperspoof",
+            source="",
+            schema_version=2,
+            dependency_policy=self.v2_dependency_policy(),
+            entry_sources={
+                "commands": "from . import helper\n",
+                "helper": (
+                    "from unreal_editor_webui_sdk import command\n"
+                    "def hidden(payload): return {}\n"
+                    "hidden.__module__ = 'helper_spoof_pack.commands'\n"
+                    "hidden = command('helperspoof.hidden')(hidden)\n"
+                ),
+            },
+        )
+        descriptor = self.toolpacks.replace(
+            descriptor,
+            entry_modules=("commands",),
+        )
+
+        self.registry.load_tool_packs([descriptor], [])
+
+        self.assertNotIn("helperspoof.hidden", self.registry.COMMANDS)
+        self.assertEqual(
+            self.tool_pack_status()["packs"][0]["reasonCodes"],
+            ["undeclared_registration_origin"],
+        )
+
+    def test_project_policy_accepts_exact_payload_and_rejects_hash_drift_before_import(self):
+        exact = self.create_pack(
+            plugin_name="PolicyExactPlugin",
+            pack_id="com.example.policy-exact",
+            python_package="policy_exact_pack",
+            command_namespace="policyexact",
+            source="",
+            schema_version=2,
+            dependency_policy=self.v2_dependency_policy(),
+            entry_sources={
+                "commands": (
+                    "from unreal_editor_webui_sdk import command\n"
+                    "@command('policyexact.echo')\n"
+                    "def echo(payload): return {}\n"
+                )
+            },
+        )
+        drift_marker = self.temp_root / "drift-imported.txt"
+        drifted = self.create_pack(
+            plugin_name="PolicyDriftPlugin",
+            pack_id="com.example.policy-drift",
+            python_package="policy_drift_pack",
+            command_namespace="policydrift",
+            source="",
+            schema_version=2,
+            dependency_policy=self.v2_dependency_policy(),
+            entry_sources={
+                "commands": (
+                    f"from pathlib import Path\nPath({str(drift_marker)!r}).write_text('imported')\n"
+                    "from unreal_editor_webui_sdk import command\n"
+                    "@command('policydrift.echo')\n"
+                    "def echo(payload): return {}\n"
+                )
+            },
+        )
+        integrity = importlib.import_module("unreal_editor_webui_toolpack_integrity")
+        exact_hash = integrity.compute_tool_pack_payload_sha256(
+            exact.python_root.parent.parent
+        )
+        drift_hash = integrity.compute_tool_pack_payload_sha256(
+            drifted.python_root.parent.parent
+        )
+        drift_entry = (
+            drifted.python_root
+            / drifted.python_package
+            / "commands.py"
+        )
+        drift_entry.write_text(
+            drift_entry.read_text(encoding="utf-8") + "# payload drift\n",
+            encoding="utf-8",
+        )
+        policy_path = (
+            self.temp_root
+            / "Config"
+            / "UnrealEditorWebUI"
+            / "ToolPackPolicy.json"
+        )
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "format": "unreal-editor-webui-tool-pack-policy",
+                    "schemaVersion": 1,
+                    "packs": [
+                        {
+                            "packId": exact.pack_id,
+                            "pluginVersion": exact.plugin_version,
+                            "requiredCoreApi": exact.required_core_api,
+                            "payloadSha256": exact_hash,
+                        },
+                        {
+                            "packId": drifted.pack_id,
+                            "pluginVersion": drifted.plugin_version,
+                            "requiredCoreApi": drifted.required_core_api,
+                            "payloadSha256": drift_hash,
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.unreal.Paths.project_dir = lambda: str(self.temp_root)
+
+        self.registry.load_tool_packs([drifted, exact], [])
+
+        self.assertIn("policyexact.echo", self.registry.COMMANDS)
+        self.assertNotIn("policydrift.echo", self.registry.COMMANDS)
+        self.assertFalse(drift_marker.exists())
+        status = self.tool_pack_status()
+        self.assertEqual(
+            status["policy"],
+            {
+                "enforced": True,
+                "state": "rejected",
+                "reasonCodes": ["trusted_payload_mismatch"],
+            },
+        )
+        status_by_id = {pack["packId"]: pack for pack in status["packs"]}
+        self.assertEqual(status_by_id[exact.pack_id]["state"], "loaded")
+        self.assertEqual(
+            status_by_id[drifted.pack_id]["reasonCodes"],
+            ["trusted_payload_mismatch"],
+        )
+
+    def test_project_policy_rejects_identity_drift_and_missing_pack_before_import(self):
+        integrity = importlib.import_module("unreal_editor_webui_toolpack_integrity")
+        descriptors = []
+        policy_entries = []
+        expected_reasons = {
+            "com.example.policy-unlisted": "trust_anchor_missing",
+            "com.example.policy-version": "trusted_plugin_version_mismatch",
+            "com.example.policy-api": "trusted_core_api_mismatch",
+        }
+        for label, pack_id in (
+            ("unlisted", "com.example.policy-unlisted"),
+            ("version", "com.example.policy-version"),
+            ("api", "com.example.policy-api"),
+        ):
+            marker = self.temp_root / f"{label}-policy-imported.txt"
+            descriptor = self.create_pack(
+                plugin_name=f"Policy{label.title()}Plugin",
+                pack_id=pack_id,
+                python_package=f"policy_{label}_pack",
+                command_namespace=f"policy{label}",
+                source="",
+                schema_version=2,
+                dependency_policy=self.v2_dependency_policy(),
+                entry_sources={
+                    "commands": (
+                        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+                        "from unreal_editor_webui_sdk import command\n"
+                        f"@command('policy{label}.echo')\n"
+                        "def echo(payload): return {}\n"
+                    )
+                },
+            )
+            descriptors.append(descriptor)
+            if label != "unlisted":
+                policy_entries.append(
+                    {
+                        "packId": descriptor.pack_id,
+                        "pluginVersion": (
+                            "9.9.9" if label == "version" else descriptor.plugin_version
+                        ),
+                        "requiredCoreApi": (
+                            descriptor.required_core_api + 1
+                            if label == "api"
+                            else descriptor.required_core_api
+                        ),
+                        "payloadSha256": integrity.compute_tool_pack_payload_sha256(
+                            descriptor.python_root.parent.parent
+                        ),
+                    }
+                )
+        policy_entries.append(
+            {
+                "packId": "com.example.policy-missing",
+                "pluginVersion": "1.0.0",
+                "requiredCoreApi": self.sdk.SDK_API_VERSION,
+                "payloadSha256": "sha256:" + "0" * 64,
+            }
+        )
+        policy_path = (
+            self.temp_root
+            / "Config"
+            / "UnrealEditorWebUI"
+            / "ToolPackPolicy.json"
+        )
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "format": "unreal-editor-webui-tool-pack-policy",
+                    "schemaVersion": 1,
+                    "packs": policy_entries,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.unreal.Paths.project_dir = lambda: str(self.temp_root)
+
+        self.registry.load_tool_packs(descriptors, [])
+
+        self.assertFalse(any(self.temp_root.glob("*-policy-imported.txt")))
+        status = self.tool_pack_status()
+        status_by_id = {pack["packId"]: pack for pack in status["packs"]}
+        for pack_id, reason_code in expected_reasons.items():
+            self.assertEqual(status_by_id[pack_id]["reasonCodes"], [reason_code])
+        self.assertEqual(status["policy"]["state"], "rejected")
+        self.assertIn("trusted_pack_missing", status["policy"]["reasonCodes"])
+
+    def test_invalid_project_policy_rejects_before_any_pack_import(self):
+        marker = self.temp_root / "invalid-policy-imported.txt"
+        descriptor = self.create_pack(
+            plugin_name="InvalidPolicyPlugin",
+            pack_id="com.example.invalid-policy",
+            python_package="invalid_policy_pack",
+            command_namespace="invalidpolicy",
+            source="",
+            schema_version=2,
+            dependency_policy=self.v2_dependency_policy(),
+            entry_sources={
+                "commands": (
+                    f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+                    "from unreal_editor_webui_sdk import command\n"
+                    "@command('invalidpolicy.echo')\n"
+                    "def echo(payload): return {}\n"
+                )
+            },
+        )
+        policy_path = (
+            self.temp_root
+            / "Config"
+            / "UnrealEditorWebUI"
+            / "ToolPackPolicy.json"
+        )
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "format": "unreal-editor-webui-tool-pack-policy",
+                    "schemaVersion": 1,
+                    "packs": [],
+                    "unexpected": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.unreal.Paths.project_dir = lambda: str(self.temp_root)
+
+        self.registry.load_tool_packs([descriptor], [])
+
+        self.assertFalse(marker.exists())
+        status = self.tool_pack_status()
+        self.assertEqual(
+            status["policy"],
+            {
+                "enforced": True,
+                "state": "rejected",
+                "reasonCodes": ["trust_policy_invalid"],
+            },
+        )
+        self.assertEqual(
+            status["packs"][0]["reasonCodes"],
+            ["trust_policy_invalid"],
+        )
 
     def test_two_healthy_packs_share_the_sdk_registry_and_load_in_stable_order(self):
         alpha = self.create_pack(
@@ -258,8 +635,12 @@ class ToolPackContractTests(unittest.TestCase):
             self.registry.CommandExecutionError,
         )
         status = self.tool_pack_status()
-        self.assertEqual(status["statusVersion"], 1)
+        self.assertEqual(status["statusVersion"], 2)
         self.assertEqual(status["coreApiVersion"], self.sdk.SDK_API_VERSION)
+        self.assertEqual(
+            status["policy"],
+            {"enforced": False, "state": "disabled", "reasonCodes": []},
+        )
         self.assertEqual(status["truncatedCount"], 0)
         self.assertEqual(
             status["packs"],
@@ -273,6 +654,7 @@ class ToolPackContractTests(unittest.TestCase):
                     "state": "loaded",
                     "commandCount": 2,
                     "commands": ["alpha.echo", "alpha.fail"],
+                    "reasonCodes": [],
                 },
                 {
                     "provider": "com.example.beta",
@@ -283,6 +665,7 @@ class ToolPackContractTests(unittest.TestCase):
                     "state": "loaded",
                     "commandCount": 1,
                     "commands": ["beta.echo"],
+                    "reasonCodes": [],
                 },
             ],
         )
@@ -301,6 +684,7 @@ class ToolPackContractTests(unittest.TestCase):
                     "state",
                     "commandCount",
                     "commands",
+                    "reasonCodes",
                 }
                 for pack in status["packs"]
             )
@@ -1120,6 +1504,7 @@ class ToolPackContractTests(unittest.TestCase):
                 "state": "rejected",
                 "commandCount": 0,
                 "commands": [],
+                "reasonCodes": ["entry_import_failed"],
             },
         )
 
@@ -1491,6 +1876,7 @@ class ToolPackContractTests(unittest.TestCase):
                     "state": "loaded",
                     "commandCount": 1,
                     "commands": ["compatible.echo"],
+                    "reasonCodes": [],
                 },
                 {
                     "provider": "com.example.incompatible",
@@ -1501,6 +1887,7 @@ class ToolPackContractTests(unittest.TestCase):
                     "state": "rejected",
                     "commandCount": 0,
                     "commands": [],
+                    "reasonCodes": ["trusted_core_api_mismatch"],
                 },
                 {
                     "provider": None,
@@ -1511,6 +1898,7 @@ class ToolPackContractTests(unittest.TestCase):
                     "state": "rejected",
                     "commandCount": 0,
                     "commands": [],
+                    "reasonCodes": ["validation_failed"],
                 },
             ],
         )
@@ -1888,6 +2276,7 @@ class ToolPackDiscoveryContractTests(unittest.TestCase):
                     "state": "rejected",
                     "commandCount": 0,
                     "commands": [],
+                    "reasonCodes": ["validation_failed"],
                 }
             ],
         )

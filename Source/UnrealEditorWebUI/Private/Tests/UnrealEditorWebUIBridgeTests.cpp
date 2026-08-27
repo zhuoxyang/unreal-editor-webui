@@ -295,6 +295,7 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
     TestTrue(TEXT("The Tool Pack catalogue includes commands"), Catalogue->TryGetArrayField(TEXT("commands"), Commands));
     bool bFoundAssetFixture = false;
     bool bFoundLevelFixture = false;
+    bool bFoundSchemaV2Fixture = false;
     if (Commands != nullptr)
     {
         for (const TSharedPtr<FJsonValue>& CommandValue : *Commands)
@@ -305,11 +306,13 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
             {
                 bFoundAssetFixture |= CommandName == TEXT("fixture.asset.echo");
                 bFoundLevelFixture |= CommandName == TEXT("fixture.level.echo");
+                bFoundSchemaV2Fixture |= CommandName == TEXT("example.assets.selectionSummary");
             }
         }
     }
     TestTrue(TEXT("The first independent Tool Pack is discoverable"), bFoundAssetFixture);
     TestTrue(TEXT("The second independent Tool Pack is discoverable"), bFoundLevelFixture);
+    TestTrue(TEXT("The schema v2 Tool Pack is discoverable"), bFoundSchemaV2Fixture);
 
     const FString StatusJson = Bridge->ExecuteCommand(
         TEXT("{\"id\":\"tool-pack-status\",\"command\":\"system.toolPacks\",\"payload\":{}}"));
@@ -328,15 +331,26 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
         return false;
     }
 
-    TestEqual(TEXT("The Tool Pack status uses schema version 1"), Status->GetIntegerField(TEXT("statusVersion")), 1);
+    TestEqual(TEXT("The Tool Pack status uses schema version 2"), Status->GetIntegerField(TEXT("statusVersion")), 2);
     TestEqual(TEXT("The Tool Pack status reports core API 1"), Status->GetIntegerField(TEXT("coreApiVersion")), 1);
     TestEqual(TEXT("The Tool Pack status is not truncated"), Status->GetIntegerField(TEXT("truncatedCount")), 0);
+    const TSharedPtr<FJsonObject> Policy = Status->GetObjectField(TEXT("policy"));
+    TestTrue(TEXT("The Tool Pack status includes a policy object"), Policy.IsValid());
+    if (Policy.IsValid())
+    {
+        TestFalse(TEXT("The packaged fixture host does not enforce a project policy"), Policy->GetBoolField(TEXT("enforced")));
+        TestEqual(TEXT("The packaged fixture policy is disabled"), Policy->GetStringField(TEXT("state")), FString(TEXT("disabled")));
+        const TArray<TSharedPtr<FJsonValue>>* PolicyReasonCodes = nullptr;
+        TestTrue(TEXT("The policy exposes bounded reason codes"), Policy->TryGetArrayField(TEXT("reasonCodes"), PolicyReasonCodes));
+        TestEqual(TEXT("A disabled policy has no reason codes"), PolicyReasonCodes != nullptr ? PolicyReasonCodes->Num() : -1, 0);
+    }
 
     const TArray<TSharedPtr<FJsonValue>>* Packs = nullptr;
     TestTrue(TEXT("The Tool Pack status includes packs"), Status->TryGetArrayField(TEXT("packs"), Packs));
-    TestEqual(TEXT("The packaged host reports exactly two Tool Packs"), Packs != nullptr ? Packs->Num() : -1, 2);
+    TestEqual(TEXT("The packaged host reports exactly three Tool Packs"), Packs != nullptr ? Packs->Num() : -1, 3);
     bool bFoundAssetStatus = false;
     bool bFoundLevelStatus = false;
+    bool bFoundSchemaV2Status = false;
     if (Packs != nullptr)
     {
         for (const TSharedPtr<FJsonValue>& PackValue : *Packs)
@@ -350,7 +364,8 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
 
             const bool bExpectedPack =
                 PackId == TEXT("com.openai.fixture.asset-tools")
-                || PackId == TEXT("com.openai.fixture.level-tools");
+                || PackId == TEXT("com.openai.fixture.level-tools")
+                || PackId == TEXT("com.example.asset-tools");
             if (bExpectedPack)
             {
                 TestEqual(TEXT("A loaded Tool Pack identifies its provider"), Pack->GetStringField(TEXT("provider")), PackId);
@@ -358,6 +373,9 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
                 TestEqual(TEXT("A loaded Tool Pack requires core API 1"), Pack->GetIntegerField(TEXT("requiredCoreApi")), 1);
                 TestEqual(TEXT("A loaded Tool Pack reports loaded state"), Pack->GetStringField(TEXT("state")), FString(TEXT("loaded")));
                 TestEqual(TEXT("Each fixture owns one command"), Pack->GetIntegerField(TEXT("commandCount")), 1);
+                const TArray<TSharedPtr<FJsonValue>>* ReasonCodes = nullptr;
+                TestTrue(TEXT("A loaded Tool Pack exposes bounded reason codes"), Pack->TryGetArrayField(TEXT("reasonCodes"), ReasonCodes));
+                TestEqual(TEXT("A loaded Tool Pack has no rejection reasons"), ReasonCodes != nullptr ? ReasonCodes->Num() : -1, 0);
                 const TArray<TSharedPtr<FJsonValue>>* OwnedCommands = nullptr;
                 TestTrue(TEXT("A loaded Tool Pack lists its owned commands"), Pack->TryGetArrayField(TEXT("commands"), OwnedCommands));
                 TestEqual(TEXT("Each fixture status lists one owned command"), OwnedCommands != nullptr ? OwnedCommands->Num() : -1, 1);
@@ -365,16 +383,20 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
                 {
                     const FString ExpectedCommand = PackId == TEXT("com.openai.fixture.asset-tools")
                         ? TEXT("fixture.asset.echo")
-                        : TEXT("fixture.level.echo");
+                        : PackId == TEXT("com.openai.fixture.level-tools")
+                            ? TEXT("fixture.level.echo")
+                            : TEXT("example.assets.selectionSummary");
                     TestEqual(TEXT("The status maps the command to its provider"), (*OwnedCommands)[0]->AsString(), ExpectedCommand);
                 }
             }
             bFoundAssetStatus |= PackId == TEXT("com.openai.fixture.asset-tools");
             bFoundLevelStatus |= PackId == TEXT("com.openai.fixture.level-tools");
+            bFoundSchemaV2Status |= PackId == TEXT("com.example.asset-tools");
         }
     }
     TestTrue(TEXT("The first Tool Pack has a loaded status"), bFoundAssetStatus);
     TestTrue(TEXT("The second Tool Pack has a loaded status"), bFoundLevelStatus);
+    TestTrue(TEXT("The schema v2 Tool Pack has a loaded status"), bFoundSchemaV2Status);
 
     const auto VerifyEcho = [this, Bridge](
         const TCHAR* RequestId,
@@ -407,6 +429,39 @@ bool FUnrealEditorWebUIThirdPartyToolPacksTest::RunTest(const FString& Parameter
 
     VerifyEcho(TEXT("tool-pack-asset"), TEXT("fixture.asset.echo"), TEXT("asset"), TEXT("asset-value"));
     VerifyEcho(TEXT("tool-pack-level"), TEXT("fixture.level.echo"), TEXT("level"), TEXT("level-value"));
+
+    const FString SelectionSummaryJson = Bridge->ExecuteCommand(
+        TEXT("{\"id\":\"tool-pack-schema-v2\",\"command\":\"example.assets.selectionSummary\",\"payload\":{}}"));
+    const TSharedPtr<FJsonObject> SelectionSummaryResponse = ParseJsonObject(SelectionSummaryJson);
+    bool bSelectionSummaryOk = false;
+    TestTrue(TEXT("The schema v2 Tool Pack command returns JSON"), SelectionSummaryResponse.IsValid());
+    TestTrue(
+        TEXT("The schema v2 Tool Pack command exposes an ok field"),
+        SelectionSummaryResponse.IsValid()
+            && SelectionSummaryResponse->TryGetBoolField(TEXT("ok"), bSelectionSummaryOk));
+    TestTrue(
+        *FString::Printf(
+            TEXT("The schema v2 Tool Pack command executes through the shared bridge: %s"),
+            *SelectionSummaryJson),
+        bSelectionSummaryOk);
+
+    const TSharedPtr<FJsonObject> SelectionSummary = ParseResultObject(SelectionSummaryJson);
+    TestTrue(TEXT("The schema v2 Tool Pack command returns a result object"), SelectionSummary.IsValid());
+    if (SelectionSummary.IsValid())
+    {
+        double SelectedCount = -1.0;
+        TestTrue(
+            TEXT("The schema v2 Tool Pack result exposes a numeric selectedCount"),
+            SelectionSummary->TryGetNumberField(TEXT("selectedCount"), SelectedCount));
+        const TArray<TSharedPtr<FJsonValue>>* SelectedAssets = nullptr;
+        TestTrue(
+            TEXT("The schema v2 Tool Pack result exposes an assets array"),
+            SelectionSummary->TryGetArrayField(TEXT("assets"), SelectedAssets));
+        TestEqual(
+            TEXT("The schema v2 Tool Pack result count matches its assets array"),
+            SelectedCount,
+            SelectedAssets != nullptr ? static_cast<double>(SelectedAssets->Num()) : -1.0);
+    }
     return true;
 }
 

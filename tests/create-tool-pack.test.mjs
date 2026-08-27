@@ -104,6 +104,8 @@ function assertCoreDependency(descriptor) {
 function assertClosedManifest(manifest, expected) {
   assert.deepEqual(Object.keys(manifest).sort(), [
     'commandNamespace',
+    'dependencyPolicy',
+    'entryModules',
     'id',
     'pythonPackage',
     'requiredCoreApi',
@@ -142,11 +144,16 @@ test('the repository includes a real content-only example Tool Pack', () => {
     join(EXAMPLE_TOOL_PACK, 'Content', 'UnrealEditorWebUI', 'ToolPack.json'),
   )
   assertClosedManifest(manifest, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     id: 'com.example.asset-tools',
     requiredCoreApi: 1,
     pythonPackage: 'example_asset_tools',
     commandNamespace: 'example.assets',
+    entryModules: ['commands'],
+    dependencyPolicy: {
+      purePython: { mode: 'none', treeSha256: null },
+      native: { mode: 'none' },
+    },
   })
 
   const packageDirectory = join(
@@ -196,11 +203,16 @@ test(
         join(targetDirectory, 'Content', 'UnrealEditorWebUI', 'ToolPack.json'),
       )
       assertClosedManifest(manifest, {
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: 'com.studio.asset-tools',
         requiredCoreApi: 1,
         pythonPackage: 'ue_webui_toolpack_studio_asset_tools',
         commandNamespace: 'studio.assets',
+        entryModules: ['commands'],
+        dependencyPolicy: {
+          purePython: { mode: 'none', treeSha256: null },
+          native: { mode: 'none' },
+        },
       })
 
       const packageDirectory = join(

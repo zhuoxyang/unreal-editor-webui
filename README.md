@@ -282,8 +282,11 @@ The workspace header includes a health status control. It checks the optional
 `major.minor.patch` engine versions, packaged or loopback document scope, Python availability,
 per-call privileged confirmation, document-session task isolation, project persistence, catalog
 fallback, command discovery counts, and a strictly decoded Tool Pack deployment view. The Tool
-Pack view lists the bounded public v1 provider status and gives static restart guidance because
-packs are discovered only during registry initialization.
+Pack view strictly decodes the bounded public v1/v2 provider status and gives static restart
+guidance because packs are discovered only during registry initialization. Projects can opt in to
+an exact Tool Pack allowlist at `Config/UnrealEditorWebUI/ToolPackPolicy.json`; the core verifies
+pack id, plugin version, required core API, and the canonical payload-tree hash before importing
+that pack's declared schema-v2 entry modules.
 
 The generated schema-v2 support report is built from an explicit frontend allowlist and is capped
 at 4 KiB UTF-8. Its `health.overallStatus` and ordered `health.reasonCodes` are derived from the
@@ -357,9 +360,11 @@ if any of its modules violates the contract, every registration from that pack i
 core modules remain available. Consumers should surface these diagnostics instead of treating
 them as a failure of the entire catalogue.
 
-`system.toolPacks` keeps deployment diagnostics separate from command metadata v1. Its versioned,
-bounded result reports each accepted descriptor's sanitized identity, plugin version, required
-core API, state, owned-command count, and stable list of owned command names. Those names are
+`system.toolPacks` keeps deployment diagnostics separate from command metadata. The backend emits
+status v2 with a closed project-policy state and bounded fixed reason codes; the frontend also
+accepts the legacy v1 response during migration. Its versioned, bounded result reports each
+accepted descriptor's sanitized identity, plugin version, required core API, state, owned-command
+count, and stable list of owned command names. Those names are
 already public in `system.commands` and make provider ownership inspectable. If discovery rejects
 a manifest before a descriptor can be trusted, only the sanitized plugin label and `rejected`
 state are present; descriptor fields are `null` and `commands` is empty. It never returns package

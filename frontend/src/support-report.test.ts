@@ -361,6 +361,17 @@ describe('support report', () => {
       overallStatus: 'degraded',
       reasonCodes: ['health_tool_packs_rejected'],
     })
+    const policyOnly = buildSupportReport({
+      ...healthy,
+      toolPackStatusVersion: 2,
+      toolPackRejectedCount: 0,
+      toolPackReasonCodes: ['tool_pack_load_rejected'],
+    })
+    expect(policyOnly.toolPacks.reasonCodes).toEqual(['tool_pack_load_rejected'])
+    expect(policyOnly.health).toEqual({
+      overallStatus: 'degraded',
+      reasonCodes: ['health_tool_packs_rejected'],
+    })
     expect(supportHealthSummary({
       ...healthy,
       toolPackTruncatedCount: 5,

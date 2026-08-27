@@ -69,6 +69,43 @@ function toolPackStatus() {
   }
 }
 
+function toolPackStatusV2() {
+  return {
+    statusVersion: 2,
+    coreApiVersion: 1,
+    policy: {
+      enforced: true,
+      state: 'rejected',
+      reasonCodes: ['trusted_payload_mismatch'],
+    },
+    packs: [
+      {
+        provider: 'studio.assets',
+        packId: 'studio.assets',
+        pluginName: 'StudioAssets',
+        pluginVersion: '1.2.0',
+        requiredCoreApi: 1,
+        state: 'loaded',
+        commandCount: 1,
+        commands: ['asset.scan'],
+        reasonCodes: [],
+      },
+      {
+        provider: 'studio.legacy',
+        packId: 'studio.legacy',
+        pluginName: 'StudioLegacy',
+        pluginVersion: '0.9.0',
+        requiredCoreApi: 1,
+        state: 'rejected',
+        commandCount: 0,
+        commands: [],
+        reasonCodes: ['trusted_payload_mismatch'],
+      },
+    ],
+    truncatedCount: 0,
+  }
+}
+
 describe('bridge result decoders', () => {
   it('accepts a v1 catalogue and preserves registry load diagnostics', () => {
     const decoded = decodeCommandsResult(commandCatalogue(
@@ -279,8 +316,30 @@ describe('bridge result decoders', () => {
     })).toEqual({ statusVersion: 1, coreApiVersion: 1, packs: [], truncatedCount: 0 })
   })
 
-  it('separates unsupported Tool Pack status versions from malformed v1 payloads', () => {
-    expect(() => decodeToolPackStatus({ ...toolPackStatus(), statusVersion: 2 })).toThrow(
+  it('strictly decodes Tool Pack status v2 policy and fixed reason codes', () => {
+    expect(decodeToolPackStatus(toolPackStatusV2())).toEqual(toolPackStatusV2())
+    const base = toolPackStatusV2()
+    expect(() => decodeToolPackStatus({ ...base, privatePath: 'C:/private' })).toThrow('unsupported keyword')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      policy: { ...base.policy, reasonCodes: ['private-C:/secret'] },
+    })).toThrow('allowed public reason code')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...base.packs[0], reasonCodes: ['entry_import_failed'] }],
+    })).toThrow('empty for a loaded')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      packs: [{ ...base.packs[1], reasonCodes: [] }],
+    })).toThrow('identify a rejected')
+    expect(() => decodeToolPackStatus({
+      ...base,
+      policy: { enforced: false, state: 'accepted', reasonCodes: [] },
+    })).toThrow('invalid policy state')
+  })
+
+  it('separates unsupported Tool Pack status versions from malformed v1/v2 payloads', () => {
+    expect(() => decodeToolPackStatus({ ...toolPackStatus(), statusVersion: 3 })).toThrow(
       UnsupportedToolPackStatusVersionError,
     )
     expect(() => decodeToolPackStatus({ ...toolPackStatus(), statusVersion: 0 })).toThrow(

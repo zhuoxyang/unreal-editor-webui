@@ -136,6 +136,54 @@ export type ToolPackStatusV1 = {
   truncatedCount: number
 }
 
+export type ToolPackBackendReasonCode =
+  | 'command_namespace_conflict'
+  | 'command_registration_rejected'
+  | 'dependency_hash_mismatch'
+  | 'dependency_policy_invalid'
+  | 'entry_import_failed'
+  | 'entry_module_ambiguous'
+  | 'entry_module_duplicate'
+  | 'entry_module_invalid'
+  | 'entry_module_missing'
+  | 'entry_modules_invalid'
+  | 'in_process_native_dependency_unsupported'
+  | 'pack_id_conflict'
+  | 'plugin_name_conflict'
+  | 'python_package_conflict'
+  | 'startup_hook_forbidden'
+  | 'tool_pack_conflict'
+  | 'trust_anchor_missing'
+  | 'trust_policy_invalid'
+  | 'trusted_core_api_mismatch'
+  | 'trusted_pack_missing'
+  | 'trusted_payload_mismatch'
+  | 'trusted_payload_unverifiable'
+  | 'trusted_plugin_version_mismatch'
+  | 'undeclared_registration_origin'
+  | 'unlocked_vendored_dependencies'
+  | 'validation_failed'
+  | 'vendored_dependencies_missing'
+
+export type ToolPackStatusEntryV2 = ToolPackStatusEntryV1 & {
+  reasonCodes: ToolPackBackendReasonCode[]
+}
+
+export type ToolPackPolicyStatusV2 =
+  | { enforced: false; state: 'disabled'; reasonCodes: [] }
+  | { enforced: true; state: 'accepted'; reasonCodes: [] }
+  | { enforced: true; state: 'rejected'; reasonCodes: ToolPackBackendReasonCode[] }
+
+export type ToolPackStatusV2 = {
+  statusVersion: 2
+  coreApiVersion: number
+  policy: ToolPackPolicyStatusV2
+  packs: ToolPackStatusEntryV2[]
+  truncatedCount: number
+}
+
+export type ToolPackStatus = ToolPackStatusV1 | ToolPackStatusV2
+
 export type NativeToolCatalogDiagnosticCode =
   | 'catalog_too_large'
   | 'catalog_read_failed'

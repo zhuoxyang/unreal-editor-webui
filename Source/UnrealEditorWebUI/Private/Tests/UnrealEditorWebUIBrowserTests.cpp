@@ -175,7 +175,7 @@ namespace
             TEXT("exactKeys(report.toolPacks,['status','diagnosticCode','statusVersion','coreApiVersion',")
             TEXT("'loadedCount','rejectedCount','truncatedCount','reasonCodes'],'toolPacks');")
             TEXT("if(report.toolPacks.status!=='ready'||report.toolPacks.diagnosticCode!==null")
-            TEXT("||report.toolPacks.statusVersion!==1||report.toolPacks.coreApiVersion!==1")
+            TEXT("||report.toolPacks.statusVersion!==2||report.toolPacks.coreApiVersion!==1")
             TEXT("||report.toolPacks.loadedCount!==expectedToolPackCount||report.toolPacks.rejectedCount!==0")
             TEXT("||report.toolPacks.truncatedCount!==0||!Array.isArray(report.toolPacks.reasonCodes)")
             TEXT("||report.toolPacks.reasonCodes.length!==0){throw new Error('tool_pack_health');}")

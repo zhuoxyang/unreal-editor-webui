@@ -127,15 +127,25 @@ try {
         )
     }
     $Manifest = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         id = $Id
         requiredCoreApi = 1
         pythonPackage = $PythonPackage
         commandNamespace = $CommandNamespace
+        entryModules = @("commands")
+        dependencyPolicy = [ordered]@{
+            purePython = [ordered]@{
+                mode = "none"
+                treeSha256 = $null
+            }
+            native = [ordered]@{
+                mode = "none"
+            }
+        }
     }
 
     $PluginJson = ($PluginDescriptor | ConvertTo-Json -Depth 5) + [Environment]::NewLine
-    $ManifestJson = ($Manifest | ConvertTo-Json -Depth 3) + [Environment]::NewLine
+    $ManifestJson = ($Manifest | ConvertTo-Json -Depth 5) + [Environment]::NewLine
     [System.IO.File]::WriteAllText(
         (Join-Path $StagingDirectory ($Name + ".uplugin")),
         $PluginJson,

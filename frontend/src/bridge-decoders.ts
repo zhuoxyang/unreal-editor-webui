@@ -5,8 +5,11 @@ import type {
   ProjectContext,
   TaskResult,
   ToolCatalogBridgeResult,
+  ToolPackBackendReasonCode,
+  ToolPackPolicyStatusV2,
+  ToolPackStatus,
   ToolPackStatusEntryV1,
-  ToolPackStatusV1,
+  ToolPackStatusEntryV2,
   WebUIDocumentScope,
   WebUIHealth,
   WebUIPythonRuntime,
@@ -65,8 +68,9 @@ const CANONICAL_ENGINE_VERSION = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1
 const CANONICAL_TOOL_PACK_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+$/
 const CANONICAL_TOOL_PACK_LABEL = /^[A-Za-z0-9_.-]+$/
 const CANONICAL_COMMAND_NAME = /^[a-z][A-Za-z0-9_]*(?:\.[a-z][A-Za-z0-9_]*)+$/
-const TOOL_PACK_STATUS_KEYS = new Set(['statusVersion', 'coreApiVersion', 'packs', 'truncatedCount'])
-const TOOL_PACK_ENTRY_KEYS = new Set([
+const TOOL_PACK_STATUS_V1_KEYS = new Set(['statusVersion', 'coreApiVersion', 'packs', 'truncatedCount'])
+const TOOL_PACK_STATUS_V2_KEYS = new Set(['statusVersion', 'coreApiVersion', 'policy', 'packs', 'truncatedCount'])
+const TOOL_PACK_ENTRY_V1_KEYS = new Set([
   'provider',
   'packId',
   'pluginName',
@@ -76,6 +80,38 @@ const TOOL_PACK_ENTRY_KEYS = new Set([
   'commandCount',
   'commands',
 ])
+const TOOL_PACK_ENTRY_V2_KEYS = new Set([...TOOL_PACK_ENTRY_V1_KEYS, 'reasonCodes'])
+const TOOL_PACK_POLICY_V2_KEYS = new Set(['enforced', 'state', 'reasonCodes'])
+const TOOL_PACK_REASON_CODES = new Set<ToolPackBackendReasonCode>([
+  'command_namespace_conflict',
+  'command_registration_rejected',
+  'dependency_hash_mismatch',
+  'dependency_policy_invalid',
+  'entry_import_failed',
+  'entry_module_ambiguous',
+  'entry_module_duplicate',
+  'entry_module_invalid',
+  'entry_module_missing',
+  'entry_modules_invalid',
+  'in_process_native_dependency_unsupported',
+  'pack_id_conflict',
+  'plugin_name_conflict',
+  'python_package_conflict',
+  'startup_hook_forbidden',
+  'tool_pack_conflict',
+  'trust_anchor_missing',
+  'trust_policy_invalid',
+  'trusted_core_api_mismatch',
+  'trusted_pack_missing',
+  'trusted_payload_mismatch',
+  'trusted_payload_unverifiable',
+  'trusted_plugin_version_mismatch',
+  'undeclared_registration_origin',
+  'unlocked_vendored_dependencies',
+  'validation_failed',
+  'vendored_dependencies_missing',
+])
+const MAX_TOOL_PACK_REASON_CODES = 8
 const MAX_TOOL_PACK_STATUS_COUNT = 384
 const MAX_TOOL_PACK_COMMAND_COUNT = 256
 const MAX_TOOL_PACK_LABEL_LENGTH = 128
@@ -201,7 +237,7 @@ function decodeToolPackEntry(
   if (!isRecord(value)) {
     fail(methodName, `field "${path}" must be an object.`)
   }
-  requireAllowedFields(value, TOOL_PACK_ENTRY_KEYS, methodName, path)
+  requireAllowedFields(value, TOOL_PACK_ENTRY_V1_KEYS, methodName, path)
 
   const provider = decodeToolPackId(value.provider, methodName, `${path}.provider`)
   const packId = decodeToolPackId(value.packId, methodName, `${path}.packId`)
@@ -308,6 +344,75 @@ function decodeToolPackEntry(
     commandCount: 0,
     commands: [],
   }
+}
+
+function decodeToolPackReasonCodes(
+  value: unknown,
+  methodName: BridgeMethodName,
+  path: string,
+): ToolPackBackendReasonCode[] {
+  if (!Array.isArray(value) || value.length > MAX_TOOL_PACK_REASON_CODES) {
+    fail(methodName, `field "${path}" must be a bounded reason-code array.`)
+  }
+  const result: ToolPackBackendReasonCode[] = []
+  for (let index = 0; index < value.length; index += 1) {
+    const reasonCode = value[index]
+    if (typeof reasonCode !== 'string' || !TOOL_PACK_REASON_CODES.has(reasonCode as ToolPackBackendReasonCode)) {
+      fail(methodName, `field "${path}[${index}]" must be an allowed public reason code.`)
+    }
+    if (index > 0 && result[index - 1] >= reasonCode) {
+      fail(methodName, `field "${path}" must contain unique reason codes in sorted order.`)
+    }
+    result.push(reasonCode as ToolPackBackendReasonCode)
+  }
+  return result
+}
+
+function decodeToolPackEntryV2(
+  value: unknown,
+  index: number,
+  coreApiVersion: number,
+): ToolPackStatusEntryV2 {
+  const methodName: BridgeMethodName = 'executecommand'
+  const path = `toolPacks.packs[${index}]`
+  if (!isRecord(value)) {
+    fail(methodName, `field "${path}" must be an object.`)
+  }
+  requireAllowedFields(value, TOOL_PACK_ENTRY_V2_KEYS, methodName, path)
+  const reasonCodes = decodeToolPackReasonCodes(
+    value.reasonCodes,
+    methodName,
+    `${path}.reasonCodes`,
+  )
+  const legacyValue = Object.fromEntries(
+    Object.entries(value).filter(([key]) => key !== 'reasonCodes'),
+  )
+  const entry = decodeToolPackEntry(legacyValue, index, coreApiVersion)
+  if (entry.state === 'loaded' && reasonCodes.length !== 0) {
+    fail(methodName, `field "${path}.reasonCodes" must be empty for a loaded Tool Pack.`)
+  }
+  if (entry.state === 'rejected' && reasonCodes.length === 0) {
+    fail(methodName, `field "${path}.reasonCodes" must identify a rejected Tool Pack.`)
+  }
+  return { ...entry, reasonCodes }
+}
+
+function decodeToolPackPolicyV2(value: unknown): ToolPackPolicyStatusV2 {
+  const methodName: BridgeMethodName = 'executecommand'
+  const path = 'toolPacks.policy'
+  if (!isRecord(value)) fail(methodName, `field "${path}" must be an object.`)
+  requireAllowedFields(value, TOOL_PACK_POLICY_V2_KEYS, methodName, path)
+  const reasonCodes = decodeToolPackReasonCodes(value.reasonCodes, methodName, `${path}.reasonCodes`)
+  if (value.enforced === false && value.state === 'disabled' && reasonCodes.length === 0) {
+    return { enforced: false, state: 'disabled', reasonCodes: [] }
+  }
+  if (value.enforced === true && value.state === 'accepted' && reasonCodes.length === 0) {
+    return { enforced: true, state: 'accepted', reasonCodes: [] }
+  }
+  if (value.enforced === true && value.state === 'rejected' && reasonCodes.length > 0) {
+    return { enforced: true, state: 'rejected', reasonCodes }
+  }
+  fail(methodName, `field "${path}" contains an invalid policy state.`)
 }
 
 function validateNonNegativeInteger(
@@ -737,7 +842,7 @@ export function decodeCommandsResult(value: unknown): CommandsResult {
   }
 }
 
-export function decodeToolPackStatus(value: unknown): ToolPackStatusV1 {
+export function decodeToolPackStatus(value: unknown): ToolPackStatus {
   const methodName: BridgeMethodName = 'executecommand'
   if (!isRecord(value)) {
     fail(methodName, 'Tool Pack status must be an object.')
@@ -745,10 +850,16 @@ export function decodeToolPackStatus(value: unknown): ToolPackStatusV1 {
   if (!hasOwn(value, 'statusVersion') || !isPositiveSafeInteger(value.statusVersion)) {
     fail(methodName, 'field "toolPacks.statusVersion" must be a positive integer.')
   }
-  if (value.statusVersion !== 1) {
+  if (value.statusVersion !== 1 && value.statusVersion !== 2) {
     throw new UnsupportedToolPackStatusVersionError()
   }
-  requireAllowedFields(value, TOOL_PACK_STATUS_KEYS, methodName, 'toolPacks')
+  const statusVersion = value.statusVersion
+  requireAllowedFields(
+    value,
+    statusVersion === 1 ? TOOL_PACK_STATUS_V1_KEYS : TOOL_PACK_STATUS_V2_KEYS,
+    methodName,
+    'toolPacks',
+  )
   if (!isPositiveSafeInteger(value.coreApiVersion)) {
     fail(methodName, 'field "toolPacks.coreApiVersion" must be a positive integer.')
   }
@@ -762,12 +873,24 @@ export function decodeToolPackStatus(value: unknown): ToolPackStatusV1 {
     fail(methodName, 'field "toolPacks.truncatedCount" must be a bounded non-negative integer.')
   }
 
+  if (statusVersion === 1) {
+    const packs = value.packs.map((pack, index) => (
+      decodeToolPackEntry(pack, index, value.coreApiVersion as number)
+    ))
+    return {
+      statusVersion: 1,
+      coreApiVersion: value.coreApiVersion,
+      packs,
+      truncatedCount: value.truncatedCount,
+    }
+  }
   const packs = value.packs.map((pack, index) => (
-    decodeToolPackEntry(pack, index, value.coreApiVersion as number)
+    decodeToolPackEntryV2(pack, index, value.coreApiVersion as number)
   ))
   return {
-    statusVersion: 1,
+    statusVersion: 2,
     coreApiVersion: value.coreApiVersion,
+    policy: decodeToolPackPolicyV2(value.policy),
     packs,
     truncatedCount: value.truncatedCount,
   }

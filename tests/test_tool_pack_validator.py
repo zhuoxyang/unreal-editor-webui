@@ -17,6 +17,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 import unreal_editor_webui_toolpacks as toolpacks
+import unreal_editor_webui_toolpack_integrity as integrity
 
 
 FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "ue-tool-packs"
@@ -60,6 +61,33 @@ class ToolPackValidatorTests(unittest.TestCase):
         self.assertEqual(len(result.issues), 1)
         return result.issues[0].reason_code
 
+    def make_v2(
+        self,
+        plugin: pathlib.Path,
+        *,
+        entry_modules: list[str] | None = None,
+        pure_python_mode: str = "none",
+        pure_python_tree_sha256: str | None = None,
+        native_mode: str = "none",
+    ) -> pathlib.Path:
+        manifest_path = self.manifest_path(plugin)
+        manifest = self.read_json(manifest_path)
+        manifest.update(
+            {
+                "schemaVersion": 2,
+                "entryModules": entry_modules or ["commands"],
+                "dependencyPolicy": {
+                    "purePython": {
+                        "mode": pure_python_mode,
+                        "treeSha256": pure_python_tree_sha256,
+                    },
+                    "native": {"mode": native_mode},
+                },
+            }
+        )
+        self.write_json(manifest_path, manifest)
+        return plugin
+
     def test_content_only_and_existing_code_fixtures_are_valid(self) -> None:
         fixture_names = ("AssetToolsFixture", "ExistingCodeToolPackFixture")
         results = [
@@ -79,6 +107,211 @@ class ToolPackValidatorTests(unittest.TestCase):
         self.assertEqual(
             [descriptor.plugin_name for descriptor in report.descriptors],
             ["AssetToolsFixture", "ExistingCodeToolPackFixture"],
+        )
+
+    def test_schema_v2_entry_modules_are_closed_bounded_and_exact(self) -> None:
+        valid = self.make_v2(self.copy_fixture("AssetToolsFixture", "V2Valid"))
+        valid_result = toolpacks.validate_tool_pack_directory(valid)
+        self.assertTrue(valid_result.valid)
+        self.assertEqual(valid_result.descriptor.schema_version, 2)
+        self.assertEqual(valid_result.descriptor.entry_modules, ("commands",))
+
+        cases = (
+            (["../commands"], "entry_module_invalid"),
+            (["commands", "commands"], "entry_module_duplicate"),
+            (["missing"], "entry_module_missing"),
+            (["commands"] * (toolpacks.MAX_ENTRY_MODULE_COUNT + 1), "entry_modules_invalid"),
+        )
+        for index, (entries, reason_code) in enumerate(cases):
+            with self.subTest(reason_code=reason_code):
+                plugin = self.make_v2(
+                    self.copy_fixture("AssetToolsFixture", f"V2Entries{index}"),
+                    entry_modules=entries,
+                )
+                self.assertEqual(self.reason_code(plugin), reason_code)
+
+        ambiguous = self.make_v2(
+            self.copy_fixture("AssetToolsFixture", "V2Ambiguous")
+        )
+        package = (
+            ambiguous
+            / "Content"
+            / "Python"
+            / "ue_webui_asset_tools_fixture"
+        )
+        (package / "commands" / "__init__.py").mkdir(parents=True)
+        self.assertEqual(self.reason_code(ambiguous), "entry_module_ambiguous")
+
+        oversized = self.make_v2(
+            self.copy_fixture("AssetToolsFixture", "V2Oversized")
+        )
+        self.manifest_path(oversized).write_bytes(
+            b"{" + b" " * toolpacks.MAX_MANIFEST_BYTES + b"}"
+        )
+        self.assertEqual(self.reason_code(oversized), "manifest_json_invalid")
+
+    def test_schema_v2_dependency_policy_requires_real_hash_lock(self) -> None:
+        closed = self.make_v2(self.copy_fixture("AssetToolsFixture", "V2Closed"))
+        closed_manifest = self.read_json(self.manifest_path(closed))
+        closed_manifest["dependencyPolicy"]["unexpected"] = True
+        self.write_json(self.manifest_path(closed), closed_manifest)
+        self.assertEqual(self.reason_code(closed), "dependency_policy_invalid")
+
+        unlocked = self.make_v2(
+            self.copy_fixture("AssetToolsFixture", "V2Unlocked")
+        )
+        unlocked_vendor = (
+            unlocked
+            / "Content"
+            / "Python"
+            / "ue_webui_asset_tools_fixture"
+            / "_vendor"
+        )
+        unlocked_vendor.mkdir()
+        (unlocked_vendor / "__init__.py").write_text("", encoding="utf-8")
+        self.assertEqual(
+            self.reason_code(unlocked),
+            "unlocked_vendored_dependencies",
+        )
+
+        vendored = self.copy_fixture("AssetToolsFixture", "V2Vendored")
+        vendor = (
+            vendored
+            / "Content"
+            / "Python"
+            / "ue_webui_asset_tools_fixture"
+            / "_vendor"
+        )
+        vendor.mkdir()
+        (vendor / "__init__.py").write_text("", encoding="utf-8")
+        dependency = vendor / "dependency.py"
+        dependency.write_text("VALUE = 1\n", encoding="utf-8")
+        digest = integrity.compute_bounded_directory_sha256(vendor)
+        self.make_v2(
+            vendored,
+            pure_python_mode="vendored",
+            pure_python_tree_sha256=digest,
+        )
+        self.assertTrue(toolpacks.validate_tool_pack_directory(vendored).valid)
+        dependency.write_text("VALUE = 2\n", encoding="utf-8")
+        self.assertEqual(self.reason_code(vendored), "dependency_hash_mismatch")
+
+        native = self.make_v2(
+            self.copy_fixture("AssetToolsFixture", "V2Native")
+        )
+        native_file = (
+            native
+            / "Content"
+            / "Python"
+            / "ue_webui_asset_tools_fixture"
+            / "dependency.pyd"
+        )
+        native_file.write_bytes(b"not-a-native-library")
+        self.assertEqual(
+            self.reason_code(native),
+            "in_process_native_dependency_unsupported",
+        )
+
+    def test_startup_hook_is_rejected_for_v1_and_v2_as_security_exception(self) -> None:
+        for schema_version in (1, 2):
+            with self.subTest(schema_version=schema_version):
+                plugin = self.copy_fixture(
+                    "AssetToolsFixture", f"StartupV{schema_version}"
+                )
+                if schema_version == 2:
+                    self.make_v2(plugin)
+                (plugin / "Content" / "Python" / "init_unreal.py").write_text(
+                    "raise RuntimeError('must never run')\n",
+                    encoding="utf-8",
+                )
+                self.assertEqual(self.reason_code(plugin), "startup_hook_forbidden")
+
+    def test_project_policy_schema_is_fixed_closed_bounded_and_duplicate_safe(self) -> None:
+        project_root = self.temp_root / "PolicyProject"
+        project_root.mkdir()
+        self.assertIsNone(integrity.load_project_tool_pack_policy(project_root))
+        policy_path = project_root / integrity.POLICY_RELATIVE_PATH
+        policy_path.parent.mkdir(parents=True)
+        valid = {
+            "format": integrity.POLICY_FORMAT,
+            "schemaVersion": integrity.POLICY_SCHEMA_VERSION,
+            "packs": [
+                {
+                    "packId": "com.example.policy",
+                    "pluginVersion": "1.0.0",
+                    "requiredCoreApi": 1,
+                    "payloadSha256": "sha256:" + "a" * 64,
+                }
+            ],
+        }
+        self.write_json(policy_path, valid)
+        parsed = integrity.load_project_tool_pack_policy(project_root)
+        self.assertEqual(parsed.entries[0].pack_id, "com.example.policy")
+
+        invalid_documents = []
+        unknown = json.loads(json.dumps(valid))
+        unknown["unknown"] = True
+        invalid_documents.append(unknown)
+        boolean_schema_version = json.loads(json.dumps(valid))
+        boolean_schema_version["schemaVersion"] = True
+        invalid_documents.append(boolean_schema_version)
+        duplicate = json.loads(json.dumps(valid))
+        duplicate["packs"].append(dict(duplicate["packs"][0]))
+        invalid_documents.append(duplicate)
+        invalid_version = json.loads(json.dumps(valid))
+        invalid_version["packs"][0]["pluginVersion"] = "unsafe version"
+        invalid_documents.append(invalid_version)
+        invalid_api = json.loads(json.dumps(valid))
+        invalid_api["packs"][0]["requiredCoreApi"] = True
+        invalid_documents.append(invalid_api)
+        invalid_hash = json.loads(json.dumps(valid))
+        invalid_hash["packs"][0]["payloadSha256"] = "sha256:not-a-digest"
+        invalid_documents.append(invalid_hash)
+        too_many = json.loads(json.dumps(valid))
+        too_many["packs"] = [
+            {
+                "packId": f"com.example.pack-{index}",
+                "pluginVersion": "1.0.0",
+                "requiredCoreApi": 1,
+                "payloadSha256": "sha256:" + "b" * 64,
+            }
+            for index in range(integrity.MAX_POLICY_PACKS + 1)
+        ]
+        invalid_documents.append(too_many)
+        for index, document in enumerate(invalid_documents):
+            with self.subTest(index=index):
+                self.write_json(policy_path, document)
+                with self.assertRaises(integrity.ToolPackIntegrityError) as raised:
+                    integrity.load_project_tool_pack_policy(project_root)
+                self.assertEqual(raised.exception.reason_code, "trust_policy_invalid")
+
+        policy_path.write_text(
+            '{"format":"unreal-editor-webui-tool-pack-policy",'
+            '"schemaVersion":1,"schemaVersion":1,"packs":[]}',
+            encoding="utf-8",
+        )
+        with self.assertRaises(integrity.ToolPackIntegrityError) as duplicate_field:
+            integrity.load_project_tool_pack_policy(project_root)
+        self.assertEqual(
+            duplicate_field.exception.reason_code,
+            "trust_policy_invalid",
+        )
+
+        policy_path.write_text(
+            '{"format":"unreal-editor-webui-tool-pack-policy",'
+            '"schemaVersion":1,"packs":[{"packId":"com.example.large-int",'
+            '"pluginVersion":"1.0.0","requiredCoreApi":'
+            + "1" * 5000
+            + ',"payloadSha256":"sha256:'
+            + "a" * 64
+            + '"}]}',
+            encoding="utf-8",
+        )
+        with self.assertRaises(integrity.ToolPackIntegrityError) as large_integer:
+            integrity.load_project_tool_pack_policy(project_root)
+        self.assertEqual(
+            large_integer.exception.reason_code,
+            "trust_policy_invalid",
         )
 
     def test_descriptor_and_manifest_json_are_strict(self) -> None:
