@@ -753,7 +753,7 @@ jobs:
 
       - name: Upload packaged plugin
         id: package_artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success()
         with:
           name: ${{ matrix.package_artifact }}
@@ -838,7 +838,7 @@ jobs:
           "path=$OutputPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload exact UE build-environment evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success() && steps.build_environment.outputs.path != ''
         with:
           name: ${{ matrix.build_environment_artifact }}
@@ -866,7 +866,7 @@ jobs:
           "path=$($DiagnosticsPaths[0])" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Upload allowlisted UE runner diagnostics
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always() && steps.runner_diagnostics.outputs.path != ''
         with:
           name: unreal-editor-webui-ue-diagnostics-${{ matrix.variant_id }}
@@ -1130,7 +1130,7 @@ jobs:
           }
 
       - name: Upload Rez external-path evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: unreal-editor-webui-rez-e2e-${{ matrix.variant_id }}
